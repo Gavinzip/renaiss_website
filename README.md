@@ -1,9 +1,12 @@
-# Renaiss Website (Frontend + AI Intel Backend)
+# Renaiss Website Backend (Frontend Separated)
 
-This repository contains:
-- Static frontend: `index.html`, `game.html`, `assets/`
-- Backend API + scheduler: `scripts/ai_intel_server.py`
+This repository now tracks **backend only**:
+- API + scheduler: `scripts/ai_intel_server.py`
 - Intel pipeline: `scripts/x_intel_core.py`, `scripts/minimax_news.py`
+- Runtime data: `data/`
+
+Frontend files are kept in local folder `frontend_local/` and ignored by Git.
+Use `frontend_local/` for Walrus/Walgo deployment.
 
 ## 1) Local run
 
@@ -15,7 +18,7 @@ cp .env.example .env
 ./start.sh
 ```
 
-Open: `http://127.0.0.1:8787/index.html`
+Backend API base: `http://127.0.0.1:8787`
 
 ## 2) Zeabur deployment (backend)
 
@@ -44,16 +47,20 @@ The server reads `PORT` from environment and binds `0.0.0.0` by default via `sta
 - `INTEL_SESSION_TTL_SECONDS`
 - `NEWS_INTERVAL_MINUTES`, `NEWS_LANGS`
 
-## 3) Frontend deployment
+## 3) Frontend deployment (Walrus / chain)
+
+Put frontend files under `frontend_local/` (ignored by Git), then deploy with Walgo.
+
+Latest testnet site object ID:
+- `0x2ab99ef1c3a9c45a4048fe0d9abdf253fbcfaa1cfed339b84d1b9e0120d643fa`
 
 If frontend and backend are deployed separately:
-- Keep frontend static hosting as-is.
 - Point frontend API requests to your backend domain.
 - Add frontend domain to `INTEL_ALLOWED_ORIGINS`.
 - For cross-site login cookies, set:
   - `INTEL_COOKIE_SAMESITE=None`
   - `INTEL_COOKIE_SECURE=1`
-  - `INTEL_COOKIE_DOMAIN=<your-backend-domain>` (optional, depends on domain strategy)
+  - `INTEL_COOKIE_DOMAIN=<your-backend-domain>` (optional)
 
 ## 4) Generate password hash (recommended)
 
