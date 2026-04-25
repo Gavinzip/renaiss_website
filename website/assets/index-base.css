@@ -206,56 +206,93 @@
     }
 
     .lang-switcher {
+      position: relative;
       display: inline-flex;
       align-items: center;
-      gap: 0.42rem;
-      padding: 0.26rem 0.48rem;
-      border-radius: 14px;
-      border: 1px solid rgba(204, 224, 247, 0.9);
-      background: rgba(255, 255, 255, 0.82);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+      gap: 0.28rem;
+      border-radius: 999px;
+      border: 1px solid rgba(154, 199, 239, 0.92);
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(230, 244, 255, 0.86)),
+        radial-gradient(circle at 12% 18%, rgba(255, 216, 135, 0.42), transparent 44%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.8),
+        0 10px 20px rgba(40, 91, 140, 0.12);
+      color: #244a74;
+      overflow: hidden;
+      flex: none;
     }
 
-    .lang-label {
-      color: #36587e;
-      font-size: 0.72rem;
-      font-weight: 900;
-      letter-spacing: 0.05em;
-      white-space: nowrap;
+    .lang-icon {
+      position: absolute;
+      left: 0.66rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #2d6aa2;
+      font-size: 0.96rem;
+      pointer-events: none;
+      z-index: 1;
     }
 
     .lang-select {
-      border: 1px solid rgba(150, 194, 243, 0.9);
+      appearance: none;
+      border: 0;
       border-radius: 999px;
-      background: #ffffff;
-      color: #2b537f;
-      padding: 0.24rem 0.72rem;
-      font-size: 0.72rem;
+      background: transparent;
+      color: #244a74;
+      padding: 0.48rem 2rem 0.48rem 2.02rem;
+      font-size: 0.75rem;
       font-weight: 800;
       line-height: 1.1;
       cursor: pointer;
       white-space: nowrap;
-      min-width: 7.2rem;
+      min-width: 8.2rem;
+      outline: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, #2d6aa2 50%),
+        linear-gradient(135deg, #2d6aa2 50%, transparent 50%);
+      background-position:
+        calc(100% - 1.02rem) 51%,
+        calc(100% - 0.72rem) 51%;
+      background-size: 0.34rem 0.34rem, 0.34rem 0.34rem;
+      background-repeat: no-repeat;
     }
 
-    .lang-select:hover {
-      border-color: rgba(92, 153, 226, 0.95);
+    .lang-switcher:hover {
+      border-color: rgba(84, 151, 224, 0.95);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.86),
+        0 13px 24px rgba(40, 91, 140, 0.16);
     }
 
     .lang-select:focus-visible {
-      outline: 2px solid rgba(90, 154, 224, 0.62);
-      outline-offset: 2px;
+      box-shadow: 0 0 0 3px rgba(80, 153, 231, 0.26);
     }
 
     .lang-build-status {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: calc(100% + 0.22rem);
+      transform: translateX(-50%);
+      padding: 0.16rem 0.42rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
       color: #5c7391;
       font-size: 0.66rem;
       font-weight: 800;
       letter-spacing: 0.02em;
-      max-width: 8.8rem;
+      max-width: 9.8rem;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      box-shadow: 0 8px 18px rgba(44, 79, 124, 0.12);
+      z-index: 3;
+    }
+
+    .lang-build-status.is-working,
+    .lang-build-status.is-ready {
+      display: block;
     }
 
     .lang-build-status.is-working {
@@ -1122,4 +1159,3 @@
       line-height: 1.55;
       margin-top: 0.36rem;
     }
-

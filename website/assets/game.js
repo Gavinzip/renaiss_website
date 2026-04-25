@@ -72,7 +72,9 @@
       } catch (_error) {
         fromStorage = "";
       }
-      const resolved = fromQuery || fromWindow || fromStorage;
+      const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
+      const safeStorage = localHost && !fromQuery && !fromWindow ? "" : fromStorage;
+      const resolved = fromQuery || fromWindow || safeStorage;
       if (fromQuery) {
         try {
           localStorage.setItem(INTEL_API_BASE_STORAGE_KEY, fromQuery);
@@ -81,15 +83,19 @@
       return resolved;
     })();
 
-    let currentUiLang = (() => {
+    function readSavedUiLang() {
+      const search = new URLSearchParams(window.location.search || "");
+      const fromQuery = search.get("lang") || "";
       let saved = "";
       try {
         saved = String(localStorage.getItem(INTEL_LANG_STORAGE_KEY) || "").trim();
       } catch (_error) {
         saved = "";
       }
-      return normalizeUiLang(saved || document.documentElement.lang || navigator.language || "zh-Hant");
-    })();
+      return normalizeUiLang(fromQuery || saved || document.documentElement.lang || navigator.language || "zh-Hant");
+    }
+
+    let currentUiLang = readSavedUiLang();
     document.documentElement.lang = currentUiLang;
 
     function saveUiLang(lang) {
@@ -239,31 +245,25 @@
       return ["CLEAR / 晴空", "RAINFALL / 降雨", "DROUGHT / 旱象", "SNOWFALL / 降雪"];
     }
 
-    function updateLangSwitcherUi() {
-      const buttons = Array.from(document.querySelectorAll("#game-lang-switcher [data-lang]"));
-      buttons.forEach((btn) => {
-        const lang = normalizeUiLang(btn.dataset.lang || "zh-Hant");
-        btn.classList.toggle("is-active", lang === currentUiLang);
-        btn.setAttribute("aria-pressed", lang === currentUiLang ? "true" : "false");
-      });
+    async function syncLanguageFromSavedState() {
+      const next = readSavedUiLang();
+      if (next === currentUiLang) return;
+      saveUiLang(next);
+      try {
+        await applyUiLanguage();
+        window.dispatchEvent(new CustomEvent("game:langchange", { detail: { lang: currentUiLang } }));
+      } catch (error) {
+        console.warn("language sync failed", error);
+      }
     }
 
-    function setupLanguageSwitcher() {
-      updateLangSwitcherUi();
-      const buttons = Array.from(document.querySelectorAll("#game-lang-switcher [data-lang]"));
-      buttons.forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const next = normalizeUiLang(btn.dataset.lang || "zh-Hant");
-          if (next === currentUiLang) return;
-          saveUiLang(next);
-          updateLangSwitcherUi();
-          try {
-            await applyUiLanguage();
-            window.dispatchEvent(new CustomEvent("game:langchange", { detail: { lang: currentUiLang } }));
-          } catch (error) {
-            console.warn("language switch failed", error);
-          }
-        });
+    function setupLanguageSync() {
+      window.addEventListener("storage", (event) => {
+        if (event.key !== INTEL_LANG_STORAGE_KEY) return;
+        syncLanguageFromSavedState().catch(() => {});
+      });
+      window.addEventListener("pageshow", () => {
+        syncLanguageFromSavedState().catch(() => {});
       });
     }
 
@@ -624,7 +624,7 @@
       document.body.classList.add("page-ready");
     });
 
-    setupLanguageSwitcher();
+    setupLanguageSync();
     applyUiLanguage().catch(() => {});
     initSeasonComparator();
     initScrollyLayouts();

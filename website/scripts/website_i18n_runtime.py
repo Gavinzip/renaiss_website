@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +37,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 2
+I18N_BUILD_VERSION = 3
 I18N_FEED_TEXT_KEYS = {
     "headline",
     "conclusion",
@@ -66,9 +67,9 @@ I18N_FEED_LIST_KEYS = {
     "bullets",
     "detail_lines",
 }
-I18N_MAX_TARGET_TEXTS = 96
-I18N_MAX_LIST_ITEMS_PER_FIELD = 4
-I18N_MIN_ACCEPTABLE_COVERAGE = 0.72
+I18N_MAX_TARGET_TEXTS = int(os.getenv("I18N_MAX_TARGET_TEXTS", "0") or "0")
+I18N_MAX_LIST_ITEMS_PER_FIELD = int(os.getenv("I18N_MAX_LIST_ITEMS_PER_FIELD", "0") or "0")
+I18N_MIN_ACCEPTABLE_COVERAGE = float(os.getenv("I18N_MIN_ACCEPTABLE_COVERAGE", "0.98") or "0.98")
 I18N_FEED_CHUNK_SIZE = 3
 I18N_SKIP_KEYS = {
     "id",
@@ -692,13 +693,21 @@ def _is_feed_translatable_text(key: str, text: str) -> bool:
 def _collect_feed_i18n_strings(node: object) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
+    max_targets = max(0, I18N_MAX_TARGET_TEXTS)
+    max_list_items = max(0, I18N_MAX_LIST_ITEMS_PER_FIELD)
+
+    def _is_full() -> bool:
+        return bool(max_targets and len(out) >= max_targets)
+
+    def _iter_limited(rows: list[object]) -> list[object]:
+        return rows[:max_list_items] if max_list_items else rows
 
     def _walk(value: object, parent_key: str = "") -> None:
-        if len(out) >= I18N_MAX_TARGET_TEXTS:
+        if _is_full():
             return
         if isinstance(value, dict):
             for key, child in value.items():
-                if len(out) >= I18N_MAX_TARGET_TEXTS:
+                if _is_full():
                     return
                 k = str(key or "")
                 if isinstance(child, str):
@@ -707,8 +716,8 @@ def _collect_feed_i18n_strings(node: object) -> list[str]:
                         out.append(child)
                 elif isinstance(child, list):
                     if k in I18N_FEED_LIST_KEYS:
-                        for item in child[:I18N_MAX_LIST_ITEMS_PER_FIELD]:
-                            if len(out) >= I18N_MAX_TARGET_TEXTS:
+                        for item in _iter_limited(child):
+                            if _is_full():
                                 return
                             if isinstance(item, str) and _is_feed_translatable_text(k, item) and item not in seen:
                                 seen.add(item)
@@ -720,8 +729,8 @@ def _collect_feed_i18n_strings(node: object) -> list[str]:
                 elif isinstance(child, dict):
                     _walk(child, k)
         elif isinstance(value, list):
-            for item in value[:I18N_MAX_LIST_ITEMS_PER_FIELD]:
-                if len(out) >= I18N_MAX_TARGET_TEXTS:
+            for item in _iter_limited(value):
+                if _is_full():
                     return
                 if isinstance(item, str):
                     if _is_feed_translatable_text(parent_key, item) and item not in seen:

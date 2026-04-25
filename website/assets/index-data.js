@@ -321,7 +321,9 @@
       } catch (_error) {
         fromStorage = "";
       }
-      const resolved = fromQuery || fromWindow || fromData || fromStorage;
+      const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
+      const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
+      const resolved = fromQuery || fromWindow || fromData || safeStorage;
       if (fromQuery) {
         try {
           localStorage.setItem(INTEL_API_BASE_STORAGE_KEY, fromQuery);
@@ -1497,6 +1499,7 @@
     const UI_TRANSLATION_FALLBACKS = {
       en: {
         "語言": "Language",
+        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "This is the intel hub for the Renaiss community: official updates, events, SBT acquisition paths, Pokemon / TCG discussions, future alpha notes, and tools are organized into fast-readable sections. Start with the event timeline for upcoming schedules, then switch categories for summaries, deeper analysis, and original sources.",
         "活動": "Events",
         "官方更新": "Official",
         "寶可夢": "Pokemon",
@@ -1541,6 +1544,7 @@
       },
       ko: {
         "語言": "언어",
+        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "이곳은 Renaiss 커뮤니티를 위한 정보 허브입니다. 공식 업데이트, 이벤트, SBT 획득 방법, 포켓몬 / TCG 논의, 향후 Alpha, 도구 자료를 빠르게 읽을 수 있는 섹션으로 정리합니다. 먼저 이벤트 타임라인으로 일정을 확인하고, 각 분류에서 요약, 상세 분석, 원문 출처를 확인하세요.",
         "活動": "이벤트",
         "官方更新": "공식 업데이트",
         "寶可夢": "포켓몬",
@@ -1562,6 +1566,7 @@
       },
       "zh-Hans": {
         "語言": "语言",
+        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "这里是 Renaiss 社群的情报入口：把官方更新、活动、SBT 获取方式、宝可梦 / TCG 讨论、未来 Alpha 与工具资源整理成可快速判断的分区。你可以先看活动时间轴掌握近期行程，再切到各分类看重点摘要、完整分析与原始来源。",
         "活動": "活动",
         "官方更新": "官方更新",
         "寶可夢": "宝可梦",
@@ -1597,4 +1602,3 @@
       if (/^https?:\/\//i.test(text)) return false;
       return true;
     }
-

@@ -21,3 +21,8 @@ renaiss_sync_data/
 
 # Local deployment workdirs
 .deploy/
+
+# External restored data repo
+data/
+
+website/data

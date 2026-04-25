@@ -678,7 +678,8 @@
       gameLink.dataset.boundDirectNav = "1";
       gameLink.addEventListener("click", (event) => {
         event.preventDefault();
-        window.location.assign("./game.html");
+        const lang = encodeURIComponent(normalizeUiLang(currentUiLang || document.documentElement.lang || "zh-Hant"));
+        window.location.assign(`./game.html?lang=${lang}`);
       });
     }
 

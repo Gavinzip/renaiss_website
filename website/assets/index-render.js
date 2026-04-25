@@ -1,4 +1,41 @@
+    const LOCALIZED_DYNAMIC_REGION_IDS = Object.freeze([
+      "intel-master-rail",
+      "intel-master-stage",
+      "intel-events-list",
+      "intel-features-list",
+      "intel-events-cards",
+      "intel-other-cards",
+      "intel-pokemon-cards",
+      "pokemon-news-list",
+      "intel-sbt-cards",
+      "intel-tools-cards",
+      "intel-alpha-cards",
+      "intel-official-overview-title",
+      "intel-official-overview-summary",
+      "intel-official-overview-bullets",
+      "intel-cards",
+      "intel-headline",
+      "intel-conclusion",
+      "intel-takeaways",
+      "intel-key-terms",
+      "intel-format-templates",
+      "intel-source-status",
+      "intel-official-list",
+      "intel-community-list",
+      "intel-growth-list",
+      "intel-recent-list",
+      "intel-detail-content",
+    ]);
+
+    function markLocalizedDynamicRegions() {
+      LOCALIZED_DYNAMIC_REGION_IDS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute("data-no-i18n", "1");
+      });
+    }
+
     function collectTranslatableTextNodes(root) {
+      markLocalizedDynamicRegions();
       const nodes = [];
       const walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
@@ -210,7 +247,7 @@
           missing.push(original);
         }
       });
-      const chunkSize = tag === "zh-Hans" ? 80 : 12;
+      const chunkSize = 80;
       for (let i = 0; i < missing.length; i += chunkSize) {
         if (version !== uiTranslateVersion) return;
         const chunk = missing.slice(i, i + chunkSize);
@@ -250,16 +287,32 @@
         const next = normalizeUiLang(select.value || "zh-Hant");
         if (next === currentUiLang) return;
         saveUiLang(next);
+        updateLangSwitcherUi();
         setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
         try {
-          await refreshIntelFeedForCurrentLang();
           await applyUiLanguage();
-          await refreshPokemonNews(false);
+          setLangBuildStatus("");
+          refreshIntelFeedForCurrentLang()
+            .then(() => applyUiLanguage())
+            .catch((error) => setIntelMessage(`語言資料刷新失敗：${String(error?.message || error)}`, "error"));
+          refreshPokemonNews(false).catch(() => {});
         } catch (error) {
           setIntelMessage(`語言切換失敗：${String(error?.message || error)}`, "error");
         }
       });
     }
+
+    window.addEventListener("storage", async (event) => {
+      if (event.key !== INTEL_LANG_STORAGE_KEY) return;
+      const next = normalizeUiLang(event.newValue || "zh-Hant");
+      if (next === currentUiLang) return;
+      currentUiLang = next;
+      document.documentElement.lang = next;
+      updateLangSwitcherUi();
+      try {
+        await applyUiLanguage();
+      } catch (_error) {}
+    });
 
     function intelCanEdit() {
       if (!intelAuthState.authRequired) return true;
@@ -703,6 +756,7 @@
       const modal = document.getElementById("intel-detail-modal");
       const content = document.getElementById("intel-detail-content");
       if (!modal || !content) return;
+      content.setAttribute("data-no-i18n", "1");
       content.innerHTML = String(html || "");
       modal.classList.add("is-open");
       modal.setAttribute("aria-hidden", "false");
@@ -1071,29 +1125,38 @@
       renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, "目前沒有未來功能 / Alpha 相關貼文。");
       renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, "目前沒有工具或攻略貼文。");
       renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, "目前沒有落在其他分類的貼文。");
+      markLocalizedDynamicRegions();
       updateIntelAuthUi();
       applyUiLanguage().catch(() => {});
     }
 
     async function fetchIntelFeed(langOverride = "") {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
-      if (INTEL_API_BASE) {
+      const canUseApi = window.location.protocol !== "file:";
+      if (canUseApi) {
         const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}`), {
           cache: "no-store",
           credentials: "include",
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || !payload?.ok || typeof payload?.feed !== "object") {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
+          if (INTEL_API_BASE) {
+            throw new Error(payload?.error || `HTTP ${response.status}`);
+          }
+        } else {
+          if (!payload.feed.lang) {
+            payload.feed.lang = requestLang;
+          }
+          return payload.feed;
         }
-        if (!payload.feed.lang) {
-          payload.feed.lang = requestLang;
-        }
-        return payload.feed;
       }
       const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
       if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
-      return response.json();
+      const fallback = await response.json();
+      if (fallback && typeof fallback === "object" && !fallback.lang) {
+        fallback.lang = "zh-Hant";
+      }
+      return fallback;
     }
 
     async function refreshIntelFeedForCurrentLang() {
@@ -1435,6 +1498,7 @@
       metaEl.textContent = warning
         ? `來源：${providerLabel} · ${modeLabel} · 語言 ${lang} · 更新 ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel} · ${warning}`
         : `來源：${providerLabel} · ${modeLabel} · 語言 ${lang} · 更新 ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel}${pendingMsg ? ` · ${pendingMsg}` : ""}`;
+      markLocalizedDynamicRegions();
       applyUiLanguage().catch(() => {});
     }
 
