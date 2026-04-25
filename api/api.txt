@@ -1,0 +1,57 @@
+# tcg_pro API 清單
+
+## SBT 流程重點（2026-03-20）
+- `sbt.getUserBadges` 目前仍需要 `username`，不是直接吃 `walletAddress`。
+- 現在程式做到「你只輸入地址就可以」的原因：
+  1. 先用地址去 `collectible.list` 找到 `owner.username`
+  2. 若當下沒找到，fallback 用 `rankings/latest.json` 內該地址的 `username`
+  3. 再用 `username` 呼叫 `sbt.getUserBadges`
+- 所以本質是「地址自動解析 username」，不是 API 直接改成地址查 SBT。
+
+## Renaiss.xyz APIs（專案主要使用）
+| API | 用途 | 檔案 |
+|-----|------|------|
+| `https://www.renaiss.xyz/api/trpc/collectible.list` | 收藏品分頁列表、owner/username 映射、持倉資料 | bot.py, scripts/update_rankings.py |
+| `https://www.renaiss.xyz/api/trpc/collectible.getCollectibleByTokenId` | 單一卡片詳細資訊（FMV/圖片補查） | bot.py |
+| `https://www.renaiss.xyz/api/trpc/sbt.getUserBadges` | 查使用者 SBT（需 `username`） | bot.py, scripts/update_rankings.py |
+| `https://www.renaiss.xyz/api/trpc/activity.getSubgraphUserActivities` | 依地址查活動歷史（排名增量計算核心） | bot.py, scripts/update_rankings.py |
+| `https://www.renaiss.xyz/api/trpc/activity.getSubgraphTokenActivities` | 依 token 查活動歷史（海報/圖片邏輯） | bot.py |
+| `https://www.renaiss.xyz/api/trpc/openCardPackRecord.getNonMintedByUserWalletAddress` | 查未 mint 開包紀錄（需登入） | 排查驗證使用 |
+
+## 本次 batch 測試程序（你貼的那條 URL）
+| Procedure | 參數重點 | 未登入結果 |
+|-----|------|------|
+| `user.whoami` | 無 | 401 |
+| `user.getExternalWalletConfirmation` | 無 | 401 |
+| `openCardPackRecord.getNonMintedByUserWalletAddress` | wallet 相關 | 401 |
+| `offer.getAllOffersCount` | 無 | 401 |
+| `wallet.getNativeBalance` | `walletAddress` | 401 |
+| `wallet.getERC20Balance` | `walletAddress`, `contractAddress` | 401 |
+| `user.checkSbtBalance` | `sbtId` | 401 |
+| `user.getTwitterUsername` | 無 | 401 |
+| `sbt.getUserBadges` | `username` | 200 |
+| `referral.getMyReferralCount` | 無 | 401 |
+| `referral.getMyReferrer` | 無 | 401 |
+| `offer.getPerpetualBuybackOffers` | `limit`, `offset` | 401 |
+| `cardPack.getAll` | 無 | 200 |
+| `collectible.list` | `limit`, `offset`, `sortBy`, `sortOrder`, `userId` 等 | 200 |
+| `collectible.getUserFavorites` | `username` | 200 |
+| `collectible.getFavoriteCollectibleConfirmation` | 無 | 401 |
+
+## AI APIs
+| API | 用途 | 檔案 |
+|-----|------|------|
+| `https://api.minimax.io/v1/text/chatcompletion_v2` | MiniMax 文字聊天完成（摘要） | bot.py, market_report_vision.py |
+| `https://api.minimax.io/v1/coding_plan/vlm` | MiniMax VLM（圖片辨識估價） | market_report_vision.py |
+| `https://api.openai.com/v1/chat/completions` | OpenAI Chat Completions | market_report_vision.py |
+
+## UI / Font APIs
+| API | 用途 | 檔案 |
+|-----|------|------|
+| `https://fonts.googleapis.com/` | Google Fonts | HTML templates |
+| `https://cdn.tailwindcss.com/` | Tailwind CSS CDN | HTML templates |
+
+## 外部圖片來源
+| API | 用途 | 檔案 |
+|-----|------|------|
+| `https://s3.ap-northeast-1.amazonaws.com/image.snkrdunk.com/` | SNKRDunk 圖片 CDN | preview_1.html |

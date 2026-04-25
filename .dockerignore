@@ -1,0 +1,16 @@
+.env
+website/.env
+*.local.env
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+logs/
+debug/
+debug_sniping_mode/
+minimax-output/
+.deploy/
+website/data/
+renaiss_sync_data/

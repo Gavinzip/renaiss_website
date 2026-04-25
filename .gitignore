@@ -1,9 +1,23 @@
+# Environment
 .env
-.DS_Store
+website/.env
+*.local.env
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
-*.log
 
-# Local frontend workspace (deployed to Walrus, not committed)
-frontend_local/
+# Debug output directories
+debug/
+debug_sniping_mode/
+
+# Runtime state
+scripts/seen_ids.txt
+logs/
+minimax-output/
+website/data/
+renaiss_sync_data/
+
+# Local deployment workdirs
+.deploy/
