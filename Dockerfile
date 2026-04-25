@@ -3,7 +3,7 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates \
+  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g mmx-cli@1.0.11
