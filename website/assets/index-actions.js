@@ -673,13 +673,15 @@
     }
 
     function setupDirectGameLink() {
-      const gameLink = document.getElementById("nav-game-link");
-      if (!gameLink || gameLink.dataset.boundDirectNav) return;
-      gameLink.dataset.boundDirectNav = "1";
-      gameLink.addEventListener("click", (event) => {
-        event.preventDefault();
-        const lang = encodeURIComponent(normalizeUiLang(currentUiLang || document.documentElement.lang || "zh-Hant"));
-        window.location.assign(`./game.html?lang=${lang}`);
+      const gameLinks = Array.from(document.querySelectorAll('a[href="game.html"], a[href="./game.html"]'));
+      gameLinks.forEach((gameLink) => {
+        if (!gameLink || gameLink.dataset.boundDirectNav) return;
+        gameLink.dataset.boundDirectNav = "1";
+        gameLink.addEventListener("click", (event) => {
+          event.preventDefault();
+          const lang = encodeURIComponent(normalizeUiLang(currentUiLang || document.documentElement.lang || "zh-Hant"));
+          window.location.assign(`./game.html?lang=${lang}`);
+        });
       });
     }
 

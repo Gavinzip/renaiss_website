@@ -62,23 +62,6 @@
       });
     }
 
-    function containsCjk(text) {
-      return /[\u3400-\u9fff]/.test(String(text || ""));
-    }
-
-    function pruneNoopTranslationMemo(lang) {
-      const tag = normalizeUiLang(lang);
-      const prefix = `${tag}\n`;
-      for (const [key, value] of uiTranslationMemo.entries()) {
-        if (!key.startsWith(prefix)) continue;
-        const source = key.slice(prefix.length);
-        if (!containsCjk(source)) continue;
-        if (String(value || "") === source) {
-          uiTranslationMemo.delete(key);
-        }
-      }
-    }
-
     function applyUiTranslationFallback(lang, source, translated) {
       const tag = normalizeUiLang(lang);
       const rawSource = String(source || "");
@@ -91,83 +74,11 @@
       return rawTranslated;
     }
 
-    async function requestTranslateTexts(lang, texts, timeoutMs = 1500) {
-      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timer = controller
-        ? window.setTimeout(() => controller.abort(), Math.max(500, Number(timeoutMs) || 1500))
-        : null;
-      let response;
-      try {
-        response = await fetch(intelApiUrl("/api/intel/translate-texts"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lang, texts }),
-          signal: controller ? controller.signal : undefined,
-        });
-      } finally {
-        if (timer) window.clearTimeout(timer);
-      }
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
-      }
-      return {
-        items: data.items.map((x) => String(x || "")),
-        mode: String(data?.mode || ""),
-      };
-    }
-
     async function translateTextsForUi(lang, texts) {
       const tag = normalizeUiLang(lang);
       const rows = Array.isArray(texts) ? texts.map((x) => String(x || "")) : [];
       if (tag === "zh-Hant") return rows;
-      pruneNoopTranslationMemo(tag);
-      const out = rows.slice();
-      const missing = [];
-      const missingSet = new Set();
-      rows.forEach((text) => {
-        if (!text) return;
-        const key = `${tag}\n${text}`;
-        if (!uiTranslationMemo.has(key) && !missingSet.has(text)) {
-          missingSet.add(text);
-          missing.push(text);
-        }
-      });
-      if (missing.length) {
-        const chunkSize = 80;
-        for (let i = 0; i < missing.length; i += chunkSize) {
-          const chunk = missing.slice(i, i + chunkSize);
-          let translated = [];
-          let canMemo = true;
-          try {
-            const result = await requestTranslateTexts(tag, chunk);
-            translated = result.items;
-            if (result.mode === "no-key") {
-              canMemo = false;
-            }
-          } catch (_error) {
-            translated = chunk.slice();
-            canMemo = false;
-          }
-          chunk.forEach((text, idx) => {
-            const key = `${tag}\n${text}`;
-            const raw = String(translated[idx] || text).trim() || text;
-            const value = applyUiTranslationFallback(tag, text, raw);
-            if (canMemo) {
-              uiTranslationMemo.set(key, value);
-            } else {
-              uiTranslationMemo.delete(key);
-            }
-          });
-        }
-      }
-      rows.forEach((text, idx) => {
-        if (!text) return;
-        const key = `${tag}\n${text}`;
-        out[idx] = uiTranslationMemo.get(key) || text;
-      });
-      return out;
+      return rows.map((text) => applyUiTranslationFallback(tag, text, text));
     }
 
     function updateLangSwitcherUi() {
@@ -207,7 +118,9 @@
       if (mode === "building") {
         const percent = Number(progress?.percent || 0);
         const remaining = Number(progress?.remaining || 0);
-        const suffix = percent > 0 ? `${percent}% / 剩 ${remaining}` : "建置中";
+        const remainingLabel = currentUiLang === "en" ? "remaining" : (currentUiLang === "ko" ? "남음" : "剩");
+        const buildingLabel = currentUiLang === "en" ? "building" : (currentUiLang === "ko" ? "빌드 중" : "建置中");
+        const suffix = percent > 0 ? `${percent}% / ${remainingLabel} ${remaining}` : buildingLabel;
         setLangBuildStatus(`${langDisplayName(lang)} ${suffix}`, "working");
         langFeedRefreshTimer = window.setTimeout(() => {
           if (normalizeUiLang(currentUiLang) === lang) {
@@ -246,62 +159,11 @@
         });
         return;
       }
-      const tag = normalizeUiLang(currentUiLang);
-      pruneNoopTranslationMemo(tag);
-      const missing = [];
-      const missingSet = new Set();
-      const nodeOriginals = new Map();
+      const translated = await translateTextsForUi(currentUiLang, originals);
+      if (version !== uiTranslateVersion) return;
       nodes.forEach((node, idx) => {
-        const original = String(originals[idx] || "");
-        nodeOriginals.set(node, original);
-        if (!original) return;
-        const key = `${tag}\n${original}`;
-        const cached = uiTranslationMemo.get(key);
-        if (cached) {
-          node.nodeValue = cached;
-          return;
-        }
-        const immediate = applyUiTranslationFallback(tag, original, original);
-        if (immediate && immediate !== original) {
-          uiTranslationMemo.set(key, immediate);
-          node.nodeValue = immediate;
-          return;
-        }
-        if (!missingSet.has(original)) {
-          missingSet.add(original);
-          missing.push(original);
-        }
+        node.nodeValue = String(translated[idx] || originals[idx] || "");
       });
-      const chunkSize = 80;
-      for (let i = 0; i < missing.length; i += chunkSize) {
-        if (version !== uiTranslateVersion) return;
-        const chunk = missing.slice(i, i + chunkSize);
-        let translated = [];
-        let canMemo = true;
-        try {
-          const result = await requestTranslateTexts(tag, chunk);
-          translated = result.items;
-          if (result.mode === "no-key") canMemo = false;
-        } catch (_error) {
-          translated = chunk.slice();
-          canMemo = false;
-        }
-        const chunkSet = new Set(chunk);
-        chunk.forEach((text, idx) => {
-          const key = `${tag}\n${text}`;
-          const raw = String(translated[idx] || text).trim() || text;
-          const value = applyUiTranslationFallback(tag, text, raw);
-          if (canMemo) uiTranslationMemo.set(key, value);
-          else uiTranslationMemo.delete(key);
-        });
-        if (version !== uiTranslateVersion) return;
-        nodes.forEach((node) => {
-          const original = nodeOriginals.get(node) || "";
-          if (!chunkSet.has(original)) return;
-          const key = `${tag}\n${original}`;
-          node.nodeValue = uiTranslationMemo.get(key) || original;
-        });
-      }
     }
 
     function setupLanguageSwitcher() {
@@ -313,14 +175,20 @@
         if (next === currentUiLang) return;
         saveUiLang(next);
         updateLangSwitcherUi();
-        setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
         applyUiLanguage().catch(() => {});
+        const cached = intelFeedLangCache.get(next);
+        if (cached) {
+          renderIntelFeed(cached);
+          scheduleLangFeedRefresh(cached);
+        } else {
+          setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
+        }
         refreshIntelFeedForCurrentLang()
           .then(() => {
             setLangBuildStatus("");
             applyUiLanguage().catch(() => {});
           })
-          .catch((error) => setIntelMessage(`語言資料刷新失敗：${String(error?.message || error)}`, "error"));
+          .catch((error) => setIntelMessage(`Language feed refresh failed: ${String(error?.message || error)}`, "error"));
         refreshPokemonNews(false).catch(() => {});
       });
     }
@@ -485,13 +353,14 @@
 
     function routeLabelName(label) {
       const map = {
-        events: "活動",
-        official: "官方",
+        events: uiLabel("event"),
+        event: uiLabel("event"),
+        official: uiLabel("official"),
         sbt: "SBT",
-        pokemon: "寶可夢",
-        alpha: "未來 Alpha",
-        tools: "工具",
-        other: "社群精選",
+        pokemon: uiLabel("pokemon"),
+        alpha: uiLabel("alpha"),
+        tools: uiLabel("tools"),
+        other: uiLabel("other"),
       };
       return map[String(label || "").trim()] || "";
     }
@@ -522,12 +391,12 @@
 
     function structuredSlots(card, leadText = "") {
       const dt = resolveExplicitTimelineDate(card);
-      let whenText = dt ? toPosterDate(dt.toISOString()) : "待官方公告";
+      let whenText = dt ? toPosterDate(dt.toISOString()) : uiLabel("officialPending");
       if (!dt && hasLiveReleaseSignal(card)) {
         const pub = String(card?.published_at || "").trim();
-        whenText = pub ? `${toPosterDate(pub)}（已上線）` : "已上線";
+        whenText = pub ? `${toPosterDate(pub)} (${uiLabel("liveReleased")})` : uiLabel("liveReleased");
       }
-      const whatText = truncateText(cleanMasterTitle(card?.title || leadText || "更新內容待補充"), 68);
+      const whatText = truncateText(cleanMasterTitle(card?.title || leadText || uiLabel("updatePending")), 68);
       const textBlob = cardTextBlob(card);
       const thresholdMatch = textBlob.match(/top\s*40%[^0-9]{0,6}(\d{2,5}).*top\s*10%[^0-9]{0,6}(\d{2,5}).*top\s*1%[^0-9]{0,6}(\d{2,5})/i);
       const isThresholdUpdate = /threshold|snapshot|top\s*\d+%/.test(textBlob) && /sbt|points|積分/.test(textBlob);
@@ -545,15 +414,15 @@
 
       let impact = details.find((x) => /(影響|受影響|提升|降低|改變|風險|安全|效率)/.test(String(x)));
       if (!impact) impact = cleanMasterSummary(card?.summary || "");
-      if (!impact) impact = String(leadText || "影響範圍待官方補充。");
+      if (!impact) impact = String(leadText || uiLabel("audiencePending"));
       impact = truncateText(String(impact).replace(/^(可能影響|影響|重點在)[:：]\s*/u, ""), 78);
 
       let action = details.find((x) => /(下一步|你要做什麼|建議|先|設定頁|報名|參與|留意|關注|確認)/.test(String(x)));
       if (!action) {
         const join = String(card?.event_facts?.participation || "").trim();
-        if (join) action = `先完成 ${join}，再留意官方下一則公告。`;
+        if (join) action = `${uiLabel("joinMethod")}: ${join}`;
       }
-      if (!action) action = "先確認開放條件與時間，再決定是否提前準備。";
+      if (!action) action = uiLabel("alphaCheckConditions");
       action = truncateText(String(action).replace(/^(下一步|你要做什麼|建議)[:：]\s*/u, ""), 78);
 
       if (isThresholdUpdate) {
@@ -571,7 +440,7 @@
             whenText = truncateText(String(snap).replace(/^(快照時間|時間節點|時間與地點)[:：]\s*/u, ""), 42);
           }
         }
-        action = "快照前持續拉分，快照後核對官方最終門檻與 SBT 等級。";
+        action = uiLabel("snapshotAction");
       }
 
       const factSchedule = String(card?.event_facts?.schedule || "").trim();
@@ -580,33 +449,33 @@
       const factJoin = String(card?.event_facts?.participation || "").trim();
 
       if (isAlpha) {
-        const alphaAction = hasSbtLabel && sbtHowToGet ? `SBT 取得方式：${sbtHowToGet}` : (action || "先確認開放條件與時間");
+        const alphaAction = hasSbtLabel && sbtHowToGet ? `${uiLabel("sbtAcquisition")}: ${sbtHowToGet}` : (action || uiLabel("alphaCheckConditions"));
         return {
-          title: "Alpha 四格整理",
+          title: uiLabel("alphaSlots"),
           slots: [
-            { label: "何時上線", value: whenText || "待官方公告" },
-            { label: "改了什麼", value: whatText || "更新內容待補充" },
-            { label: "影響誰", value: impact || "影響對象待官方補充" },
-            { label: "先做什麼", value: alphaAction },
+            { label: uiLabel("whenOnline"), value: whenText || uiLabel("officialPending") },
+            { label: uiLabel("whatChanged"), value: whatText || uiLabel("updatePending") },
+            { label: uiLabel("affected"), value: impact || uiLabel("audiencePending") },
+            { label: uiLabel("nextFirst"), value: alphaAction },
           ],
         };
       }
 
       if (cardType === "event") {
-        const place = truncateText(factLocation || details.find((x) => /(地點|場地|venue|hong kong|香港|discord|線上)/i.test(String(x))) || "待官方補充", 68);
-        let reward = truncateText(factReward || details.find((x) => /(獎勵|reward|sbt|積分|airdrop|周邊)/i.test(String(x))) || "以原文公告為準", 72);
-        let next = truncateText(factJoin ? `先完成 ${factJoin}` : (action || "先確認參與方式與截止時間"), 76);
+        const place = truncateText(factLocation || details.find((x) => /(地點|場地|venue|hong kong|香港|discord|線上)/i.test(String(x))) || uiLabel("tbdOfficial"), 68);
+        let reward = truncateText(factReward || details.find((x) => /(獎勵|reward|sbt|積分|airdrop|周邊)/i.test(String(x))) || uiLabel("basisFromSource"), 72);
+        let next = truncateText(factJoin ? `${uiLabel("joinMethod")}: ${factJoin}` : (action || uiLabel("alphaCheckConditions")), 76);
         if (hasSbtLabel) {
-          if (!/(sbt|soulbound)/i.test(reward)) reward = "SBT（依官方條件發放）";
-          if (sbtHowToGet) next = truncateText(`SBT 取得方式：${sbtHowToGet}`, 82);
+          if (!/(sbt|soulbound)/i.test(reward)) reward = `SBT (${uiLabel("basisFromSource")})`;
+          if (sbtHowToGet) next = truncateText(`${uiLabel("sbtAcquisition")}: ${sbtHowToGet}`, 82);
         }
         return {
-          title: "活動四格整理",
+          title: uiLabel("eventSlots"),
           slots: [
-            { label: "何時參加", value: truncateText(factSchedule || whenText || "請看原文時間", 62) },
-            { label: "在哪參加", value: place },
-            { label: "你能拿到", value: reward },
-            { label: "先做什麼", value: next },
+            { label: uiLabel("whenJoin"), value: truncateText(factSchedule || whenText || uiLabel("seeSourceTime"), 62) },
+            { label: uiLabel("whereJoin"), value: place },
+            { label: uiLabel("rewardGet"), value: reward },
+            { label: uiLabel("nextFirst"), value: next },
           ],
         };
       }
@@ -614,41 +483,41 @@
       if (cardType === "market") {
         const numberLine = truncateText(
           details.find((x) => /(數字|成交|售價|價格|美元|usdt|ntd|%|volume|market)/i.test(String(x)))
-            || "請看原文中的價格/成交/規模資訊",
+            || uiLabel("seeSourcePrice"),
           74,
         );
         return {
-          title: "市場四格整理",
+          title: uiLabel("marketSlots"),
           slots: [
-            { label: "核心事件", value: truncateText(whatText || leadText || "市場更新", 72) },
-            { label: "關鍵數字", value: numberLine },
-            { label: "影響面", value: truncateText(impact || "影響社群對短期市場方向的判讀", 76) },
-            { label: "先做什麼", value: truncateText(action || "比對多來源後再做決策", 76) },
+            { label: uiLabel("coreEvent"), value: truncateText(whatText || leadText || uiLabel("marketUpdate"), 72) },
+            { label: uiLabel("keyNumber"), value: numberLine },
+            { label: uiLabel("impact"), value: truncateText(impact || uiLabel("marketImpact"), 76) },
+            { label: uiLabel("nextFirst"), value: truncateText(action || uiLabel("compareSourcesFirst"), 76) },
           ],
         };
       }
 
       if (cardType === "report") {
-        const diff = truncateText(details.find((x) => /(優點|缺點|差異|比較|方案|成本)/.test(String(x))) || "重點在比較不同方案差異", 76);
-        const audience = truncateText(details.find((x) => /(適合|對象|玩家|新手|使用者|社群)/.test(String(x))) || "適合需要快速選方案的人", 72);
+        const diff = truncateText(details.find((x) => /(優點|缺點|差異|比較|方案|成本)/.test(String(x))) || uiLabel("comparePlanDiff"), 76);
+        const audience = truncateText(details.find((x) => /(適合|對象|玩家|新手|使用者|社群)/.test(String(x))) || uiLabel("planAudience"), 72);
         return {
-          title: "工具/攻略四格整理",
+          title: uiLabel("reportSlots"),
           slots: [
-            { label: "在比較什麼", value: truncateText(whatText || "方案比較", 72) },
-            { label: "重點差異", value: diff },
-            { label: "適合誰", value: audience },
-            { label: "先做什麼", value: truncateText(action || "先依預算與時程選一個方案試跑", 76) },
+            { label: uiLabel("compareWhat"), value: truncateText(whatText || uiLabel("compareWhat"), 72) },
+            { label: uiLabel("keyDiff"), value: diff },
+            { label: uiLabel("audienceFit"), value: audience },
+            { label: uiLabel("nextFirst"), value: truncateText(action || uiLabel("budgetTrial"), 76) },
           ],
         };
       }
 
       return {
-        title: "重點四格整理",
+        title: uiLabel("generalSlots"),
         slots: [
-          { label: "核心主題", value: truncateText(whatText || leadText || "內容待補充", 72) },
-          { label: "當下脈絡", value: truncateText(whenText || "近期更新", 64) },
-          { label: "對你的影響", value: truncateText(impact || "作為社群觀察與後續追蹤依據", 76) },
-          { label: "下一步", value: truncateText(action || "先看原文，再追同帳號後續更新", 76) },
+          { label: uiLabel("coreTopic"), value: truncateText(whatText || leadText || uiLabel("contentPending"), 72) },
+          { label: uiLabel("contextNow"), value: truncateText(whenText || uiLabel("recentUpdate"), 64) },
+          { label: uiLabel("yourImpact"), value: truncateText(impact || uiLabel("communityTrackingBasis"), 76) },
+          { label: uiLabel("nextStep"), value: truncateText(action || uiLabel("followSameAccount"), 76) },
         ],
       };
     }
@@ -659,7 +528,7 @@
       if (!slots.length) return "";
       return `
         <div>
-          <div class="intel-detail-block-title">${escapeHtml(String(structured?.title || "重點四格整理"))}</div>
+          <div class="intel-detail-block-title">${escapeHtml(String(structured?.title || uiLabel("generalSlots")))}</div>
           <div class="intel-alpha-slots">
             ${slots.slice(0, 4).map((row) => `
               <article class="intel-alpha-slot">
@@ -677,13 +546,13 @@
       const account = String(card?.account || "source").trim();
       const publish = toLocalTime(card?.published_at);
       const eventText = card?.timeline_date ? toPosterDate(card.timeline_date) : "--";
-      const title = cleanMasterTitle(card?.title || "未命名貼文");
+      const title = cleanMasterTitle(card?.title || uiLabel("unnamedPost"));
       const glance = cardPrimaryHighlight(card);
       const summary = cleanMasterSummary(card?.summary || "");
       const cover = String(card?.cover_image || "").trim();
       const coverHtml = /^https?:\/\//i.test(cover)
         ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" />`
-        : `<div class="intel-detail-cover-empty">此貼文沒有可用圖片，仍可看下方完整整理。</div>`;
+        : `<div class="intel-detail-cover-empty">${escapeHtml(uiLabel("noImage"))}</div>`;
       const bullets = Array.isArray(card?.bullets) ? card.bullets.filter((x) => String(x || "").trim()).slice(0, 8) : [];
       const normalizedBullets = [];
       const seenBullets = new Set();
@@ -697,9 +566,9 @@
       });
       const bulletHtml = normalizedBullets.length
         ? `<ul class="intel-detail-list">${normalizedBullets.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-        : `<p class="intel-summary">目前沒有可用重點條列。</p>`;
+        : `<p class="intel-summary">${escapeHtml(uiLabel("noHighlights"))}</p>`;
       const summaryLead = summary.split("。").map((x) => String(x || "").trim()).find((x) => x) || "";
-      const leadText = summaryLead || normalizeKeylineText(glance) || "目前沒有可用摘要，請看原始貼文。";
+      const leadText = summaryLead || normalizeKeylineText(glance) || uiLabel("detailFallbackLead");
       const rawDetailSummary = cleanMasterSummary(card?.detail_summary || "");
       const detailSummary = rawDetailSummary && rawDetailSummary !== summary
         ? rawDetailSummary
@@ -716,32 +585,32 @@
         normalizedDetailLines.push(text);
       });
       if (!normalizedDetailLines.length) {
-        if (leadText) normalizedDetailLines.push(`事件背景：${leadText}`);
+        if (leadText) normalizedDetailLines.push(`${uiLabel("eventBackground")}: ${leadText}`);
         const facts = card?.event_facts || {};
         const scheduleText = String(facts?.schedule || "").trim() || (eventText !== "--" ? eventText : "");
         const locationText = String(facts?.location || "").trim();
         if (scheduleText || locationText) {
-          normalizedDetailLines.push(`時間地點：${[scheduleText, locationText].filter(Boolean).join("／")}`);
+          normalizedDetailLines.push(`${uiLabel("timeLocation")}: ${[scheduleText, locationText].filter(Boolean).join(" / ")}`);
         }
         const rewardText = String(facts?.reward || "").trim();
-        if (rewardText) normalizedDetailLines.push(`獎勵與誘因：${rewardText}`);
+        if (rewardText) normalizedDetailLines.push(`${uiLabel("rewardIncentive")}: ${rewardText}`);
         const joinText = String(facts?.participation || "").trim();
-        if (joinText) normalizedDetailLines.push(`參與方式：${joinText}`);
+        if (joinText) normalizedDetailLines.push(`${uiLabel("joinMethod")}: ${joinText}`);
         const impactHint = normalizeKeylineText(card?.glance || "");
-        if (impactHint) normalizedDetailLines.push(`可能影響：${impactHint}`);
-        normalizedDetailLines.push("下一步：先看原文確認規則、時間與限制，再決定是否參與。");
+        if (impactHint) normalizedDetailLines.push(`${uiLabel("possibleImpact")}: ${impactHint}`);
+        normalizedDetailLines.push(`${uiLabel("nextStep")}: ${uiLabel("sourceRulesFirst")}`);
       }
       const detailHtml = normalizedDetailLines.length
         ? `<ul class="intel-detail-list">${normalizedDetailLines.slice(0, 6).map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-        : `<p class="intel-summary">目前沒有可用的展開整理。</p>`;
+        : `<p class="intel-summary">${escapeHtml(uiLabel("noExpanded"))}</p>`;
       const eventFactsHtml = renderEventFactsHtml(card);
       const labels = Array.isArray(card?.route_labels) ? card.route_labels : [];
       const tagHtml = labels.length
-        ? `<div class="intel-detail-tags">${labels.map((x) => `<span class="intel-detail-tag">${escapeHtml(routeLabelName(x) || String(x))}</span>`).join("")}</div>`
+        ? `<div class="intel-detail-tags">${labels.map((x) => `<span class="intel-detail-tag">${escapeHtml(routeLabelName(x) || translateDisplayLabel(x) || String(x))}</span>`).join("")}</div>`
         : "";
       const url = String(card?.url || "").trim();
       const sourceHtml = url
-        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">原始來源</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
+        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
       const summaryBlock = (summary && !summary.startsWith(leadText) && !leadText.startsWith(summary))
         ? `<p class="intel-summary">${escapeHtml(summary)}</p>`
@@ -750,25 +619,25 @@
       return `
         <div class="intel-detail-top">
           <span class="intel-detail-kicker">@${escapeHtml(account)} · ${escapeHtml(typeLabel)}</span>
-          <span class="intel-detail-time">發布 ${escapeHtml(publish)} · 事件 ${escapeHtml(eventText)}</span>
+          <span class="intel-detail-time">${escapeHtml(uiLabel("published"))} ${escapeHtml(publish)} · ${escapeHtml(uiLabel("eventDate"))} ${escapeHtml(eventText)}</span>
         </div>
         <div class="intel-detail-cover">${coverHtml}</div>
         <h3 class="intel-detail-title">${escapeHtml(title)}</h3>
         <div class="intel-detail-grid">
           <section class="intel-detail-section">
-            <div class="intel-detail-block-title">一句話重點</div>
+            <div class="intel-detail-block-title">${escapeHtml(uiLabel("oneLine"))}</div>
             <p class="intel-detail-glance">${escapeHtml(leadText)}</p>
             ${summaryBlock}
-            ${eventFactsHtml ? `<div><div class="intel-detail-block-title">活動資訊</div><div class="intel-detail-facts">${eventFactsHtml}</div></div>` : ""}
-            <div class="intel-detail-block-title">快速重點</div>
+            ${eventFactsHtml ? `<div><div class="intel-detail-block-title">${escapeHtml(uiLabel("eventInfo"))}</div><div class="intel-detail-facts">${eventFactsHtml}</div></div>` : ""}
+            <div class="intel-detail-block-title">${escapeHtml(uiLabel("quickPoints"))}</div>
             ${bulletHtml}
           </section>
           <section class="intel-detail-section">
             ${alphaSlotsBlock}
-            <div class="intel-detail-block-title">AI 深入整理</div>
+            <div class="intel-detail-block-title">${escapeHtml(uiLabel("aiDeepDive"))}</div>
             ${detailSummary ? `<p class="intel-summary">${escapeHtml(detailSummary)}</p>` : ""}
             ${detailHtml}
-            ${tagHtml ? `<div><div class="intel-detail-block-title">分類標籤</div>${tagHtml}</div>` : ""}
+            ${tagHtml ? `<div><div class="intel-detail-block-title">${escapeHtml(uiLabel("categoryTags"))}</div>${tagHtml}</div>` : ""}
           </section>
         </div>
         ${sourceHtml}
@@ -796,31 +665,31 @@
     }
 
     function pokemonNewsDetailHtml(item) {
-      const title = String(item?.summary_title || item?.title || "未命名消息").trim();
+      const title = String(item?.summary_title || item?.title || uiLabel("unnamedPost")).trim();
       const summary = String(item?.summary || "").trim();
       const source = String(item?.source || "unknown").trim();
       const dateText = String(item?.date || "").trim();
       const points = Array.isArray(item?.key_points) ? item.key_points.filter((x) => String(x || "").trim()).slice(0, 6) : [];
       const pointHtml = points.length
         ? `<ul class="intel-detail-list">${points.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-        : `<p class="intel-summary">目前沒有可顯示重點。</p>`;
+        : `<p class="intel-summary">${escapeHtml(uiLabel("noPokemonPoints"))}</p>`;
       const detailLines = Array.isArray(item?.detail_lines) ? item.detail_lines.filter((x) => String(x || "").trim()).slice(0, 6) : [];
       const detailHtml = detailLines.length
         ? `<ul class="intel-detail-list">${detailLines.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
         : "";
       const url = String(item?.url || "").trim();
       const sourceHtml = url
-        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">原始來源</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
+        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${uiLabel("originalSource")}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
       return `
         <div class="intel-detail-top">
-          <span class="intel-detail-kicker">寶可夢最新消息 · ${escapeHtml(source)}</span>
+          <span class="intel-detail-kicker">${escapeHtml(uiLabel("pokemonNews"))} · ${escapeHtml(source)}</span>
           <span class="intel-detail-time">${escapeHtml(dateText || "--")}</span>
         </div>
         <h3 class="intel-detail-title">${escapeHtml(title)}</h3>
         ${summary ? `<p class="intel-detail-glance">${escapeHtml(summary)}</p>` : ""}
-        <div><div class="intel-detail-block-title">重點摘要</div>${pointHtml}</div>
-        ${detailHtml ? `<div><div class="intel-detail-block-title">完整整理</div>${detailHtml}</div>` : ""}
+        <div><div class="intel-detail-block-title">${escapeHtml(uiLabel("keySummary"))}</div>${pointHtml}</div>
+        ${detailHtml ? `<div><div class="intel-detail-block-title">${escapeHtml(uiLabel("fullSummary"))}</div>${detailHtml}</div>` : ""}
         ${sourceHtml}
       `;
     }
@@ -929,6 +798,11 @@
 
     function renderIntelFeed(payload) {
       intelFeedCache = payload && typeof payload === "object" ? payload : null;
+      const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
+      const i18nMode = String(payload?._i18n?.mode || "");
+      if (intelFeedCache && i18nMode !== "building") {
+        intelFeedLangCache.set(payloadLang, intelFeedCache);
+      }
       const generatedAt = document.getElementById("intel-generated-at");
       const latestSourceAt = document.getElementById("intel-latest-source-at");
       const cardCount = document.getElementById("intel-card-count");
@@ -983,12 +857,12 @@
       cardCount.textContent = String(payload?.total_cards || cards.length || 0);
       accountCount.textContent = String(activeAccounts.size);
       headline.textContent = String(digest.headline || "Spring AI 關鍵情報總結");
-      conclusion.textContent = String(digest.conclusion || "尚未取得可顯示摘要。");
+      conclusion.textContent = String(digest.conclusion || uiLabel("noExpanded"));
 
       takeaways.innerHTML = "";
       const tips = Array.isArray(digest.takeaways) && digest.takeaways.length
         ? digest.takeaways.slice(0, 3)
-        : ["尚未取得三條結論，請先同步資料。"];
+        : [uiLabel("noHighlights")];
       tips.forEach((tip) => {
         const li = document.createElement("li");
         li.textContent = String(tip);
@@ -1055,7 +929,7 @@
       } else {
         const item = document.createElement("span");
         item.className = "intel-tag";
-        item.textContent = "尚無來源統計";
+        item.textContent = uiLabel("noHighlights");
         sourceStatus.appendChild(item);
       }
 
@@ -1072,7 +946,7 @@
         } else {
           const chip = document.createElement("span");
           chip.className = "intel-tag";
-          chip.textContent = "尚未產生關鍵詞";
+          chip.textContent = uiLabel("noHighlights");
           keyTerms.appendChild(chip);
         }
       }
@@ -1084,7 +958,7 @@
           templates.forEach((tpl) => {
             const div = document.createElement("div");
             div.className = "intel-template-item";
-            const name = String(tpl?.name || tpl?.id || "未命名模板");
+            const name = String(tpl?.name || tpl?.id || uiLabel("unnamedPost"));
             const useFor = String(tpl?.for || "");
             div.innerHTML = `<div class="intel-template-name">${escapeHtml(name)}</div><div class="intel-template-for">${escapeHtml(useFor)}</div>`;
             formatTemplates.appendChild(div);
@@ -1092,19 +966,19 @@
         } else {
           const div = document.createElement("div");
           div.className = "intel-template-item";
-          div.innerHTML = `<div class="intel-template-name">固定模板</div><div class="intel-template-for">活動海報 / 市場訊號 / 公告時間線 / 社群觀點</div>`;
+          div.innerHTML = `<div class="intel-template-name">${escapeHtml(uiLabel("generalSlots"))}</div><div class="intel-template-for">${escapeHtml([uiLabel("event"), uiLabel("market"), uiLabel("announcement"), uiLabel("insight")].join(" / "))}</div>`;
           formatTemplates.appendChild(div);
         }
       }
 
       if (officialOverviewTitle && officialOverviewSummary && officialOverviewBullets) {
-        officialOverviewTitle.textContent = String(officialOverview?.title || "近 7 天官方總結");
-        officialOverviewSummary.textContent = String(officialOverview?.summary || "目前尚未抓到足夠的官方更新資料。");
+        officialOverviewTitle.textContent = String(officialOverview?.title || uiLabel("official"));
+        officialOverviewSummary.textContent = String(officialOverview?.summary || uiLabel("noHighlights"));
         officialOverviewBullets.innerHTML = "";
         const rows = Array.isArray(officialOverview?.bullets) ? officialOverview.bullets.slice(0, 4) : [];
         if (!rows.length) {
           const li = document.createElement("li");
-          li.textContent = "目前沒有可顯示的官方重點。";
+          li.textContent = uiLabel("noHighlights");
           officialOverviewBullets.appendChild(li);
         } else {
           rows.forEach((text) => {
@@ -1116,10 +990,10 @@
       }
 
       const eventsByPublished = sortCardsByTimeDesc(routed.events || []);
-      renderSectionList(officialList, cardsToSectionItems(routed.official), "目前無可用官方重點");
-      renderSectionList(eventsList, cardsToSectionItems(eventsByPublished), "目前無可用活動重點");
-      renderSectionList(featuresList, cardsToSectionItems(alphaFutureCards), "目前尚未偵測到即將開放功能");
-      renderSectionList(communityList, cardsToSectionItems(routed.other), "目前無可用社群焦點");
+      renderSectionList(officialList, cardsToSectionItems(routed.official), uiLabel("noHighlights"));
+      renderSectionList(eventsList, cardsToSectionItems(eventsByPublished), uiLabel("noHighlights"));
+      renderSectionList(featuresList, cardsToSectionItems(alphaFutureCards), uiLabel("noHighlights"));
+      renderSectionList(communityList, cardsToSectionItems(routed.other), uiLabel("noHighlights"));
       const timelineCards = [];
       const timelineSeen = new Set();
       eventsByPublished.forEach((card) => {
@@ -1129,9 +1003,9 @@
         timelineCards.push(card);
       });
       renderMasterTimeline({ cards: timelineCards });
-      renderAgendaList(growthList, agenda?.growth_signals, "目前無顯著增長訊號");
+      renderAgendaList(growthList, agenda?.growth_signals, uiLabel("noHighlights"));
       const officialAgenda = routed.official.slice(0, 6).map((card) => ({
-        label: "官方",
+        label: uiLabel("official"),
         urgency: String(card?.card_type || "") === "announcement" ? "high" : "normal",
         headline: String(card?.title || ""),
         glance: String(card?.glance || card?.summary || ""),
@@ -1139,15 +1013,15 @@
         url: String(card?.url || ""),
         published_at: card?.published_at,
       }));
-      renderAgendaList(recentList, officialAgenda, "近期無官方高訊號更新");
+      renderAgendaList(recentList, officialAgenda, uiLabel("noHighlights"));
 
-      renderCardGrid("intel-events-cards", "intel-events-empty", eventsByPublished, "目前沒有可顯示的活動貼文。");
-      renderCardGrid("intel-cards", "intel-empty", routed.official, "目前沒有可顯示的官方貼文。");
-      renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, "目前沒有 SBT 相關貼文。");
-      renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, "目前沒有寶可夢相關貼文。");
-      renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, "目前沒有未來功能 / Alpha 相關貼文。");
-      renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, "目前沒有工具或攻略貼文。");
-      renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, "目前沒有落在其他分類的貼文。");
+      renderCardGrid("intel-events-cards", "intel-events-empty", eventsByPublished, uiLabel("noHighlights"));
+      renderCardGrid("intel-cards", "intel-empty", routed.official, uiLabel("noHighlights"));
+      renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
+      renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
+      renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, uiLabel("noHighlights"));
+      renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, uiLabel("noHighlights"));
+      renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
       markLocalizedDynamicRegions();
       updateIntelAuthUi();
       applyUiLanguage().catch(() => {});
@@ -1187,6 +1061,24 @@
       renderIntelFeed(payload);
       scheduleLangFeedRefresh(payload);
       return payload;
+    }
+
+    function prefetchIntelFeeds() {
+      if (location.protocol === "file:") return;
+      const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
+      langs.forEach((lang, index) => {
+        window.setTimeout(() => {
+          if (intelFeedLangCache.has(lang)) return;
+          fetchIntelFeed(lang)
+            .then((payload) => {
+              const mode = String(payload?._i18n?.mode || "");
+              if (payload && mode !== "building") {
+                intelFeedLangCache.set(lang, payload);
+              }
+            })
+            .catch(() => {});
+        }, 900 + index * 900);
+      });
     }
 
     async function postIntel(path, body) {
@@ -1469,10 +1361,10 @@
       const rows = Array.isArray(payload?.items) ? payload.items : [];
       pokemonNewsItemsState = rows.slice(0, 8);
       if (!rows.length) {
-        listEl.innerHTML = `<article class="pokemon-news-card"><p class="pokemon-news-summary">目前沒有可顯示的最新消息。</p></article>`;
+        listEl.innerHTML = `<article class="pokemon-news-card"><p class="pokemon-news-summary">${escapeHtml(uiLabel("noPokemonNews"))}</p></article>`;
       } else {
         listEl.innerHTML = rows.slice(0, 8).map((item, index) => {
-          const title = String(item?.summary_title || item?.title || item?.url || "未命名消息");
+          const title = String(item?.summary_title || item?.title || item?.url || uiLabel("unnamedPost"));
           const url = String(item?.url || "");
           const source = String(item?.source || "").trim() || "unknown";
           const dateText = String(item?.date || "").trim();
@@ -1486,7 +1378,7 @@
             ? `<a class="pokemon-news-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
             : `<div class="pokemon-news-title">${escapeHtml(title)}</div>`;
           const linkHtml = url.startsWith("http")
-            ? `<a class="pokemon-news-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">查看原文</a>`
+            ? `<a class="pokemon-news-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>`
             : "";
           return `
             <article class="pokemon-news-card" data-pokemon-news-index="${index}">
@@ -1497,7 +1389,7 @@
               ${titleHtml}
               ${summary ? `<p class="pokemon-news-summary">${escapeHtml(summary)}</p>` : ""}
               ${pointHtml}
-              <p class="pokemon-news-summary">點擊卡片可看完整整理。</p>
+              <p class="pokemon-news-summary">${escapeHtml(uiLabel("clickCardFull"))}</p>
               ${linkHtml}
             </article>
           `;
@@ -1506,21 +1398,21 @@
       const generatedAt = toLocalTime(payload?.generated_at);
       const lang = String(payload?.lang || document.documentElement.lang || "zh-Hant").trim();
       const mode = String(payload?.summary_mode || "ai").trim();
-      const modeLabel = mode.startsWith("ai") ? "AI整理" : "基礎整理";
+      const modeLabel = mode.startsWith("ai") ? uiLabel("aiOrganized") : uiLabel("basicOrganized");
       const providerRaw = String(payload?.provider || "minimax_cli_search").trim();
       const providerLabel = providerRaw === "minimax_mcp_web_search"
         ? "MiniMax MCP web_search"
         : (providerRaw === "minimax_cli_search" || providerRaw === "mmx" ? "MiniMax CLI Search" : providerRaw);
-      const cachedLabel = payload?.cached ? " · 快取" : " · 即時";
+      const cachedLabel = payload?.cached ? ` · ${uiLabel("cached")}` : ` · ${uiLabel("realtime")}`;
       const refreshing = Boolean(payload?.refreshing);
-      const refreshingLabel = refreshing ? " · 背景更新中" : "";
+      const refreshingLabel = refreshing ? ` · ${uiLabel("backgroundUpdating")}` : "";
       const nextRefreshAt = toLocalTime(payload?.next_refresh_at);
-      const nextLabel = nextRefreshAt && nextRefreshAt !== "--" ? ` · 下次 ${nextRefreshAt}` : "";
+      const nextLabel = nextRefreshAt && nextRefreshAt !== "--" ? ` · ${uiLabel("nextRefresh")} ${nextRefreshAt}` : "";
       const warning = String(payload?.warning || "").trim();
       const pendingMsg = String(payload?.message || "").trim();
       metaEl.textContent = warning
-        ? `來源：${providerLabel} · ${modeLabel} · 語言 ${lang} · 更新 ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel} · ${warning}`
-        : `來源：${providerLabel} · ${modeLabel} · 語言 ${lang} · 更新 ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel}${pendingMsg ? ` · ${pendingMsg}` : ""}`;
+        ? `${uiLabel("source")}: ${providerLabel} · ${modeLabel} · ${uiLabel("language")} ${lang} · ${uiLabel("updated")} ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel} · ${warning}`
+        : `${uiLabel("source")}: ${providerLabel} · ${modeLabel} · ${uiLabel("language")} ${lang} · ${uiLabel("updated")} ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel}${pendingMsg ? ` · ${pendingMsg}` : ""}`;
       markLocalizedDynamicRegions();
       applyUiLanguage().catch(() => {});
     }
@@ -1529,8 +1421,8 @@
       const metaEl = document.getElementById("pokemon-news-meta");
       if (metaEl) {
         metaEl.textContent = force
-          ? "來源：MiniMax NewsAgent · 正在更新最新消息..."
-          : "來源：MiniMax NewsAgent · 載入中...";
+          ? uiLabel("updatingNews")
+          : uiLabel("loadingNews");
       }
       const currentLang = String(document.documentElement.lang || navigator.language || "zh-Hant");
       const data = await postIntel("/api/intel/pokemon-news", {
@@ -1710,15 +1602,16 @@
     async function renderIntelOnLoad() {
       try {
         await refreshIntelFeedForCurrentLang();
+        prefetchIntelFeeds();
       } catch (error) {
-        setIntelMessage(`情報資料載入失敗：${error.message}`, "error");
+        setIntelMessage(`Intel feed failed: ${error.message}`, "error");
       }
       if (location.protocol !== "file:") {
         try {
           await refreshPokemonNews(false);
         } catch (error) {
           const metaEl = document.getElementById("pokemon-news-meta");
-          if (metaEl) metaEl.textContent = `來源：MiniMax NewsAgent · 載入失敗：${error.message}`;
+          if (metaEl) metaEl.textContent = `${uiLabel("source")}: MiniMax NewsAgent · ${error.message}`;
         }
       }
     }

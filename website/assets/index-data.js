@@ -284,6 +284,7 @@
     };
     const INTEL_API_BASE_STORAGE_KEY = "intel_api_base";
     let intelFeedCache = null;
+    const intelFeedLangCache = new Map();
     const intelAuthState = {
       ready: false,
       authRequired: true,
@@ -546,27 +547,35 @@
     }
 
     function currentTimelineBucket(dt) {
-      if (!dt || Number.isNaN(dt.valueOf())) return "未定";
+      if (!dt || Number.isNaN(dt.valueOf())) {
+        if (currentUiLang === "en") return "TBD";
+        if (currentUiLang === "ko") return "미정";
+        if (currentUiLang === "zh-Hans") return "未定";
+        return "未定";
+      }
       const now = new Date();
       now.setHours(0, 0, 0, 0);
       const target = new Date(dt);
       target.setHours(0, 0, 0, 0);
       const diff = Math.round((target - now) / 86400000);
-      if (diff > 0) return `未來 D-${diff}`;
-      if (diff === 0) return "今天";
+      if (diff > 0) {
+        if (currentUiLang === "en") return `Future D-${diff}`;
+        if (currentUiLang === "ko") return `예정 D-${diff}`;
+        return `未來 D-${diff}`;
+      }
+      if (diff === 0) {
+        if (currentUiLang === "en") return "Today";
+        if (currentUiLang === "ko") return "오늘";
+        return "今天";
+      }
+      if (currentUiLang === "en") return `Past D+${Math.abs(diff)}`;
+      if (currentUiLang === "ko") return `지난 D+${Math.abs(diff)}`;
       return `過往 D+${Math.abs(diff)}`;
     }
 
     function categoryLabel(cardType) {
-      const map = {
-        event: "活動",
-        feature: "即將功能",
-        announcement: "公告",
-        market: "市場",
-        report: "報告",
-        insight: "觀點",
-      };
-      return map[String(cardType || "")] || "資訊";
+      const raw = String(cardType || "").trim();
+      return uiLabel(raw) || uiLabel("intelligence");
     }
 
     function pickInitialMasterIndex(items) {
@@ -647,8 +656,490 @@
       insight: "觀點",
     };
 
+    const UI_LABELS = {
+      "zh-Hant": {
+        intelligence: "情報",
+        event: "活動",
+        market: "市場",
+        report: "報告",
+        announcement: "公告",
+        feature: "功能",
+        insight: "觀點",
+        official: "官方",
+        pokemon: "寶可夢",
+        alpha: "未來 Alpha",
+        tools: "工具",
+        other: "社群精選",
+        published: "發布",
+        eventDate: "事件",
+        sourceOriginal: "原文",
+        originalSource: "原始來源",
+        oneLine: "一句話重點",
+        eventInfo: "活動資訊",
+        quickPoints: "快速重點",
+        aiDeepDive: "AI 深入整理",
+        categoryTags: "分類標籤",
+        keep: "保留",
+        kept: "已保留",
+        pin: "頂選",
+        pinned: "已頂選",
+        bottom: "置底",
+        bottomed: "已置底",
+        exclude: "排除",
+        feedback: "回饋分類",
+        detail: "詳細",
+        unnamedTimeline: "未命名時間點",
+        unnamedPost: "未命名貼文",
+        noTimeline: "目前沒有可顯示的活動/功能時間軸資料。",
+        noHighlights: "目前沒有可用重點條列。",
+        noExpanded: "目前沒有可用的展開整理。",
+        noImage: "此貼文沒有可用圖片，仍可看下方完整整理。",
+        clickForDetail: "點開可查看完整 AI 整理、原文連結與圖片。",
+        alphaSlots: "Alpha 四格整理",
+        eventSlots: "活動四格整理",
+        marketSlots: "市場四格整理",
+        reportSlots: "工具/攻略四格整理",
+        generalSlots: "重點四格整理",
+        whenOnline: "何時上線",
+        whatChanged: "改了什麼",
+        affected: "影響誰",
+        nextFirst: "先做什麼",
+        whenJoin: "何時參加",
+        whereJoin: "在哪參加",
+        rewardGet: "你能拿到",
+        coreEvent: "核心事件",
+        keyNumber: "關鍵數字",
+        impact: "影響面",
+        compareWhat: "在比較什麼",
+        keyDiff: "重點差異",
+        audienceFit: "適合誰",
+        coreTopic: "核心主題",
+        contextNow: "當下脈絡",
+        yourImpact: "對你的影響",
+        nextStep: "下一步",
+        reward: "獎勵",
+        participation: "參與",
+        audience: "對象",
+        location: "地點",
+        schedule: "時間",
+        tbdOfficial: "待官方補充",
+        basisFromSource: "以原文公告為準",
+        seeSourceTime: "請看原文時間",
+        seeSourcePrice: "請看原文中的價格/成交/規模資訊",
+        marketUpdate: "市場更新",
+        marketImpact: "影響社群對短期市場方向的判讀",
+        compareSourcesFirst: "比對多來源後再做決策",
+        comparePlanDiff: "重點在比較不同方案差異",
+        planAudience: "適合需要快速選方案的人",
+        budgetTrial: "先依預算與時程選一個方案試跑",
+        contentPending: "內容待補充",
+        recentUpdate: "近期更新",
+        communityTrackingBasis: "作為社群觀察與後續追蹤依據",
+        followSameAccount: "先看原文，再追同帳號後續更新",
+        alphaCheckConditions: "先確認開放條件與時間",
+        officialPending: "待官方公告",
+        updatePending: "更新內容待補充",
+        audiencePending: "影響對象待官方補充",
+        liveReleased: "已上線",
+        sbtAcquisition: "SBT 取得方式",
+        snapshotAction: "快照前持續拉分，快照後核對官方最終門檻與 SBT 等級。",
+        detailFallbackLead: "目前沒有可用摘要，請看原始貼文。",
+        eventBackground: "事件背景",
+        timeLocation: "時間地點",
+        rewardIncentive: "獎勵與誘因",
+        joinMethod: "參與方式",
+        possibleImpact: "可能影響",
+        sourceRulesFirst: "先看原文確認規則、時間與限制，再決定是否參與。",
+        pokemonNews: "寶可夢最新消息",
+        keySummary: "重點摘要",
+        fullSummary: "完整整理",
+        noPokemonNews: "目前沒有可顯示的最新消息。",
+        noPokemonPoints: "目前沒有可顯示重點。",
+        clickCardFull: "點擊卡片可看完整整理。",
+        aiOrganized: "AI整理",
+        basicOrganized: "基礎整理",
+        source: "來源",
+        language: "語言",
+        updated: "更新",
+        cached: "快取",
+        realtime: "即時",
+        backgroundUpdating: "背景更新中",
+        nextRefresh: "下次",
+        loadingNews: "來源：MiniMax NewsAgent · 載入中...",
+        updatingNews: "來源：MiniMax NewsAgent · 正在更新最新消息...",
+      },
+      "zh-Hans": {
+        intelligence: "情报",
+        event: "活动",
+        market: "市场",
+        report: "报告",
+        announcement: "公告",
+        feature: "功能",
+        insight: "观点",
+        official: "官方",
+        pokemon: "宝可梦",
+        alpha: "未来 Alpha",
+        tools: "工具",
+        other: "社群精选",
+        published: "发布",
+        eventDate: "事件",
+        sourceOriginal: "原文",
+        originalSource: "原始来源",
+        oneLine: "一句话重点",
+        eventInfo: "活动信息",
+        quickPoints: "快速重点",
+        aiDeepDive: "AI 深入整理",
+        categoryTags: "分类标签",
+        keep: "保留",
+        kept: "已保留",
+        pin: "顶选",
+        pinned: "已顶选",
+        bottom: "置底",
+        bottomed: "已置底",
+        exclude: "排除",
+        feedback: "反馈分类",
+        detail: "详细",
+        unnamedTimeline: "未命名时间点",
+        unnamedPost: "未命名贴文",
+        noTimeline: "目前没有可显示的活动/功能时间轴资料。",
+        noHighlights: "目前没有可用重点条列。",
+        noExpanded: "目前没有可用的展开整理。",
+        noImage: "此贴文没有可用图片，仍可看下方完整整理。",
+        clickForDetail: "点开可查看完整 AI 整理、原文链接与图片。",
+        alphaSlots: "Alpha 四格整理",
+        eventSlots: "活动四格整理",
+        marketSlots: "市场四格整理",
+        reportSlots: "工具/攻略四格整理",
+        generalSlots: "重点四格整理",
+        whenOnline: "何时上线",
+        whatChanged: "改了什么",
+        affected: "影响谁",
+        nextFirst: "先做什么",
+        whenJoin: "何时参加",
+        whereJoin: "在哪参加",
+        rewardGet: "你能拿到",
+        coreEvent: "核心事件",
+        keyNumber: "关键数字",
+        impact: "影响面",
+        compareWhat: "在比较什么",
+        keyDiff: "重点差异",
+        audienceFit: "适合谁",
+        coreTopic: "核心主题",
+        contextNow: "当下脉络",
+        yourImpact: "对你的影响",
+        nextStep: "下一步",
+        reward: "奖励",
+        participation: "参与",
+        audience: "对象",
+        location: "地点",
+        schedule: "时间",
+        tbdOfficial: "待官方补充",
+        basisFromSource: "以原文公告为准",
+        seeSourceTime: "请看原文时间",
+        seeSourcePrice: "请看原文中的价格/成交/规模信息",
+        marketUpdate: "市场更新",
+        marketImpact: "影响社群对短期市场方向的判断",
+        compareSourcesFirst: "比对多来源后再做决策",
+        comparePlanDiff: "重点在比较不同方案差异",
+        planAudience: "适合需要快速选方案的人",
+        budgetTrial: "先依预算与时程选一个方案试跑",
+        contentPending: "内容待补充",
+        recentUpdate: "近期更新",
+        communityTrackingBasis: "作为社群观察与后续追踪依据",
+        followSameAccount: "先看原文，再追同账号后续更新",
+        alphaCheckConditions: "先确认开放条件与时间",
+        officialPending: "待官方公告",
+        updatePending: "更新内容待补充",
+        audiencePending: "影响对象待官方补充",
+        liveReleased: "已上线",
+        sbtAcquisition: "SBT 获取方式",
+        snapshotAction: "快照前持续拉分，快照后核对官方最终门槛与 SBT 等级。",
+        detailFallbackLead: "目前没有可用摘要，请看原始贴文。",
+        eventBackground: "事件背景",
+        timeLocation: "时间地点",
+        rewardIncentive: "奖励与诱因",
+        joinMethod: "参与方式",
+        possibleImpact: "可能影响",
+        sourceRulesFirst: "先看原文确认规则、时间与限制，再决定是否参与。",
+        pokemonNews: "宝可梦最新消息",
+        keySummary: "重点摘要",
+        fullSummary: "完整整理",
+        noPokemonNews: "目前没有可显示的最新消息。",
+        noPokemonPoints: "目前没有可显示重点。",
+        clickCardFull: "点击卡片可看完整整理。",
+        aiOrganized: "AI整理",
+        basicOrganized: "基础整理",
+        source: "来源",
+        language: "语言",
+        updated: "更新",
+        cached: "缓存",
+        realtime: "实时",
+        backgroundUpdating: "后台更新中",
+        nextRefresh: "下次",
+        loadingNews: "来源：MiniMax NewsAgent · 加载中...",
+        updatingNews: "来源：MiniMax NewsAgent · 正在更新最新消息...",
+      },
+      en: {
+        intelligence: "Intel",
+        event: "Event",
+        market: "Market",
+        report: "Report",
+        announcement: "Announcement",
+        feature: "Feature",
+        insight: "Insight",
+        official: "Official",
+        pokemon: "Pokemon",
+        alpha: "Future Alpha",
+        tools: "Tools",
+        other: "Community Picks",
+        published: "Published",
+        eventDate: "Event",
+        sourceOriginal: "Source",
+        originalSource: "Original Source",
+        oneLine: "One-Line Takeaway",
+        eventInfo: "Event Info",
+        quickPoints: "Quick Points",
+        aiDeepDive: "AI Deep Dive",
+        categoryTags: "Category Tags",
+        keep: "Keep",
+        kept: "Kept",
+        pin: "Pin",
+        pinned: "Pinned",
+        bottom: "Move Down",
+        bottomed: "Moved Down",
+        exclude: "Exclude",
+        feedback: "Feedback",
+        detail: "Details",
+        unnamedTimeline: "Untitled Timeline Item",
+        unnamedPost: "Untitled Post",
+        noTimeline: "No event timeline data available.",
+        noHighlights: "No highlight bullets available yet.",
+        noExpanded: "No expanded analysis available yet.",
+        noImage: "No image is available for this post. Read the full analysis below.",
+        clickForDetail: "Open for the full AI analysis, source link, and images.",
+        alphaSlots: "Alpha Four-Point Brief",
+        eventSlots: "Event Four-Point Brief",
+        marketSlots: "Market Four-Point Brief",
+        reportSlots: "Tool / Guide Four-Point Brief",
+        generalSlots: "Four-Point Brief",
+        whenOnline: "When",
+        whatChanged: "What Changed",
+        affected: "Who Is Affected",
+        nextFirst: "What To Do First",
+        whenJoin: "When",
+        whereJoin: "Where",
+        rewardGet: "Reward",
+        coreEvent: "Core Event",
+        keyNumber: "Key Number",
+        impact: "Impact",
+        compareWhat: "What It Compares",
+        keyDiff: "Key Difference",
+        audienceFit: "Best For",
+        coreTopic: "Core Topic",
+        contextNow: "Context",
+        yourImpact: "Why It Matters",
+        nextStep: "Next Step",
+        reward: "Reward",
+        participation: "How To Join",
+        audience: "Audience",
+        location: "Location",
+        schedule: "Time",
+        tbdOfficial: "Waiting for official details",
+        basisFromSource: "Use the original post as the source of truth",
+        seeSourceTime: "Check the original post for the time",
+        seeSourcePrice: "Check the original post for price, sale, or market-size context",
+        marketUpdate: "Market Update",
+        marketImpact: "This may shift short-term community market expectations",
+        compareSourcesFirst: "Compare multiple sources before deciding",
+        comparePlanDiff: "Focuses on differences between options",
+        planAudience: "Best for people who need to choose quickly",
+        budgetTrial: "Pick one option by budget and timeline, then test it",
+        contentPending: "Details pending",
+        recentUpdate: "Recent update",
+        communityTrackingBasis: "Use this as community context and follow-up material",
+        followSameAccount: "Read the original post, then track follow-ups from the same account",
+        alphaCheckConditions: "Confirm the opening conditions and timing first",
+        officialPending: "Waiting for official announcement",
+        updatePending: "Update details still need confirmation",
+        audiencePending: "Affected users still need official confirmation",
+        liveReleased: "Live",
+        sbtAcquisition: "SBT acquisition",
+        snapshotAction: "Keep pushing points before the snapshot, then verify the final official threshold and SBT tier.",
+        detailFallbackLead: "No usable summary yet. Read the original post.",
+        eventBackground: "Background",
+        timeLocation: "Time / Location",
+        rewardIncentive: "Reward / Incentive",
+        joinMethod: "How To Join",
+        possibleImpact: "Possible Impact",
+        sourceRulesFirst: "Check the original post for rules, timing, and limits before joining.",
+        pokemonNews: "Pokemon News",
+        keySummary: "Key Summary",
+        fullSummary: "Full Brief",
+        noPokemonNews: "No news items available yet.",
+        noPokemonPoints: "No key points available yet.",
+        clickCardFull: "Open the card for the full brief.",
+        aiOrganized: "AI brief",
+        basicOrganized: "Basic brief",
+        source: "Source",
+        language: "Language",
+        updated: "Updated",
+        cached: "cached",
+        realtime: "live",
+        backgroundUpdating: "background update",
+        nextRefresh: "next",
+        loadingNews: "Source: MiniMax NewsAgent · Loading...",
+        updatingNews: "Source: MiniMax NewsAgent · Updating news...",
+      },
+      ko: {
+        intelligence: "정보",
+        event: "이벤트",
+        market: "시장",
+        report: "리포트",
+        announcement: "공지",
+        feature: "기능",
+        insight: "관점",
+        official: "공식",
+        pokemon: "포켓몬",
+        alpha: "향후 Alpha",
+        tools: "도구",
+        other: "커뮤니티 픽",
+        published: "게시",
+        eventDate: "이벤트",
+        sourceOriginal: "원문",
+        originalSource: "원본 출처",
+        oneLine: "한 줄 요약",
+        eventInfo: "이벤트 정보",
+        quickPoints: "핵심 요점",
+        aiDeepDive: "AI 상세 정리",
+        categoryTags: "분류 태그",
+        keep: "보관",
+        kept: "보관됨",
+        pin: "상단 고정",
+        pinned: "고정됨",
+        bottom: "아래로",
+        bottomed: "아래 배치됨",
+        exclude: "제외",
+        feedback: "분류 피드백",
+        detail: "상세",
+        unnamedTimeline: "제목 없는 타임라인",
+        unnamedPost: "제목 없는 게시물",
+        noTimeline: "표시할 이벤트 타임라인 데이터가 없습니다.",
+        noHighlights: "사용 가능한 핵심 요점이 없습니다.",
+        noExpanded: "사용 가능한 상세 정리가 없습니다.",
+        noImage: "이 게시물에는 사용할 수 있는 이미지가 없습니다. 아래 정리를 확인하세요.",
+        clickForDetail: "전체 AI 정리, 원문 링크, 이미지를 보려면 여세요.",
+        alphaSlots: "Alpha 4분할 정리",
+        eventSlots: "이벤트 4분할 정리",
+        marketSlots: "시장 4분할 정리",
+        reportSlots: "도구 / 가이드 4분할 정리",
+        generalSlots: "4분할 정리",
+        whenOnline: "시점",
+        whatChanged: "변경 내용",
+        affected: "영향 대상",
+        nextFirst: "먼저 할 일",
+        whenJoin: "참여 시점",
+        whereJoin: "참여 장소",
+        rewardGet: "보상",
+        coreEvent: "핵심 사건",
+        keyNumber: "핵심 수치",
+        impact: "영향",
+        compareWhat: "비교 대상",
+        keyDiff: "주요 차이",
+        audienceFit: "적합 대상",
+        coreTopic: "핵심 주제",
+        contextNow: "현재 맥락",
+        yourImpact: "나에게 미치는 영향",
+        nextStep: "다음 단계",
+        reward: "보상",
+        participation: "참여 방법",
+        audience: "대상",
+        location: "장소",
+        schedule: "시간",
+        tbdOfficial: "공식 보충 대기",
+        basisFromSource: "원문 공지를 기준으로 확인",
+        seeSourceTime: "시간은 원문에서 확인",
+        seeSourcePrice: "가격, 거래, 시장 규모 정보는 원문에서 확인",
+        marketUpdate: "시장 업데이트",
+        marketImpact: "단기 시장 방향에 대한 커뮤니티 판단에 영향을 줄 수 있습니다",
+        compareSourcesFirst: "결정 전에 여러 출처를 비교하세요",
+        comparePlanDiff: "여러 선택지의 차이를 비교하는 내용",
+        planAudience: "빠르게 선택해야 하는 사람에게 적합",
+        budgetTrial: "예산과 일정에 맞춰 하나를 먼저 테스트하세요",
+        contentPending: "내용 보충 대기",
+        recentUpdate: "최근 업데이트",
+        communityTrackingBasis: "커뮤니티 관찰과 후속 추적 자료로 활용",
+        followSameAccount: "원문을 보고 같은 계정의 후속 글을 추적하세요",
+        alphaCheckConditions: "오픈 조건과 시간을 먼저 확인하세요",
+        officialPending: "공식 발표 대기",
+        updatePending: "업데이트 세부 내용 확인 필요",
+        audiencePending: "영향 대상 공식 확인 필요",
+        liveReleased: "출시됨",
+        sbtAcquisition: "SBT 획득 방법",
+        snapshotAction: "스냅샷 전까지 점수를 올리고, 이후 공식 최종 기준과 SBT 등급을 확인하세요.",
+        detailFallbackLead: "사용 가능한 요약이 없습니다. 원문을 확인하세요.",
+        eventBackground: "배경",
+        timeLocation: "시간 / 장소",
+        rewardIncentive: "보상 / 유인",
+        joinMethod: "참여 방법",
+        possibleImpact: "가능한 영향",
+        sourceRulesFirst: "참여 전 원문에서 규칙, 시간, 제한을 확인하세요.",
+        pokemonNews: "포켓몬 최신 소식",
+        keySummary: "핵심 요약",
+        fullSummary: "전체 정리",
+        noPokemonNews: "표시할 최신 소식이 없습니다.",
+        noPokemonPoints: "표시할 핵심 요점이 없습니다.",
+        clickCardFull: "카드를 열어 전체 정리를 확인하세요.",
+        aiOrganized: "AI 정리",
+        basicOrganized: "기본 정리",
+        source: "출처",
+        language: "언어",
+        updated: "업데이트",
+        cached: "캐시",
+        realtime: "실시간",
+        backgroundUpdating: "백그라운드 업데이트 중",
+        nextRefresh: "다음",
+        loadingNews: "출처: MiniMax NewsAgent · 로딩 중...",
+        updatingNews: "출처: MiniMax NewsAgent · 최신 소식 업데이트 중...",
+      },
+    };
+
+    const TAG_LABEL_TRANSLATIONS = {
+      "活動": "event",
+      "參與": "participation",
+      "市场": "market",
+      "市場": "market",
+      "數據": "keyNumber",
+      "数据": "keyNumber",
+      "功能": "feature",
+      "即將開放": "alpha",
+      "即将开放": "alpha",
+      "觀點": "insight",
+      "观点": "insight",
+      "公告": "announcement",
+      "報告": "report",
+      "报告": "report",
+      "寶可夢": "pokemon",
+      "宝可梦": "pokemon",
+      "工具": "tools",
+      "官方": "official",
+    };
+
+    function uiLabel(key) {
+      const tag = normalizeUiLang(currentUiLang);
+      return UI_LABELS[tag]?.[key] || UI_LABELS["zh-Hant"]?.[key] || String(key || "");
+    }
+
+    function translateDisplayLabel(raw) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      const mapped = TAG_LABEL_TRANSLATIONS[text];
+      if (mapped) return uiLabel(mapped);
+      return text;
+    }
+
     function intelTypeLabel(type) {
-      return intelTypeLabelMap[String(type || "").trim()] || "情報";
+      const raw = String(type || "").trim();
+      return uiLabel(raw) || intelTypeLabelMap[raw] || uiLabel("intelligence");
     }
 
     function truncateText(text, limit = 92) {
@@ -671,11 +1162,11 @@
 
     const eventFactOrder = ["reward", "participation", "audience", "location", "schedule"];
     const eventFactLabels = {
-      reward: "獎勵",
-      participation: "參與",
-      audience: "對象",
-      location: "地點",
-      schedule: "時間",
+      reward: "reward",
+      participation: "participation",
+      audience: "audience",
+      location: "location",
+      schedule: "schedule",
     };
 
     function collectEventFactRows(item) {
@@ -683,7 +1174,7 @@
       const rows = [];
       const seen = new Set();
       const pushRow = (key, raw) => {
-        const label = eventFactLabels[key];
+        const label = uiLabel(eventFactLabels[key]);
         const value = String(raw || "").replace(/\s+/g, " ").trim();
         if (!label || !value) return;
         const sig = `${key}:${value.toLowerCase()}`;
@@ -729,7 +1220,7 @@
       const factRows = collectEventFactRows(item);
       if (factRows.length) {
         const first = factRows[0];
-        return truncateText(`${first.label}：${first.value}`, 84);
+        return truncateText(`${first.label}: ${first.value}`, 84);
       }
       const glance = cleanMasterSummary(item?.glance || "");
       if (glance) return truncateText(glance, 90);
@@ -738,7 +1229,7 @@
       if (firstBullet) return truncateText(normalizeKeylineText(firstBullet), 92);
       const summary = cleanMasterSummary(item?.summary || "");
       if (summary) return truncateText(summary, 92);
-      return "點開可查看完整 AI 整理、原文連結與圖片。";
+      return uiLabel("clickForDetail");
     }
 
     function renderMasterTimelineCard(item, index, total, options = {}) {
@@ -761,35 +1252,35 @@
       const feedbackLabel = String(item?.card_type || "insight");
       const actionHtml = (!preview && id && intelCanEdit())
         ? `<div class="intel-actions">
-            <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(id)}">${picked ? "已保留" : "保留"}</button>
-            <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(id)}">${pinned ? "已頂選" : "頂選"}</button>
-            <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(id)}">${bottomed ? "已置底" : "置底"}</button>
-            <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(id)}">排除</button>
-            <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(id)}" data-intel-label="${escapeHtml(feedbackLabel)}">回饋分類</button>
+            <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
+            <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
+            <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+            <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(id)}">${escapeHtml(uiLabel("exclude"))}</button>
+            <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(id)}" data-intel-label="${escapeHtml(feedbackLabel)}">${escapeHtml(uiLabel("feedback"))}</button>
           </div>`
         : "";
       const keyline = cardPrimaryHighlight(item);
-      const cleanTitle = cleanMasterTitle(item?.title || "未命名時間點");
+      const cleanTitle = cleanMasterTitle(item?.title || uiLabel("unnamedTimeline"));
       const toggleHtml = (!preview && id)
-        ? `<button class="intel-master-toggle" type="button" data-intel-open-detail="${escapeHtml(id)}">詳細</button>`
+        ? `<button class="intel-master-toggle" type="button" data-intel-open-detail="${escapeHtml(id)}">${escapeHtml(uiLabel("detail"))}</button>`
         : "";
 
       return `
         <article class="intel-master-card ${preview ? "is-preview" : ""}" style="${backdropStyle}">
           <div class="intel-master-head">
-            <span class="intel-master-kicker">@${escapeHtml(item?.account || "source")} · ${categoryLabel(item?.card_type)} · ${bucket}</span>
-            <span class="intel-master-when">發布 ${escapeHtml(publishText)} · 事件 ${escapeHtml(eventText)}</span>
+            <span class="intel-master-kicker">@${escapeHtml(item?.account || "source")} · ${escapeHtml(categoryLabel(item?.card_type))} · ${escapeHtml(bucket)}</span>
+            <span class="intel-master-when">${escapeHtml(uiLabel("published"))} ${escapeHtml(publishText)} · ${escapeHtml(uiLabel("eventDate"))} ${escapeHtml(eventText)}</span>
           </div>
           <div class="intel-master-media">${coverHtml}</div>
           <div class="intel-master-title-row">
-            <h4 class="intel-master-title">${escapeHtml(cleanTitle || "未命名時間點")}</h4>
+            <h4 class="intel-master-title">${escapeHtml(cleanTitle || uiLabel("unnamedTimeline"))}</h4>
             ${toggleHtml}
           </div>
           ${keyline ? `<p class="intel-master-summary">${escapeHtml(keyline)}</p>` : ""}
           <div class="intel-master-footer">
             <span class="intel-master-index">${index + 1} / ${total}</span>
             ${actionHtml}
-            <a class="intel-source-link" href="${escapeHtml(item?.url || "#")}" target="_blank" rel="noreferrer">原文</a>
+            <a class="intel-source-link" href="${escapeHtml(item?.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
           </div>
           ${item?.url ? `<a class="intel-source-raw" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>` : ""}
         </article>
@@ -808,7 +1299,7 @@
         stage.classList.remove("is-dragging", "is-animating", "dir-next", "dir-prev");
         stage.style.removeProperty("--intel-master-drag");
         rail.innerHTML = "";
-        stage.innerHTML = `<p class="intel-masterline-empty">目前沒有可顯示的活動/功能時間軸資料。</p>`;
+        stage.innerHTML = `<p class="intel-masterline-empty">${escapeHtml(uiLabel("noTimeline"))}</p>`;
         return;
       }
 
@@ -925,31 +1416,31 @@
         : "";
       const tags = Array.isArray(card.tags) ? card.tags.slice(0, 3) : [];
       const tagHtml = tags
-        .map((tag) => `<span class=\"intel-tag\">${escapeHtml(tag)}</span>`)
+        .map((tag) => `<span class=\"intel-tag\">${escapeHtml(translateDisplayLabel(tag))}</span>`)
         .join("");
       const timelineText = card.timeline_date ? toPosterDate(card.timeline_date) : "";
-      const timeText = `發布 ${toLocalTime(card.published_at)}${timelineText && timelineText !== "--" ? ` · 事件 ${timelineText}` : ""}`;
+      const timeText = `${uiLabel("published")} ${toLocalTime(card.published_at)}${timelineText && timelineText !== "--" ? ` · ${uiLabel("eventDate")} ${timelineText}` : ""}`;
       const canPick = String(card.id || "").trim() !== "";
       const picked = Boolean(card.manual_pick);
       const pinned = Boolean(card.manual_pin);
       const bottomed = Boolean(card.manual_bottom);
       const actionHtml = (canPick && intelCanEdit())
         ? `<div class="intel-actions">
-             <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(card.id)}">${picked ? "已保留" : "保留"}</button>
-             <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(card.id)}">${pinned ? "已頂選" : "頂選"}</button>
-             <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(card.id)}">${bottomed ? "已置底" : "置底"}</button>
-             <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(card.id)}">排除</button>
-             <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(card.id)}" data-intel-label="${escapeHtml(String(card.card_type || "insight"))}">回饋分類</button>
+             <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
+             <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
+             <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+             <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(uiLabel("exclude"))}</button>
+             <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(card.id)}" data-intel-label="${escapeHtml(String(card.card_type || "insight"))}">${escapeHtml(uiLabel("feedback"))}</button>
            </div>`
         : "";
       const keylineText = cardPrimaryHighlight(card);
-      const keylineLabel = keylineText ? `<div class="intel-detail-block-title">一句話重點</div>` : "";
+      const keylineLabel = keylineText ? `<div class="intel-detail-block-title">${escapeHtml(uiLabel("oneLine"))}</div>` : "";
 
       if (layout === "poster") {
         return `
           <article class="intel-card layout-poster" data-intel-card-id="${escapeHtml(cardKey)}">
             <div class="intel-poster-top">
-              <span class="intel-kicker">@${escapeHtml(card.account)} · ${typeLabel}</span>
+              <span class="intel-kicker">@${escapeHtml(card.account)} · ${escapeHtml(typeLabel)}</span>
               <span class="intel-poster-date">${escapeHtml(toPosterDate(card.published_at))}</span>
             </div>
             <div class="intel-poster-glow"></div>
@@ -961,7 +1452,7 @@
               <div class="intel-tags">${tagHtml}</div>
               <span class="intel-time">${escapeHtml(timeText)}</span>
               ${actionHtml}
-              <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">原文</a>
+              <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
             </div>
             ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
           </article>
@@ -970,7 +1461,7 @@
 
       return `
         <article class="intel-card layout-${layout}" data-intel-card-id="${escapeHtml(cardKey)}">
-          <span class="intel-kicker">@${escapeHtml(card.account)} · ${typeLabel}</span>
+          <span class="intel-kicker">@${escapeHtml(card.account)} · ${escapeHtml(typeLabel)}</span>
           <h4 class="intel-title">${escapeHtml(card.title || "@source update")}</h4>
           ${keylineLabel}
           ${keylineText ? `<p class="intel-keyline">${escapeHtml(keylineText)}</p>` : ""}
@@ -979,7 +1470,7 @@
             <div class="intel-tags">${tagHtml}</div>
             <span class="intel-time">${escapeHtml(timeText)}</span>
             ${actionHtml}
-            <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">原文</a>
+            <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
           </div>
           ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
         </article>

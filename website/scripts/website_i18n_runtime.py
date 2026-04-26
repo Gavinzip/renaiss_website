@@ -37,7 +37,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 3
+I18N_BUILD_VERSION = 4
 I18N_FEED_TEXT_KEYS = {
     "headline",
     "conclusion",
@@ -61,6 +61,7 @@ I18N_FEED_TEXT_KEYS = {
     "audience",
     "reward",
     "message",
+    "tags",
 }
 I18N_FEED_LIST_KEYS = {
     "takeaways",
@@ -796,7 +797,7 @@ def _is_untranslated_for_lang(source: str, translated: str, lang: str) -> bool:
     tag = _normalize_lang_tag(lang)
     if not src:
         return False
-    if tag in {"en", "ko"} and _contains_cjk(src) and src == dst:
+    if tag in {"en", "ko"} and _contains_cjk(dst):
         return True
     return False
 
@@ -899,6 +900,18 @@ def _translate_feed_text_map(texts: list[str], lang: str) -> tuple[dict[str, str
                     mapping[source] = candidate
 
     unchanged2 = [x for x in unique_rows if _is_untranslated_for_lang(x, mapping.get(x, x), tag)]
+    if unchanged2:
+        # Final repair pass: one item per request avoids the model returning a
+        # partially translated JSON array while silently keeping mixed Chinese.
+        for source in list(unchanged2):
+            try:
+                translated = _translate_chunk_agent([source], tag, api_key, strict=True)
+            except Exception:
+                translated = [source]
+            candidate = str(translated[0] if translated else source).strip()
+            if candidate:
+                mapping[source] = candidate
+        unchanged2 = [x for x in unique_rows if _is_untranslated_for_lang(x, mapping.get(x, x), tag)]
     qa["pass2_unchanged"] = len(unchanged2)
     qa["mode"] = "live"
     qa["coverage"] = round((len(unique_rows) - len(unchanged2)) / len(unique_rows), 4) if unique_rows else 1.0
