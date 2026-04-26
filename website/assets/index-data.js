@@ -310,6 +310,7 @@
     let intelFeedbackModalResolver = null;
     let pokemonNewsPollTimer = null;
     let pokemonNewsItemsState = [];
+    const DEFAULT_INTEL_API_BASE = "https://gavinx.zeabur.app";
     const INTEL_API_BASE = (() => {
       const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
       const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
@@ -324,7 +325,7 @@
       }
       const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
       const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
-      const resolved = fromQuery || fromWindow || fromData || safeStorage;
+      const resolved = fromQuery || fromWindow || fromData || safeStorage || DEFAULT_INTEL_API_BASE;
       if (fromQuery) {
         try {
           localStorage.setItem(INTEL_API_BASE_STORAGE_KEY, fromQuery);
@@ -1987,106 +1988,63 @@
     const uiTextNodeCache = new WeakMap();
     const uiTranslationMemo = new Map();
     let uiTranslateVersion = 0;
-    const UI_STATIC_TRANSLATIONS = {
-      "home.heroIntro": {
-        "zh-Hant": "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。",
-        "zh-Hans": "这里是 Renaiss 社群的情报入口：把官方更新、活动、SBT 获取方式、宝可梦 / TCG 讨论、未来 Alpha 与工具资源整理成可快速判断的分区。你可以先看活动时间轴掌握近期行程，再切到各分类看重点摘要、完整分析与原始来源。",
-        en: "This is the intel hub for the Renaiss community: official updates, events, SBT acquisition paths, Pokemon / TCG discussions, future Alpha notes, and tools are organized into fast-readable sections. Start with the event timeline for upcoming schedules, then switch categories for summaries, deeper analysis, and original sources.",
-        ko: "이곳은 Renaiss 커뮤니티를 위한 정보 허브입니다. 공식 업데이트, 이벤트, SBT 획득 방법, 포켓몬 / TCG 논의, 향후 Alpha, 도구 자료를 빠르게 읽을 수 있는 섹션으로 정리합니다. 먼저 이벤트 타임라인으로 일정을 확인하고, 각 분류에서 요약, 상세 분석, 원문 출처를 확인하세요.",
-      },
-    };
-    const UI_TRANSLATION_FALLBACKS = {
-      en: {
-        "語言": "Language",
-        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "This is the intel hub for the Renaiss community: official updates, events, SBT acquisition paths, Pokemon / TCG discussions, future alpha notes, and tools are organized into fast-readable sections. Start with the event timeline for upcoming schedules, then switch categories for summaries, deeper analysis, and original sources.",
-        "活動": "Events",
-        "官方更新": "Official",
-        "寶可夢": "Pokemon",
-        "未來 Alpha": "Future Alpha",
-        "工具": "Tools",
-        "社群精選": "Community Picks",
-        "主分類導覽": "Main Categories",
-        "目前顯示：活動。": "Showing: Events.",
-        "目前顯示：官方近期更新。": "Showing: Recent Official Updates.",
-        "目前顯示：SBT。": "Showing: SBT.",
-        "目前顯示：寶可夢相關資訊。": "Showing: Pokemon-related Info.",
-        "目前顯示：未來 Alpha。": "Showing: Future Alpha.",
-        "目前顯示：工具。": "Showing: Tools.",
-        "目前顯示：社群精選。": "Showing: Community Picks.",
-        "從這裡切換分區，只顯示你要看的類別。": "Switch sections here and show only the category you want.",
-        "活動與功能主時間軸（左右滑動）": "Event Main Timeline (swipe sideways)",
-        "滑動卡片或點上方時間點，即可快轉查看該日期內容。": "Swipe cards or tap a time point to jump to that date.",
-        "活動與功能組時間軸": "Event Timeline",
-        "官方近期更新": "Recent Official Updates",
-        "官方近期更新 / Official Updates": "Recent Official Updates / Official Updates",
-        "活動主時間軸（左右滑動）": "Event Main Timeline (swipe sideways)",
-        "活動主時間軸": "Event Main Timeline",
-        "寶可夢相關資訊 / TCG Pro Pipeline": "Pokemon-related Info / TCG Pro Pipeline",
-        "未來 Alpha / Release Timeline": "Future Alpha / Release Timeline",
-        "社群精選 / Community Picks": "Community Picks / Community Picks",
-        "工具 / Community Toolbox": "Tools / Community Toolbox",
-        "同步最近 30 天": "Sync Last 30 Days",
-        "管理登入": "Admin Login",
-        "管理員登入": "Admin Login",
-        "登出": "Logout",
-        "AI Agent 監控面板": "AI Agent Monitor",
-        "AI 監控": "AI Monitor",
-        "刷新狀態": "Refresh Status",
-        "同步狀態": "Sync Status",
-        "新貼文狀態": "New Posts",
-        "背景整理任務": "Background Jobs",
-        "新聞/語言刷新": "News / Language Refresh",
-        "最近整理任務": "Recent Jobs",
-        "監控來源狀態": "Monitor Sources",
-        "登入": "Login",
-        "關閉": "Close",
-      },
-      ko: {
-        "語言": "언어",
-        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "이곳은 Renaiss 커뮤니티를 위한 정보 허브입니다. 공식 업데이트, 이벤트, SBT 획득 방법, 포켓몬 / TCG 논의, 향후 Alpha, 도구 자료를 빠르게 읽을 수 있는 섹션으로 정리합니다. 먼저 이벤트 타임라인으로 일정을 확인하고, 각 분류에서 요약, 상세 분석, 원문 출처를 확인하세요.",
-        "活動": "이벤트",
-        "官方更新": "공식 업데이트",
-        "寶可夢": "포켓몬",
-        "未來 Alpha": "향후 Alpha",
-        "工具": "도구",
-        "社群精選": "커뮤니티 픽",
-        "主分類導覽": "주요 카테고리",
-        "從這裡切換分區，只顯示你要看的類別。": "여기서 섹션을 전환해 원하는 카테고리만 보세요.",
-        "官方近期更新": "공식 최근 업데이트",
-        "活動主時間軸": "이벤트 메인 타임라인",
-        "活動與功能主時間軸（左右滑動）": "이벤트 메인 타임라인 (좌우 스와이프)",
-        "同步最近 30 天": "최근 30일 동기화",
-        "管理登入": "관리자 로그인",
-        "管理員登入": "관리자 로그인",
-        "登出": "로그아웃",
-        "AI Agent 監控面板": "AI 에이전트 모니터",
-        "AI 監控": "AI 모니터",
-        "刷新狀態": "상태 새로고침",
-      },
-      "zh-Hans": {
-        "語言": "语言",
-        "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來 Alpha 與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。": "这里是 Renaiss 社群的情报入口：把官方更新、活动、SBT 获取方式、宝可梦 / TCG 讨论、未来 Alpha 与工具资源整理成可快速判断的分区。你可以先看活动时间轴掌握近期行程，再切到各分类看重点摘要、完整分析与原始来源。",
-        "活動": "活动",
-        "官方更新": "官方更新",
-        "寶可夢": "宝可梦",
-        "未來 Alpha": "未来 Alpha",
-        "工具": "工具",
-        "社群精選": "社群精选",
-        "主分類導覽": "主分类导览",
-        "從這裡切換分區，只顯示你要看的類別。": "从这里切换分区，只显示你要看的类别。",
-        "活動與功能主時間軸（左右滑動）": "活动主时间轴（左右滑动）",
-        "滑動卡片或點上方時間點，即可快轉查看該日期內容。": "滑动卡片或点上方时间点，即可快转查看该日期内容。",
-        "官方近期更新": "官方近期更新",
-        "活動主時間軸": "活动主时间轴",
-        "同步最近 30 天": "同步最近 30 天",
-        "管理登入": "管理登录",
-        "管理員登入": "管理员登录",
-        "登出": "登出",
-        "AI Agent 監控面板": "AI Agent 监控面板",
-        "AI 監控": "AI 监控",
-        "刷新狀態": "刷新状态",
-      },
-    };
+    const uiRowTranslationCache = new Map();
+    let uiRowTranslationCacheReady = false;
+    let uiRowTranslationCachePromise = null;
+    const UI_STATIC_TRANSLATIONS = (window.INTEL_UI_STATIC_TRANSLATIONS && typeof window.INTEL_UI_STATIC_TRANSLATIONS === "object")
+      ? window.INTEL_UI_STATIC_TRANSLATIONS
+      : {};
+    const UI_TRANSLATION_FALLBACKS = (window.INTEL_UI_TRANSLATION_FALLBACKS && typeof window.INTEL_UI_TRANSLATION_FALLBACKS === "object")
+      ? window.INTEL_UI_TRANSLATION_FALLBACKS
+      : {};
+
+    function normalizeI18nLookupText(raw) {
+      return String(raw || "").replace(/\s+/g, " ").trim();
+    }
+
+    function lookupUiCachedTranslation(lang, sourceText) {
+      const tag = normalizeUiLang(lang);
+      if (!tag || tag === "zh-Hant") return "";
+      const raw = String(sourceText || "");
+      if (!raw) return "";
+      const keyRaw = `${tag}\n${raw}`;
+      if (uiRowTranslationCache.has(keyRaw)) {
+        return String(uiRowTranslationCache.get(keyRaw) || "");
+      }
+      const normalized = normalizeI18nLookupText(raw);
+      if (!normalized) return "";
+      const keyNormalized = `${tag}\n${normalized}`;
+      if (uiRowTranslationCache.has(keyNormalized)) {
+        return String(uiRowTranslationCache.get(keyNormalized) || "");
+      }
+      return "";
+    }
+
+    async function ensureUiTranslationCache() {
+      if (uiRowTranslationCacheReady) return;
+      if (uiRowTranslationCachePromise) return uiRowTranslationCachePromise;
+      uiRowTranslationCachePromise = (async () => {
+        try {
+          const response = await fetch("./data/i18n_text_cache.json", { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json().catch(() => ({}));
+          const rows = payload && typeof payload === "object" && payload.rows && typeof payload.rows === "object"
+            ? payload.rows
+            : {};
+          Object.entries(rows).forEach(([key, value]) => {
+            uiRowTranslationCache.set(String(key || ""), String(value || ""));
+          });
+          uiRowTranslationCacheReady = uiRowTranslationCache.size > 0;
+        } catch (_error) {
+        } finally {
+          uiRowTranslationCachePromise = null;
+        }
+      })();
+      return uiRowTranslationCachePromise;
+    }
+
+    window.ensureUiTranslationCache = ensureUiTranslationCache;
+    window.lookupUiCachedTranslation = lookupUiCachedTranslation;
 
     function shouldTranslateTextNode(node) {
       if (!node || node.nodeType !== Node.TEXT_NODE) return false;

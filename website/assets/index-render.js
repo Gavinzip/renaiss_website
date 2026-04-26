@@ -68,8 +68,12 @@
       const rawTranslated = String(translated || "");
       if (!rawSource) return rawTranslated;
       const fallbackMap = UI_TRANSLATION_FALLBACKS[tag] || {};
+      const normalizedSource = rawSource.replace(/\s+/g, " ").trim();
       if (rawTranslated === rawSource && Object.prototype.hasOwnProperty.call(fallbackMap, rawSource)) {
         return String(fallbackMap[rawSource] || rawSource);
+      }
+      if (rawTranslated === rawSource && normalizedSource && Object.prototype.hasOwnProperty.call(fallbackMap, normalizedSource)) {
+        return String(fallbackMap[normalizedSource] || normalizedSource);
       }
       return rawTranslated;
     }
@@ -78,7 +82,20 @@
       const tag = normalizeUiLang(lang);
       const rows = Array.isArray(texts) ? texts.map((x) => String(x || "")) : [];
       if (tag === "zh-Hant") return rows;
-      return rows.map((text) => applyUiTranslationFallback(tag, text, text));
+      if (typeof window.ensureUiTranslationCache === "function") {
+        try {
+          await window.ensureUiTranslationCache();
+        } catch (_error) {}
+      }
+      return rows.map((text) => {
+        const fallback = applyUiTranslationFallback(tag, text, text);
+        if (fallback !== text) return fallback;
+        if (typeof window.lookupUiCachedTranslation === "function") {
+          const cached = window.lookupUiCachedTranslation(tag, text);
+          if (cached) return cached;
+        }
+        return fallback;
+      });
     }
 
     function updateLangSwitcherUi() {

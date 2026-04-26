@@ -211,60 +211,6 @@
         <p id="pokemon-news-meta" class="intel-note">來源：MiniMax NewsAgent</p>
       </article>
 
-      <div class="split">
-        <article class="card observe" style="--delay: 90ms;">
-          <h3><iconify-icon icon="lucide:workflow"></iconify-icon>Search & Verification Logic</h3>
-          <ul>
-            <li><strong>Identify：</strong>Minimax Vision 輸出 13 欄 JSON（name/set_code/number...）。</li>
-            <li><strong>PC Search：</strong>Name-Slug strict filtering，避免「同編號不同卡」誤抓。</li>
-            <li><strong>SNKR Search：</strong>編號補零 + 橫槓容錯（SV-P/SVP）+ 標題強驗證。</li>
-            <li><strong>main 與 tcg_pro</strong> 的搜尋驗證邏輯已同步。</li>
-          </ul>
-        </article>
-
-        <article class="card observe" style="--delay: 140ms;">
-          <h3><iconify-icon icon="lucide:image-plus"></iconify-icon>Real Data Output（2026-03-20）</h3>
-          <ul>
-            <li>輸入：`series_code=op15` + wallet + image。</li>
-            <li>輸出：`image_posters(2)`、`cardset_posters(1)`、`profile_runs(1/3/4/7/10)`。</li>
-            <li>Flex：同時生成 `picked` / `extreme`，`requested_count=10` 會被 clamp。</li>
-            <li>`live_html` 可即時預覽，適合快速調版與驗收。</li>
-          </ul>
-          <div class="limited-flow">
-            <article class="limited-stage stage-upcoming">
-              <h5>Identify</h5>
-              <p>輸入圖片後先做欄位辨識，固定輸出關鍵卡片 metadata。</p>
-            </article>
-            <article class="limited-stage stage-live">
-              <h5>Search + Verify</h5>
-              <p>PriceCharting / SNKRDUNK 交叉驗證，過濾錯誤候選結果。</p>
-            </article>
-            <article class="limited-stage stage-archive">
-              <h5>Render</h5>
-              <p>輸出 Markdown + 動態 HTML 海報，直接可貼社群。</p>
-            </article>
-          </div>
-        </article>
-      </div>
-
-      <div class="grid-2" style="margin-top: 0.7rem;">
-        <article class="card observe" style="--delay: 190ms;">
-          <h3><iconify-icon icon="lucide:terminal-square"></iconify-icon>Discord 指令入口（實戰）</h3>
-          <ul>
-            <li><strong>Profile / 海報：</strong><code>/profile</code>、<code>/flex_pack</code>、<code>/cardset</code>。</li>
-            <li><strong>分析：</strong><code>/manual_analyze</code>、<code>/market</code>。</li>
-            <li><strong>使用者：</strong><code>/settings</code>、<code>/ranking</code>、<code>/bot_usage</code>。</li>
-            <li>指令層採 slash command，方便非技術成員直接操作。</li>
-          </ul>
-        </article>
-
-        <article class="card observe" style="--delay: 240ms;">
-          <h3><iconify-icon icon="lucide:bug"></iconify-icon>已修復問題（流程文檔）</h3>
-          <p>
-            近期修復重點包含：<strong>#201 誤抓</strong>、<strong>SV-P 橫槓搜尋失敗</strong>、以及提示詞偏見造成的誤判。目標是把錯卡率壓低，讓報告更適合社群直接閱讀。
-          </p>
-        </article>
-      </div>
     </section>
 
     <section id="sbt" class="panel observe category-panel category-hidden" data-category-section="sbt" style="--delay: 40ms;">
@@ -352,32 +298,6 @@
         <div id="intel-tools-cards" class="intel-grid"></div>
         <p id="intel-tools-empty" class="source-empty" style="display:none;">目前沒有工具或攻略貼文。</p>
       </article>
-
-      <div class="tools">
-        <article class="tool observe" style="--delay: 90ms;">
-          <h4><iconify-icon icon="lucide:calendar-clock"></iconify-icon>Ranking Daily Job</h4>
-          <p>每日 <strong>14:00 Asia/Taipei</strong> 更新 volume / holdings / sbt 三大榜單。</p>
-          <div class="tool-meta">用途：每日排行榜更新</div>
-        </article>
-
-        <article class="tool observe" style="--delay: 170ms;">
-          <h4><iconify-icon icon="lucide:git-compare"></iconify-icon>持有者增量同步</h4>
-          <p>每日比對最新持有者資料，避免重複抓取並保持資料新鮮度。</p>
-          <div class="tool-meta">用途：持有者快照與差異追蹤</div>
-        </article>
-
-        <article class="tool observe" style="--delay: 210ms;">
-          <h4><iconify-icon icon="lucide:monitor-up"></iconify-icon>Live HTML Watch</h4>
-          <p>監聽模板變更並重渲染預覽頁，用於海報/模板快速調整。</p>
-          <div class="tool-meta">用途：預覽版型即時更新</div>
-        </article>
-
-        <article class="tool observe" style="--delay: 240ms;">
-          <h4><iconify-icon icon="lucide:package-plus"></iconify-icon>Pack Builder</h4>
-          <p>建構設計端 live pack 與真實資料 pack，輸出可直接展示的結果包。</p>
-          <div class="tool-meta">用途：整理多來源資料並輸出展示卡片</div>
-        </article>
-      </div>
 
       <div class="section-head" style="margin-top: 0.72rem; margin-bottom: 0.66rem;">
         <div>
@@ -815,8 +735,9 @@
     }
   </script>
 
-  <script src="./assets/index-data.js?v=20260426-lang7"></script>
-  <script src="./assets/index-render.js?v=20260426-lang7"></script>
+  <script src="./assets/index-i18n.js?v=20260426-i18n1"></script>
+  <script src="./assets/index-data.js?v=20260426-i18n1"></script>
+  <script src="./assets/index-render.js?v=20260426-i18n1"></script>
   <script src="./assets/index-actions.js?v=20260426-lang7"></script>
 </body>
 </html>

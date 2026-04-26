@@ -117,7 +117,7 @@ def _parse_allowed_origins(raw: str | None) -> set[str]:
     if not text:
         return set(DEFAULT_ALLOWED_ORIGINS)
     parts = [x.strip() for x in text.split(",") if x.strip()]
-    return set(parts) or set(DEFAULT_ALLOWED_ORIGINS)
+    return set(DEFAULT_ALLOWED_ORIGINS).union(parts)
 
 
 AUTH_REQUIRED = _env_flag("INTEL_AUTH_REQUIRED", True)
