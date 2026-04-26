@@ -91,13 +91,23 @@
       return rawTranslated;
     }
 
-    async function requestTranslateTexts(lang, texts) {
-      const response = await fetch(intelApiUrl("/api/intel/translate-texts"), {
+    async function requestTranslateTexts(lang, texts, timeoutMs = 1500) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller
+        ? window.setTimeout(() => controller.abort(), Math.max(500, Number(timeoutMs) || 1500))
+        : null;
+      let response;
+      try {
+        response = await fetch(intelApiUrl("/api/intel/translate-texts"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lang, texts }),
-      });
+          signal: controller ? controller.signal : undefined,
+        });
+      } finally {
+        if (timer) window.clearTimeout(timer);
+      }
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
         throw new Error(data?.error || `HTTP ${response.status}`);
@@ -304,16 +314,14 @@
         saveUiLang(next);
         updateLangSwitcherUi();
         setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
-        try {
-          await applyUiLanguage();
-          setLangBuildStatus("");
-          refreshIntelFeedForCurrentLang()
-            .then(() => applyUiLanguage())
-            .catch((error) => setIntelMessage(`語言資料刷新失敗：${String(error?.message || error)}`, "error"));
-          refreshPokemonNews(false).catch(() => {});
-        } catch (error) {
-          setIntelMessage(`語言切換失敗：${String(error?.message || error)}`, "error");
-        }
+        applyUiLanguage().catch(() => {});
+        refreshIntelFeedForCurrentLang()
+          .then(() => {
+            setLangBuildStatus("");
+            applyUiLanguage().catch(() => {});
+          })
+          .catch((error) => setIntelMessage(`語言資料刷新失敗：${String(error?.message || error)}`, "error"));
+        refreshPokemonNews(false).catch(() => {});
       });
     }
 
