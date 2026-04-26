@@ -1214,6 +1214,7 @@ def sync_accounts(
             continue
 
     merged_cards = merge_cards(account_cards, manual_cards, discord_cards)
+    merged_total = len(merged_cards)
     normalize_cards_semantics(merged_cards)
     feedback_result = apply_feedback_overrides(merged_cards)
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
@@ -1300,7 +1301,8 @@ def sync_accounts(
             "再看「增長訊號」確認社群熱度與市場脈動。",
         ]
     payload = build_feed_payload(curated_cards, digest, window_days, target_accounts)
-    payload["raw_total_cards"] = len(source_cards)
+    payload["raw_total_cards"] = merged_total
+    payload["source_total_cards"] = len(source_cards)
     payload["excluded_cards"] = removed_count
     payload["excluded_by_selection"] = removed_by_selection
     payload["excluded_by_feedback"] = removed_by_feedback
@@ -1334,6 +1336,17 @@ def sync_accounts(
     payload["dedupe_stats"] = {
         "ai_removed": int(ai_deduped),
         "local_removed": int(local_deduped),
+    }
+    payload["pipeline_counts"] = {
+        "merged_total": int(merged_total),
+        "source_total": int(len(source_cards)),
+        "curated_total": int(len(curated_cards)),
+        "removed_by_selection": int(removed_by_selection),
+        "removed_by_feedback": int(removed_by_feedback),
+        "removed_by_source_preference": int(removed_by_source_pref),
+        "removed_by_ai_dedupe": int(ai_deduped),
+        "removed_by_local_dedupe": int(local_deduped),
+        "removed_by_curation": int(removed_count),
     }
     payload["source_stats"] = account_stats
     quality: dict[str, str] = {}

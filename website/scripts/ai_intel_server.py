@@ -57,7 +57,7 @@ SYNC_STATE: dict[str, object] = {
     "trigger": "",
     "duration_ms": 0,
     "schedule_enabled": False,
-    "schedule_interval_hours": 12.0,
+    "schedule_interval_hours": 0.5,
     "schedule_window_days": 30,
     "next_run_at": "",
     "last_scheduled_at": "",
@@ -78,7 +78,7 @@ MAX_JOB_ITEMS = 120
 POKEMON_NEWS_CACHE_MINUTES = 50
 DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
 DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
-DEFAULT_X_SYNC_INTERVAL_HOURS = 12.0
+DEFAULT_X_SYNC_INTERVAL_HOURS = 0.5
 DEFAULT_X_SYNC_WINDOW_DAYS = 30
 POKEMON_NEWS_STATE: dict[str, dict] = {}
 AUTH_COOKIE_NAME = "intel_admin_session"
@@ -416,12 +416,24 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     _start_sync_state(trigger=trigger)
     try:
         result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
-        build_i18n_feed_bundle_async(result, force=True, target_langs=["en", "ko", "zh-Hans"])
+        build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
         return result
     except Exception as sync_error:
         _finish_sync_state_failed(started_monotonic, str(sync_error))
         raise
+
+
+def _warm_i18n_bundle_from_feed() -> None:
+    if not FEED_PATH.exists():
+        return
+    try:
+        feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(feed, dict):
+        return
+    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
 
 
 def _start_x_sync_scheduler(
@@ -588,6 +600,8 @@ def _build_admin_status(limit: int = 10) -> dict:
 
     running_jobs = _safe_int(jobs.get("counts", {}).get("running"))
     queued_jobs = _safe_int(jobs.get("counts", {}).get("queued"))
+    sync_running = str(sync_state.get("status") or "").strip().lower() == "running"
+    pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
 
     return {
         "server_time": _now_iso(),
@@ -608,7 +622,14 @@ def _build_admin_status(limit: int = 10) -> dict:
             "latest_source_at": latest_source_at,
             "total_cards": _safe_int(feed.get("total_cards"), len(card_rows)),
             "raw_total_cards": _safe_int(feed.get("raw_total_cards"), len(card_rows)),
+            "source_total_cards": _safe_int(feed.get("source_total_cards"), _safe_int(feed.get("raw_total_cards"), len(card_rows))),
             "excluded_cards": _safe_int(feed.get("excluded_cards"), 0),
+            "excluded_by_selection": _safe_int(feed.get("excluded_by_selection"), 0),
+            "excluded_by_feedback": _safe_int(feed.get("excluded_by_feedback"), 0),
+            "excluded_by_source_preference": _safe_int(feed.get("excluded_by_source_preference"), 0),
+            "dedupe_ai_removed": _safe_int((feed.get("dedupe_stats") or {}).get("ai_removed"), 0),
+            "dedupe_local_removed": _safe_int((feed.get("dedupe_stats") or {}).get("local_removed"), 0),
+            "pipeline_counts": pipeline_counts,
             "new_cards_6h": recent_6h,
             "new_cards_24h": recent_24h,
         },
@@ -616,8 +637,11 @@ def _build_admin_status(limit: int = 10) -> dict:
         "new_posts": {
             "new_cards_6h": recent_6h,
             "new_cards_24h": recent_24h,
-            "pending_processing": queued_jobs + running_jobs,
-            "is_processing": bool(queued_jobs + running_jobs),
+            "sync_running": sync_running,
+            "queued_jobs": queued_jobs,
+            "running_jobs": running_jobs,
+            "pending_processing": queued_jobs + running_jobs + (1 if sync_running else 0),
+            "is_processing": bool(queued_jobs + running_jobs + (1 if sync_running else 0)),
         },
         "memory": memory_stats,
         "agents": [
@@ -891,7 +915,7 @@ def _run_analyze_job(job_id: str, url: str) -> None:
         tweet = result.get("tweet") if isinstance(result.get("tweet"), dict) else {}
         feed = result.get("feed") if isinstance(result.get("feed"), dict) else {}
         if feed:
-            build_i18n_feed_bundle_async(feed, force=True, target_langs=["en", "ko", "zh-Hans"])
+            build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
         _update_job(
             job_id,
             status="done",
@@ -1266,7 +1290,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if action == "exclude" and reason:
                     feedback = add_classification_feedback(tweet_id, "exclude", reason=reason)
                 result = sync_accounts()
-                build_i18n_feed_bundle_async(result, force=True, target_langs=["en", "ko", "zh-Hans"])
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
                 return
 
@@ -1276,7 +1300,7 @@ class Handler(SimpleHTTPRequestHandler):
                 reason = str(payload.get("reason") or "").strip()
                 feedback = add_classification_feedback(tweet_id, label, reason=reason)
                 result = sync_accounts()
-                build_i18n_feed_bundle_async(result, force=True, target_langs=["en", "ko", "zh-Hans"])
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "feedback": feedback, "feed": result})
                 return
 
@@ -1370,6 +1394,7 @@ def main() -> int:
             window_days=max(1, int(args.sync_window_days)),
             run_on_startup=bool(args.sync_run_on_startup),
         )
+    _warm_i18n_bundle_from_feed()
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")

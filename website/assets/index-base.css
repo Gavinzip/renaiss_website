@@ -41,12 +41,14 @@
 
     html {
       scroll-behavior: smooth;
+      overflow-anchor: none;
     }
 
     body {
       font-family: var(--body-font);
       color: var(--text);
       min-height: 100svh;
+      overflow-anchor: none;
       background:
         radial-gradient(980px 620px at -10% -16%, rgba(255, 208, 132, 0.4), rgba(255, 208, 132, 0) 64%),
         radial-gradient(920px 580px at 105% -10%, rgba(111, 198, 255, 0.38), rgba(111, 198, 255, 0) 66%),
@@ -173,13 +175,12 @@
       background: #ffffff;
     }
 
-    [data-lang-morph="1"] .lang-morphing {
+    .lang-morphing {
       position: relative;
-      color: #2c6db1 !important;
       text-shadow:
-        0 0 10px rgba(102, 182, 255, 0.42),
-        0 0 24px rgba(147, 110, 255, 0.28);
-      transition: color 180ms ease, text-shadow 180ms ease;
+        0 0 8px rgba(102, 182, 255, 0.34),
+        0 0 20px rgba(147, 110, 255, 0.2);
+      transition: text-shadow 220ms ease;
     }
 
     .nav-action {
@@ -351,6 +352,11 @@
       isolation: isolate;
     }
 
+    .panel.hero {
+      margin-top: 0;
+      padding-top: clamp(0.35rem, 1.2vh, 0.82rem);
+    }
+
     .panel + .panel {
       border-top: 1px solid rgba(220, 233, 247, 0.76);
       padding-top: 1.55rem;
@@ -413,11 +419,12 @@
     }
 
     .hero {
-      min-height: calc(100svh - 4.2rem);
+      min-height: calc(100svh - clamp(7.2rem, 12vh, 8.6rem));
       display: grid;
       grid-template-columns: 1.08fr 0.92fr;
       gap: 1.5rem;
       align-items: center;
+      align-content: center;
     }
 
     .hero h1 {
@@ -439,16 +446,6 @@
       letter-spacing: -0.01em;
     }
 
-    .hero-batch {
-      margin-bottom: 0.54rem;
-      color: #273a52;
-      font-size: 0.78rem;
-      letter-spacing: 0.38em;
-      text-transform: uppercase;
-      font-weight: 800;
-      font-family: "Space Grotesk", "Noto Sans TC", sans-serif;
-    }
-
     .hero-intro {
       color: #3f5877;
       line-height: 1.86;
@@ -458,7 +455,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      [data-lang-morph="1"] .lang-morphing {
+      .lang-morphing {
         transition: none;
         text-shadow: none;
       }
@@ -657,7 +654,7 @@
 
     .hero-visual {
       position: relative;
-      min-height: 560px;
+      min-height: clamp(460px, 56vh, 560px);
       display: grid;
       place-items: center;
     }

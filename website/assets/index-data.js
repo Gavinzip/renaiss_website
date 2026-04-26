@@ -325,7 +325,11 @@
       }
       const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
       const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
-      const resolved = fromQuery || fromWindow || fromData || safeStorage || DEFAULT_INTEL_API_BASE;
+      const resolved = fromQuery
+        || fromWindow
+        || fromData
+        || safeStorage
+        || DEFAULT_INTEL_API_BASE;
       if (fromQuery) {
         try {
           localStorage.setItem(INTEL_API_BASE_STORAGE_KEY, fromQuery);

@@ -48,8 +48,9 @@
       return nodes;
     }
 
-    function applyStaticUiTranslations() {
-      const tag = normalizeUiLang(currentUiLang);
+    function collectStaticUiTranslationTargets(lang) {
+      const tag = normalizeUiLang(lang || currentUiLang);
+      const entries = [];
       document.querySelectorAll("[data-i18n-key]").forEach((el) => {
         const key = String(el.getAttribute("data-i18n-key") || "").trim();
         if (!key) return;
@@ -57,9 +58,16 @@
         if (!rows || typeof rows !== "object") return;
         const next = String(rows[tag] || rows["zh-Hant"] || "").trim();
         if (!next) return;
-        el.textContent = next;
+        const current = String(el.textContent || "");
         el.setAttribute("data-no-i18n", "1");
+        entries.push({
+          from: current,
+          to: next,
+          anchor: el,
+          set(value) { el.textContent = String(value || ""); },
+        });
       });
+      return entries;
     }
 
     function applyUiTranslationFallback(lang, source, translated) {
@@ -123,6 +131,54 @@
       el.classList.toggle("is-ready", mode === "ready");
     }
 
+    const INTEL_FEED_SNAPSHOT_PREFIX = "intel_feed_snapshot_v1:";
+
+    function intelFeedSnapshotKey(lang) {
+      return `${INTEL_FEED_SNAPSHOT_PREFIX}${normalizeUiLang(lang || "zh-Hant")}`;
+    }
+
+    function loadIntelFeedSnapshot(lang) {
+      try {
+        const raw = localStorage.getItem(intelFeedSnapshotKey(lang)) || "";
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const feed = parsed && typeof parsed === "object" ? parsed.feed : null;
+        if (!feed || typeof feed !== "object") return null;
+        return feed;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function saveIntelFeedSnapshot(lang, feed) {
+      if (!feed || typeof feed !== "object") return;
+      const cards = Array.isArray(feed.cards) ? feed.cards : null;
+      if (!cards || !cards.length) return;
+      const payload = {
+        saved_at: new Date().toISOString(),
+        feed,
+      };
+      try {
+        localStorage.setItem(intelFeedSnapshotKey(lang), JSON.stringify(payload));
+      } catch (_error) {
+      }
+    }
+
+    function readCachedIntelFeed(lang, allowBaseFallback = true) {
+      const tag = normalizeUiLang(lang || currentUiLang);
+      const inMemory = intelFeedLangCache.get(tag);
+      if (inMemory && typeof inMemory === "object") return inMemory;
+      const fromSnapshot = loadIntelFeedSnapshot(tag);
+      if (fromSnapshot) return fromSnapshot;
+      if (allowBaseFallback && tag !== "zh-Hant") {
+        const memoryBase = intelFeedLangCache.get("zh-Hant");
+        if (memoryBase && typeof memoryBase === "object") return memoryBase;
+        const snapshotBase = loadIntelFeedSnapshot("zh-Hant");
+        if (snapshotBase) return snapshotBase;
+      }
+      return null;
+    }
+
     const LANG_MORPH_LATIN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const LANG_MORPH_CJK = "天地玄黃宇宙洪荒風火雷電星月山海光影流轉";
     const LANG_MORPH_HANGUL = "가나다라마바사아자차카타파하우리세계여정";
@@ -166,31 +222,61 @@
         .join("");
     }
 
-    function collectLangMorphEntries(nodes, fromTexts, toTexts) {
+    function collectLangMorphEntries(nodes, fromTexts, toTexts, staticEntries = []) {
       const entries = [];
-      const maxEntries = 140;
-      let totalChars = 0;
+      staticEntries.forEach((row) => {
+        if (!row || typeof row.set !== "function") return;
+        const from = String(row.from || "");
+        const to = String(row.to || "");
+        if (!to || from === to) return;
+        entries.push({
+          from,
+          to,
+          anchor: row.anchor || null,
+          set: row.set,
+        });
+      });
       nodes.forEach((node, idx) => {
         const parent = node?.parentElement;
-        if (!parent || !parent.closest("[data-lang-morph='1']")) return;
+        if (!parent) return;
         const from = String(fromTexts[idx] || node.nodeValue || "");
         const to = String(toTexts[idx] || "");
         if (!to || from === to) return;
-        totalChars += to.length;
-        if (entries.length < maxEntries && totalChars < 3600) {
-          entries.push({ node, from, to });
-        }
+        entries.push({
+          from,
+          to,
+          anchor: parent,
+          set(value) { node.nodeValue = String(value || ""); },
+        });
       });
       return entries;
     }
 
     async function runLangMorphFx(entries, version) {
       if (!entries.length) return;
-      const durationMs = 620;
+      const durationMs = 1500;
       const start = performance.now();
       let cancelled = false;
-      entries.forEach((row) => {
-        row.node.parentElement?.classList.add("lang-morphing");
+      const rows = entries
+        .map((row, idx) => {
+          const anchor = row.anchor || null;
+          const rect = anchor?.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+          const y = rect ? (rect.top + (window.scrollY || 0)) : (idx * 4);
+          return {
+            ...row,
+            _idx: idx,
+            _y: Number.isFinite(y) ? y : (idx * 4),
+          };
+        })
+        .sort((a, b) => (a._y - b._y) || (a._idx - b._idx));
+      const totalRows = rows.length;
+      rows.forEach((row, order) => {
+        const ratio = totalRows > 1 ? (order / (totalRows - 1)) : 0;
+        row._start = ratio * 0.56;
+        row._span = 0.44;
+      });
+      rows.forEach((row) => {
+        row.anchor?.classList?.add("lang-morphing");
       });
       await new Promise((resolve) => {
         const step = (now) => {
@@ -200,9 +286,15 @@
             return;
           }
           const t = Math.max(0, Math.min(1, (now - start) / durationMs));
-          const eased = 1 - Math.pow(1 - t, 2.2);
-          entries.forEach((row) => {
-            row.node.nodeValue = buildMorphFrame(row.to, eased);
+          rows.forEach((row) => {
+            const localRaw = (t - row._start) / row._span;
+            if (localRaw <= 0) {
+              row.set(row.from);
+              return;
+            }
+            const local = Math.max(0, Math.min(1, localRaw));
+            const eased = 1 - Math.pow(1 - local, 2.2);
+            row.set(buildMorphFrame(row.to, eased));
           });
           if (t < 1) {
             window.requestAnimationFrame(step);
@@ -212,11 +304,11 @@
         };
         window.requestAnimationFrame(step);
       });
-      entries.forEach((row) => {
+      rows.forEach((row) => {
         if (!cancelled) {
-          row.node.nodeValue = row.to;
+          row.set(row.to);
         }
-        row.node.parentElement?.classList.remove("lang-morphing");
+        row.anchor?.classList?.remove("lang-morphing");
       });
     }
 
@@ -256,9 +348,9 @@
     async function applyUiLanguage() {
       const version = ++uiTranslateVersion;
       updateLangSwitcherUi();
-      applyStaticUiTranslations();
       const wantsMorphFx = pendingUiLangMorph;
       pendingUiLangMorph = false;
+      const staticEntries = collectStaticUiTranslationTargets(currentUiLang);
       const nodes = collectTranslatableTextNodes(document.body);
       const currentRows = nodes.map((node) => String(node.nodeValue || ""));
       const originals = nodes.map((node) => {
@@ -276,15 +368,27 @@
       if (version !== uiTranslateVersion) return;
       const nextRows = nodes.map((node, idx) => String(targets[idx] || originals[idx] || node.nodeValue || ""));
       if (wantsMorphFx && canUseLangMorphFx()) {
-        const entries = collectLangMorphEntries(nodes, currentRows, nextRows);
-        const morphNodeSet = new Set(entries.map((x) => x.node));
+        const entries = collectLangMorphEntries(nodes, currentRows, nextRows, staticEntries);
+        const morphNodeSet = new Set(nodes.filter((node, idx) => {
+          const from = String(currentRows[idx] || node.nodeValue || "");
+          const to = String(nextRows[idx] || "");
+          return to && from !== to;
+        }));
         nodes.forEach((node, idx) => {
           if (morphNodeSet.has(node)) return;
           node.nodeValue = nextRows[idx];
         });
+        staticEntries.forEach((entry) => {
+          if (String(entry.from || "") === String(entry.to || "")) {
+            entry.set(entry.to);
+          }
+        });
         await runLangMorphFx(entries, version);
         return;
       }
+      staticEntries.forEach((entry) => {
+        entry.set(entry.to);
+      });
       nodes.forEach((node, idx) => {
         node.nodeValue = nextRows[idx];
       });
@@ -301,7 +405,7 @@
         saveUiLang(next);
         updateLangSwitcherUi();
         applyUiLanguage().catch(() => {});
-        const cached = intelFeedLangCache.get(next);
+        const cached = readCachedIntelFeed(next, true);
         if (cached) {
           renderIntelFeed(cached);
           scheduleLangFeedRefresh(cached);
@@ -924,9 +1028,9 @@
     function renderIntelFeed(payload) {
       intelFeedCache = payload && typeof payload === "object" ? payload : null;
       const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
-      const i18nMode = String(payload?._i18n?.mode || "");
-      if (intelFeedCache && i18nMode !== "building") {
+      if (intelFeedCache) {
         intelFeedLangCache.set(payloadLang, intelFeedCache);
+        saveIntelFeedSnapshot(payloadLang, intelFeedCache);
       }
       const generatedAt = document.getElementById("intel-generated-at");
       const latestSourceAt = document.getElementById("intel-latest-source-at");
@@ -1155,30 +1259,41 @@
     async function fetchIntelFeed(langOverride = "") {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
       const canUseApi = window.location.protocol !== "file:";
+      let apiError = null;
       if (canUseApi) {
-        const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}`), {
-          cache: "no-store",
-          credentials: "include",
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload?.ok || typeof payload?.feed !== "object") {
-          if (INTEL_API_BASE) {
-            throw new Error(payload?.error || `HTTP ${response.status}`);
+        try {
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 4500);
+          const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}`), {
+            cache: "no-store",
+            credentials: "include",
+            signal: controller.signal,
+          });
+          window.clearTimeout(timeout);
+          const payload = await response.json().catch(() => ({}));
+          if (response.ok && payload?.ok && typeof payload?.feed === "object") {
+            if (!payload.feed.lang) {
+              payload.feed.lang = requestLang;
+            }
+            return payload.feed;
           }
-        } else {
-          if (!payload.feed.lang) {
-            payload.feed.lang = requestLang;
-          }
-          return payload.feed;
+          apiError = new Error(payload?.error || `HTTP ${response.status}`);
+        } catch (error) {
+          apiError = error instanceof Error ? error : new Error(String(error || "api_fetch_failed"));
         }
       }
-      const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
-      if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
-      const fallback = await response.json();
-      if (fallback && typeof fallback === "object" && !fallback.lang) {
-        fallback.lang = "zh-Hant";
+      try {
+        const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
+        const fallback = await response.json();
+        if (fallback && typeof fallback === "object" && !fallback.lang) {
+          fallback.lang = "zh-Hant";
+        }
+        return fallback;
+      } catch (fallbackError) {
+        if (apiError) throw apiError;
+        throw fallbackError;
       }
-      return fallback;
     }
 
     async function refreshIntelFeedForCurrentLang() {
@@ -1303,9 +1418,17 @@
         const nextSync = toLocalTime(sync?.next_run_at);
         const interval = Number(sync?.schedule_interval_hours || 0);
         const scheduleText = sync?.schedule_enabled
-          ? ` · 自動每 ${interval || 12}h · 下次 ${nextSync}`
+          ? ` · 自動每 ${interval || 0.5}h · 下次 ${nextSync}`
           : " · 自動同步未啟用";
-        syncMetaEl.textContent = `卡片 ${Number(sync?.total_cards || 0)} / 原始 ${Number(sync?.raw_total_cards || 0)} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
+        const total = Number(sync?.total_cards || 0);
+        const sourceTotal = Number(sync?.source_total_cards || sync?.raw_total_cards || total);
+        const rawTotal = Number(sync?.raw_total_cards || sourceTotal || total);
+        const removedSelection = Number(sync?.excluded_by_selection || 0);
+        const removedFeedback = Number(sync?.excluded_by_feedback || 0);
+        const removedSourcePref = Number(sync?.excluded_by_source_preference || 0);
+        const removedAi = Number(sync?.dedupe_ai_removed || 0);
+        const removedLocal = Number(sync?.dedupe_local_removed || 0);
+        syncMetaEl.textContent = `上牆 ${total} / 可用 ${sourceTotal} / 原始 ${rawTotal} · 過濾 手動${removedSelection} 回饋${removedFeedback} 來源去重${removedSourcePref} AI去重${removedAi} 本地去重${removedLocal} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
       }
       if (newPostsEl) {
         const v24 = Number(newPosts?.new_cards_24h || 0);
@@ -1315,7 +1438,12 @@
       if (newMetaEl) {
         const pending = Number(newPosts?.pending_processing || 0);
         const flag = Boolean(newPosts?.is_processing);
-        newMetaEl.textContent = flag ? `背景整理進行中，待處理 ${pending} 件` : "目前沒有待處理整理任務";
+        const syncRunning = Boolean(newPosts?.sync_running);
+        const queuedJobs = Number(newPosts?.queued_jobs || 0);
+        const runningJobs = Number(newPosts?.running_jobs || 0);
+        newMetaEl.textContent = flag
+          ? `背景整理進行中，待處理 ${pending} 件（同步 ${syncRunning ? "1" : "0"} · 任務 跑中 ${runningJobs} / 排隊 ${queuedJobs}）`
+          : "目前沒有待處理整理任務";
       }
       if (jobsEl) {
         const counts = jobs?.counts || {};
@@ -1358,9 +1486,11 @@
           const total = Number(row?.total || 0);
           const percent = Number(row?.percent || 0);
           const rawStatus = String(row?.status || "pending");
+          const cacheHits = Number(row?.cached_hits || 0);
+          const pendingCount = Number(row?.pending_count || Math.max(0, total - done));
           const finalizing = rawStatus === "running" && total > 0 && done >= total && !publishedLangs.includes(tag);
           const status = finalizing ? "finalizing" : rawStatus;
-          return `${tag}:${status} ${percent}% (${done}/${total})`;
+          return `${tag}:${status} ${percent}% (${done}/${total}) cache${cacheHits} pending${pendingCount}`;
         });
         i18nMetaEl.textContent = `已發布：${publishedLangs.length ? publishedLangs.join(", ") : "--"} · ${details.join(" · ")}`;
       }
@@ -1439,7 +1569,7 @@
       const monitorRows = [];
       const syncNext = toLocalTime(sync?.next_run_at);
       monitorRows.push(
-        `X/Twitter sync：${String(sync?.status || "idle")} · interval ${Number(sync?.schedule_interval_hours || 12)}h · window ${Number(sync?.schedule_window_days || 30)}d · next ${syncNext}`
+        `X/Twitter sync：${String(sync?.status || "idle")} · interval ${Number(sync?.schedule_interval_hours || 0.5)}h · window ${Number(sync?.schedule_window_days || 30)}d · next ${syncNext}`
       );
       monitorRows.push(
         `Discord monitor：${discord?.enabled ? "on" : "off"} · channel ${Array.isArray(discord?.channel_ids) ? discord.channel_ids.length : 0} · cards ${Number(discord?.cards_total || 0)}`
@@ -1751,6 +1881,11 @@
     }
 
     async function renderIntelOnLoad() {
+      const cached = readCachedIntelFeed(currentUiLang, true);
+      if (cached) {
+        renderIntelFeed(cached);
+        scheduleLangFeedRefresh(cached);
+      }
       try {
         await refreshIntelFeedForCurrentLang();
         prefetchIntelFeeds();

@@ -18,6 +18,7 @@
       const authForm = document.getElementById("intel-auth-form");
       const authSubmit = document.getElementById("intel-auth-submit");
       const adminRefreshBtn = document.getElementById("intel-admin-refresh");
+      const adminSyncNowBtn = document.getElementById("intel-admin-sync-now");
       const adminBackupRunBtn = document.getElementById("intel-admin-backup-run");
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
@@ -295,13 +296,17 @@
         }
       });
 
-      syncBtn.addEventListener("click", async () => {
+      async function runIntelSyncNow() {
         if (!intelCanEdit()) {
           openIntelAuthModal();
           setIntelMessage("請先登入管理員帳號後再同步。", "error");
-          return;
+          return false;
         }
         syncBtn.disabled = true;
+        if (adminSyncNowBtn) {
+          adminSyncNowBtn.disabled = true;
+          adminSyncNowBtn.textContent = "掃描中...";
+        }
         stopAnalyzePolling(false);
         setIntelMessage("正在同步最近 30 天資料...", "");
         startIntelAdminPolling();
@@ -313,12 +318,34 @@
           await refreshIntelFeedForCurrentLang();
           refreshIntelAdminStatus();
           setIntelMessage("同步完成。", "ok");
+          return true;
         } catch (error) {
           setIntelMessage(`同步失敗：${error.message}（確認後端 API 可連線）`, "error");
+          return false;
         } finally {
           syncBtn.disabled = false;
+          if (adminSyncNowBtn) {
+            adminSyncNowBtn.disabled = false;
+            adminSyncNowBtn.textContent = "立即掃描（30 天）";
+          }
         }
+      }
+
+      syncBtn.addEventListener("click", async () => {
+        await runIntelSyncNow();
       });
+
+      if (adminSyncNowBtn && !adminSyncNowBtn.dataset.boundSyncNow) {
+        adminSyncNowBtn.dataset.boundSyncNow = "1";
+        adminSyncNowBtn.addEventListener("click", async () => {
+          if (!intelCanEdit()) {
+            openIntelAuthModal();
+            setIntelMessage("請先登入管理員帳號後再啟動掃描。", "error");
+            return;
+          }
+          await runIntelSyncNow();
+        });
+      }
 
       if (pokemonNewsRefreshBtn) {
         pokemonNewsRefreshBtn.addEventListener("click", async () => {
@@ -620,10 +647,7 @@
         categoryHint.textContent = `目前顯示：${categoryLabels[nextCategory] || nextCategory}。`;
       }
       if (opts.updateHash) {
-        const targetId = categoryTargets[nextCategory];
-        if (targetId) {
-          history.replaceState(null, "", `#${targetId}`);
-        }
+        history.replaceState(null, "", `#cat-${nextCategory}`);
       }
       if (opts.smooth) {
         const targetId = categoryTargets[nextCategory];
@@ -659,17 +683,15 @@
       window.addEventListener("hashchange", () => {
         const fromHash = resolveCategoryFromHash(window.location.hash);
         if (fromHash && fromHash !== activeCategory) {
-          setActiveCategory(fromHash, { updateHash: false, smooth: false });
+          setActiveCategory(fromHash, { updateHash: true, smooth: false });
         }
       });
-      const initialCategory = resolveCategoryFromHash(window.location.hash) || "events";
-      setActiveCategory(initialCategory, { updateHash: false, smooth: false });
-      window.requestAnimationFrame(() => {
-        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-      });
-      window.addEventListener("load", () => {
-        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-      }, { once: true });
+      const initialFromHash = resolveCategoryFromHash(window.location.hash);
+      if (initialFromHash) {
+        setActiveCategory(initialFromHash, { updateHash: true, smooth: false });
+      } else {
+        setActiveCategory("events", { updateHash: false, smooth: false });
+      }
     }
 
     function setupDirectGameLink() {

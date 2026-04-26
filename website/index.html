@@ -10,10 +10,31 @@
     if ("scrollRestoration" in history) {
       history.scrollRestoration = "manual";
     }
+    (function normalizeInitialCategoryHash() {
+      const legacyToCategory = {
+        events: "events",
+        versions: "events",
+        intel: "official",
+        sbt: "sbt",
+        pipeline: "pokemon",
+        timeline: "alpha",
+        ops: "tools",
+        world: "other",
+        community: "other",
+      };
+      const rawHash = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
+      const legacyCategory = legacyToCategory[rawHash] || "";
+      if (legacyCategory) {
+        history.replaceState(null, "", `${window.location.pathname}${window.location.search}#cat-${legacyCategory}`);
+      }
+      window.addEventListener("pageshow", () => {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      }, { once: true });
+    })();
   </script>
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
-  <link rel="stylesheet" href="./assets/index-base.css?v=20260426-lang8" />
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260426-layout13" />
   <link rel="stylesheet" href="./assets/index-intel.css?v=20260426-lang7" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260426-lang7" />
 </head>
@@ -27,13 +48,13 @@
         </a>
         <nav class="nav-links">
           <a id="nav-game-link" href="./game.html">Game</a>
-          <a href="#events" data-nav-category="events">活動</a>
-          <a href="#intel" data-nav-category="official">官方更新</a>
-          <a href="#sbt" data-nav-category="sbt">SBT</a>
-          <a href="#pipeline" data-nav-category="pokemon">寶可夢</a>
-          <a href="#timeline" data-nav-category="alpha">未來 Alpha</a>
-          <a href="#ops" data-nav-category="tools">工具</a>
-          <a href="#world" data-nav-category="other">社群精選</a>
+          <a href="#cat-events" data-nav-category="events">活動</a>
+          <a href="#cat-official" data-nav-category="official">官方更新</a>
+          <a href="#cat-sbt" data-nav-category="sbt">SBT</a>
+          <a href="#cat-pokemon" data-nav-category="pokemon">寶可夢</a>
+          <a href="#cat-alpha" data-nav-category="alpha">未來 Alpha</a>
+          <a href="#cat-tools" data-nav-category="tools">工具</a>
+          <a href="#cat-other" data-nav-category="other">社群精選</a>
         </nav>
         <div class="nav-actions">
           <div id="lang-switcher" class="lang-switcher" aria-label="Language" data-no-i18n="1">
@@ -57,7 +78,6 @@
     <section id="hero" class="panel hero">
       <div data-lang-morph="1">
         <span class="chip observe" style="--delay: 80ms;"><iconify-icon icon="lucide:gem"></iconify-icon>RWA on BNB Chain</span>
-        <div class="hero-batch observe" style="--delay: 120ms;">Batch 1</div>
         <h1 class="observe" style="--delay: 140ms;">
           <span class="line">Renaiss</span>
           <span class="line"><span class="text-gradient">Aggregator</span></span>
@@ -624,7 +644,10 @@
       <section id="intel-admin-monitor" class="intel-admin-monitor" style="display:none;">
         <div class="intel-admin-head">
           <div class="intel-auth-sub" style="margin:0;">登入後可查看各工作狀態、同步進度與新貼文整理情況。</div>
-          <button id="intel-admin-refresh" type="button" class="intel-auth-btn">刷新狀態</button>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="intel-admin-sync-now" type="button" class="intel-auth-btn">立即掃描（30 天）</button>
+            <button id="intel-admin-refresh" type="button" class="intel-auth-btn">刷新看板</button>
+          </div>
         </div>
         <p id="intel-admin-updated-at" class="intel-auth-sub">最後更新：--</p>
         <div class="intel-admin-grid">
@@ -740,9 +763,9 @@
     }
   </script>
 
-  <script src="./assets/index-i18n.js?v=20260426-i18n1"></script>
-  <script src="./assets/index-data.js?v=20260426-i18n1"></script>
-  <script src="./assets/index-render.js?v=20260426-i18n3"></script>
-  <script src="./assets/index-actions.js?v=20260426-lang7"></script>
+  <script src="./assets/index-i18n.js?v=20260426-i18n2"></script>
+  <script src="./assets/index-data.js?v=20260426-intelfast1"></script>
+  <script src="./assets/index-render.js?v=20260426-intelfast2"></script>
+  <script src="./assets/index-actions.js?v=20260426-intelfast1"></script>
 </body>
 </html>

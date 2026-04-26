@@ -1,8 +1,8 @@
-    }
-
     .season-comparator {
       position: relative;
-      min-height: min(64vh, 620px);
+      aspect-ratio: 16 / 9;
+      min-height: clamp(500px, 68vh, 760px);
+      width: 100%;
       border-radius: 20px;
       border: 1px solid rgba(233, 243, 255, 0.92);
       overflow: hidden;
@@ -716,7 +716,8 @@
       }
 
       .season-comparator {
-        min-height: min(58vh, 560px);
+        aspect-ratio: 16 / 10;
+        min-height: clamp(420px, 58vh, 620px);
       }
 
       .season-layer-overlay {
@@ -974,6 +975,11 @@
 
       .season-ui {
         inset: 0.64rem 0.64rem auto auto;
+      }
+
+      .season-comparator {
+        aspect-ratio: 16 / 11;
+        min-height: clamp(350px, 54vh, 540px);
       }
 
       .neural-stage {
