@@ -791,6 +791,55 @@ def _apply_feed_translation(node: object, mapping: dict[str, str]) -> object:
     return _walk(node)
 
 
+def _build_best_effort_mapping(feed: dict[str, object], lang: str) -> tuple[dict[str, str], dict[str, object]]:
+    tag = _normalize_lang_tag(lang)
+    texts = _collect_feed_i18n_strings(feed)
+    mapping: dict[str, str] = {}
+    total = len(texts)
+    translated = 0
+    if tag == "zh-Hant":
+        for text in texts:
+            mapping[text] = text
+        return mapping, {"lang": tag, "total": total, "translated": total, "coverage": 1.0, "mode": "base-cache"}
+    if tag == "zh-Hans":
+        for text in texts:
+            out = _to_zh_hans(text)
+            mapping[text] = out
+        return mapping, {"lang": tag, "total": total, "translated": total, "coverage": 1.0, "mode": "local"}
+
+    with TRANSLATION_LOCK:
+        _load_translation_cache_unlocked()
+        cache = TRANSLATION_CACHE
+        for text in texts:
+            key = _translation_cache_key(tag, text)
+            out = str(cache.get(key) or "").strip()
+            if out and out != text and not _is_untranslated_for_lang(text, out, tag):
+                mapping[text] = out
+                translated += 1
+            else:
+                mapping[text] = text
+    coverage = round((translated / total), 4) if total else 1.0
+    return mapping, {
+        "lang": tag,
+        "total": total,
+        "translated": translated,
+        "coverage": coverage,
+        "mode": "cache-best-effort",
+    }
+
+
+def _best_effort_localized_feed(feed: dict[str, object], lang: str) -> tuple[dict[str, object], dict[str, object]]:
+    tag = _normalize_lang_tag(lang)
+    mapping, qa = _build_best_effort_mapping(feed, tag)
+    localized = _apply_feed_translation(copy.deepcopy(feed), mapping)
+    if isinstance(localized, dict):
+        localized["lang"] = tag
+        return localized, qa
+    out = copy.deepcopy(feed)
+    out["lang"] = tag
+    return out, qa
+
+
 def _is_untranslated_for_lang(source: str, translated: str, lang: str) -> bool:
     src = str(source or "").strip()
     dst = str(translated or "").strip()
@@ -1076,6 +1125,14 @@ def _build_i18n_feed_bundle(
         texts = _collect_feed_i18n_strings(feed)
         langs_payload: dict[str, object] = dict(cached_langs)
         qa_payload: dict[str, object] = dict(cached_qa)
+        bundle: dict[str, object] = {
+            "version": I18N_BUILD_VERSION,
+            "generated_at": _now_iso(),
+            "source_generated_at": src_generated,
+            "langs": langs_payload,
+            "qa": qa_payload,
+            "targets_count": len(texts),
+        }
         for tag in normalized_targets:
             mapping, qa = _translate_feed_text_map(texts, tag)
             localized = _apply_feed_translation(copy.deepcopy(feed), mapping)
@@ -1083,13 +1140,24 @@ def _build_i18n_feed_bundle(
                 localized["lang"] = tag
             langs_payload[tag] = localized
             qa_payload[tag] = qa
+            # Persist per-language progress so completed langs can be served
+            # immediately while other langs are still translating.
+            bundle = {
+                "version": I18N_BUILD_VERSION,
+                "generated_at": _now_iso(),
+                "source_generated_at": src_generated,
+                "langs": dict(langs_payload),
+                "qa": dict(qa_payload),
+                "targets_count": len(texts),
+            }
+            _write_i18n_feed_bundle(bundle)
 
-        bundle: dict[str, object] = {
+        bundle = {
             "version": I18N_BUILD_VERSION,
             "generated_at": _now_iso(),
             "source_generated_at": src_generated,
-            "langs": langs_payload,
-            "qa": qa_payload,
+            "langs": dict(langs_payload),
+            "qa": dict(qa_payload),
             "targets_count": len(texts),
         }
         _write_i18n_feed_bundle(bundle)
@@ -1220,22 +1288,22 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             bundle_generated = str(bundle.get("source_generated_at") or "").strip()
         else:
             _build_i18n_feed_bundle_async(feed, force=True, target_langs=[tag])
-            out = copy.deepcopy(feed)
-            out["lang"] = tag
+            out, quick_qa = _best_effort_localized_feed(feed, tag)
             out["_i18n"] = {
                 "mode": "building",
                 "source_generated_at": src_generated,
+                "qa": quick_qa,
                 "state": _i18n_state_snapshot(),
             }
             return out
 
     if not bundle or bundle_generated != src_generated:
         _build_i18n_feed_bundle_async(feed, force=True, target_langs=[tag])
-        out = copy.deepcopy(feed)
-        out["lang"] = tag
+        out, quick_qa = _best_effort_localized_feed(feed, tag)
         out["_i18n"] = {
             "mode": "building",
             "source_generated_at": src_generated,
+            "qa": quick_qa,
             "state": _i18n_state_snapshot(),
         }
         return out
@@ -1246,8 +1314,11 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     qa_for_tag = qa_rows.get(tag) if isinstance(qa_rows.get(tag), dict) else {}
     coverage = float(qa_for_tag.get("coverage") or 0.0) if isinstance(qa_for_tag, dict) else 0.0
     acceptable = tag in {"zh-Hant", "zh-Hans"} or coverage >= I18N_MIN_ACCEPTABLE_COVERAGE
-    if isinstance(localized, dict) and acceptable:
+    if isinstance(localized, dict):
+        # Prefer serving best-effort localized content instead of falling back
+        # to full base Chinese when coverage is below threshold.
         out = copy.deepcopy(localized)
+        out["lang"] = tag
     else:
         if tag == "zh-Hans":
             bundle = _build_i18n_feed_bundle(feed, force=True, target_langs=[tag])
@@ -1260,10 +1331,16 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             acceptable = True
         else:
             _build_i18n_feed_bundle_async(feed, force=True, target_langs=[tag])
-            out = copy.deepcopy(feed)
-            out["lang"] = tag
+            out, quick_qa = _best_effort_localized_feed(feed, tag)
+            qa_for_tag = quick_qa
     out["_i18n"] = {
-        "mode": "pretranslated" if isinstance(localized, dict) and acceptable else "building",
+        "mode": (
+            "pretranslated"
+            if isinstance(localized, dict) and acceptable
+            else "pretranslated-partial"
+            if isinstance(localized, dict)
+            else "building"
+        ),
         "source_generated_at": str(bundle.get("source_generated_at") or ""),
         "qa": qa_for_tag,
         "state": _i18n_state_snapshot(),

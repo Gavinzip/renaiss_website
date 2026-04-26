@@ -1167,6 +1167,8 @@
       const jobsMetaEl = document.getElementById("intel-admin-jobs-meta");
       const newsEl = document.getElementById("intel-admin-news");
       const newsMetaEl = document.getElementById("intel-admin-news-meta");
+      const i18nEl = document.getElementById("intel-admin-i18n");
+      const i18nMetaEl = document.getElementById("intel-admin-i18n-meta");
       const storageEl = document.getElementById("intel-admin-storage");
       const storageMetaEl = document.getElementById("intel-admin-storage-meta");
       const dataRepoEl = document.getElementById("intel-admin-data-repo");
@@ -1228,6 +1230,31 @@
         const providerList = [...new Set(langs.map((x) => String(x?.provider || "").trim()).filter(Boolean))];
         const providerText = providerList.length ? ` · provider ${providerList.join(",")}` : "";
         newsMetaEl.textContent = nexts.length ? `下次刷新：${nexts[0]}${providerText}` : `尚未排定下一次刷新${providerText}`;
+      }
+      const i18nProgress = i18n?.lang_progress && typeof i18n.lang_progress === "object" ? i18n.lang_progress : {};
+      if (i18nEl) {
+        const i18nStatus = String(i18n?.status || "idle");
+        const publishedLangs = Array.isArray(i18n?.langs) ? i18n.langs.filter(Boolean) : [];
+        if (i18nStatus === "running" || i18nStatus === "queued") {
+          i18nEl.textContent = `翻譯${i18nStatus === "running" ? "進行中" : "排隊中"} · 已發布 ${publishedLangs.length} 語言`;
+        } else {
+          i18nEl.textContent = `翻譯${i18nStatus === "ok" ? "完成" : "待命"} · 已發布 ${publishedLangs.length} 語言`;
+        }
+      }
+      if (i18nMetaEl) {
+        const publishedLangs = Array.isArray(i18n?.langs) ? i18n.langs.filter(Boolean) : [];
+        const tags = ["zh-Hant", "zh-Hans", "en", "ko"];
+        const details = tags.map((tag) => {
+          const row = i18nProgress[tag] || {};
+          const done = Number(row?.done || 0);
+          const total = Number(row?.total || 0);
+          const percent = Number(row?.percent || 0);
+          const rawStatus = String(row?.status || "pending");
+          const finalizing = rawStatus === "running" && total > 0 && done >= total && !publishedLangs.includes(tag);
+          const status = finalizing ? "finalizing" : rawStatus;
+          return `${tag}:${status} ${percent}% (${done}/${total})`;
+        });
+        i18nMetaEl.textContent = `已發布：${publishedLangs.length ? publishedLangs.join(", ") : "--"} · ${details.join(" · ")}`;
       }
       if (storageEl) {
         storageEl.textContent = storage?.using_symlink ? "使用掛載資料夾" : "使用本地資料夾";
@@ -1327,9 +1354,8 @@
       const i18nLangs = Array.isArray(i18n?.langs) && i18n.langs.length ? i18n.langs.join(",") : "--";
       const i18nFinishedAt = toLocalTime(i18n?.finished_at);
       monitorRows.push(`I18N feed ${i18nStatus} · langs ${i18nLangs} · finished ${i18nFinishedAt}`);
-      const progress = i18n?.lang_progress && typeof i18n.lang_progress === "object" ? i18n.lang_progress : {};
       ["zh-Hant", "zh-Hans", "en", "ko"].forEach((tag) => {
-        const row = progress[tag] || {};
+        const row = i18nProgress[tag] || {};
         const status = String(row?.status || "pending");
         const percent = Number(row?.percent || 0);
         const done = Number(row?.done || 0);
