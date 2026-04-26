@@ -123,6 +123,103 @@
       el.classList.toggle("is-ready", mode === "ready");
     }
 
+    const LANG_MORPH_LATIN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const LANG_MORPH_CJK = "天地玄黃宇宙洪荒風火雷電星月山海光影流轉";
+    const LANG_MORPH_HANGUL = "가나다라마바사아자차카타파하우리세계여정";
+    let pendingUiLangMorph = false;
+
+    function canUseLangMorphFx() {
+      try {
+        return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      } catch (_error) {
+        return true;
+      }
+    }
+
+    function randomMorphChar(sample) {
+      const src = String(sample || "");
+      if (!src) return "";
+      if (/\s/.test(src)) return src;
+      if (/[\u4e00-\u9fff]/.test(src)) {
+        return LANG_MORPH_CJK[Math.floor(Math.random() * LANG_MORPH_CJK.length)] || src;
+      }
+      if (/[\uac00-\ud7a3]/.test(src)) {
+        return LANG_MORPH_HANGUL[Math.floor(Math.random() * LANG_MORPH_HANGUL.length)] || src;
+      }
+      if (/[A-Za-z0-9]/.test(src)) {
+        return LANG_MORPH_LATIN[Math.floor(Math.random() * LANG_MORPH_LATIN.length)] || src;
+      }
+      return src;
+    }
+
+    function buildMorphFrame(target, progress) {
+      const chars = Array.from(String(target || ""));
+      if (!chars.length) return "";
+      const p = Math.max(0, Math.min(1, Number(progress || 0)));
+      const revealCount = Math.floor(chars.length * p);
+      return chars
+        .map((char, idx) => {
+          if (/\s/.test(char)) return char;
+          if (idx <= revealCount) return char;
+          return randomMorphChar(char);
+        })
+        .join("");
+    }
+
+    function collectLangMorphEntries(nodes, fromTexts, toTexts) {
+      const entries = [];
+      const maxEntries = 140;
+      let totalChars = 0;
+      nodes.forEach((node, idx) => {
+        const parent = node?.parentElement;
+        if (!parent || !parent.closest("[data-lang-morph='1']")) return;
+        const from = String(fromTexts[idx] || node.nodeValue || "");
+        const to = String(toTexts[idx] || "");
+        if (!to || from === to) return;
+        totalChars += to.length;
+        if (entries.length < maxEntries && totalChars < 3600) {
+          entries.push({ node, from, to });
+        }
+      });
+      return entries;
+    }
+
+    async function runLangMorphFx(entries, version) {
+      if (!entries.length) return;
+      const durationMs = 620;
+      const start = performance.now();
+      let cancelled = false;
+      entries.forEach((row) => {
+        row.node.parentElement?.classList.add("lang-morphing");
+      });
+      await new Promise((resolve) => {
+        const step = (now) => {
+          if (version !== uiTranslateVersion) {
+            cancelled = true;
+            resolve();
+            return;
+          }
+          const t = Math.max(0, Math.min(1, (now - start) / durationMs));
+          const eased = 1 - Math.pow(1 - t, 2.2);
+          entries.forEach((row) => {
+            row.node.nodeValue = buildMorphFrame(row.to, eased);
+          });
+          if (t < 1) {
+            window.requestAnimationFrame(step);
+          } else {
+            resolve();
+          }
+        };
+        window.requestAnimationFrame(step);
+      });
+      entries.forEach((row) => {
+        if (!cancelled) {
+          row.node.nodeValue = row.to;
+        }
+        row.node.parentElement?.classList.remove("lang-morphing");
+      });
+    }
+
     function scheduleLangFeedRefresh(payload) {
       if (langFeedRefreshTimer) {
         window.clearTimeout(langFeedRefreshTimer);
@@ -160,7 +257,10 @@
       const version = ++uiTranslateVersion;
       updateLangSwitcherUi();
       applyStaticUiTranslations();
+      const wantsMorphFx = pendingUiLangMorph;
+      pendingUiLangMorph = false;
       const nodes = collectTranslatableTextNodes(document.body);
+      const currentRows = nodes.map((node) => String(node.nodeValue || ""));
       const originals = nodes.map((node) => {
         const stored = uiTextNodeCache.get(node);
         const current = String(node.nodeValue || "");
@@ -170,16 +270,23 @@
         uiTextNodeCache.set(node, current);
         return current;
       });
-      if (currentUiLang === "zh-Hant") {
+      const targets = currentUiLang === "zh-Hant"
+        ? originals
+        : await translateTextsForUi(currentUiLang, originals);
+      if (version !== uiTranslateVersion) return;
+      const nextRows = nodes.map((node, idx) => String(targets[idx] || originals[idx] || node.nodeValue || ""));
+      if (wantsMorphFx && canUseLangMorphFx()) {
+        const entries = collectLangMorphEntries(nodes, currentRows, nextRows);
+        const morphNodeSet = new Set(entries.map((x) => x.node));
         nodes.forEach((node, idx) => {
-          node.nodeValue = originals[idx];
+          if (morphNodeSet.has(node)) return;
+          node.nodeValue = nextRows[idx];
         });
+        await runLangMorphFx(entries, version);
         return;
       }
-      const translated = await translateTextsForUi(currentUiLang, originals);
-      if (version !== uiTranslateVersion) return;
       nodes.forEach((node, idx) => {
-        node.nodeValue = String(translated[idx] || originals[idx] || "");
+        node.nodeValue = nextRows[idx];
       });
     }
 
@@ -190,6 +297,7 @@
       select.addEventListener("change", async () => {
         const next = normalizeUiLang(select.value || "zh-Hant");
         if (next === currentUiLang) return;
+        pendingUiLangMorph = true;
         saveUiLang(next);
         updateLangSwitcherUi();
         applyUiLanguage().catch(() => {});

@@ -173,6 +173,15 @@
       background: #ffffff;
     }
 
+    [data-lang-morph="1"] .lang-morphing {
+      position: relative;
+      color: #2c6db1 !important;
+      text-shadow:
+        0 0 10px rgba(102, 182, 255, 0.42),
+        0 0 24px rgba(147, 110, 255, 0.28);
+      transition: color 180ms ease, text-shadow 180ms ease;
+    }
+
     .nav-action {
       text-decoration: none;
       color: #1f3f64;
@@ -446,6 +455,13 @@
       font-size: 1rem;
       max-width: 66ch;
       margin-bottom: 1rem;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      [data-lang-morph="1"] .lang-morphing {
+        transition: none;
+        text-shadow: none;
+      }
     }
 
     .hero-intro .en {
