@@ -18,25 +18,68 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Thread
+from urllib.parse import parse_qs
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from minimax_news import fetch_pokemon_latest_news
-from x_intel_core import add_classification_feedback, add_manual_tweet, set_manual_selection, sync_accounts
+from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
+from x_intel_core import add_classification_feedback, add_manual_tweet, feedback_memory_stats, load_environment, set_manual_selection, sync_accounts
+from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
+from website_storage import get_website_data_dir, setup_website_storage
+from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, translate_texts
 
 ROOT = Path(__file__).resolve().parents[1]
-FEED_PATH = ROOT / "data" / "x_intel_feed.json"
-JOBS_PATH = ROOT / "data" / "x_intel_jobs.json"
-POKEMON_NEWS_CACHE_PATH = ROOT / "data" / "pokemon_latest_news.json"
+
+# Ensure project/website .env is loaded before storage/auth/env constants are resolved.
+load_environment()
+DATA_ROOT = get_website_data_dir(ROOT)
+RESTORE_STATE = restore_website_data_from_backup(DATA_ROOT, ROOT.parent)
+STORAGE_STATE = setup_website_storage(ROOT)
+
+FEED_PATH = DATA_ROOT / "x_intel_feed.json"
+JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
+POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
+POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
+configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
 SESSIONS_LOCK = Lock()
+SYNC_STATE_LOCK = Lock()
+BACKUP_STATE_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
+SYNC_STATE: dict[str, object] = {
+    "status": "idle",
+    "started_at": "",
+    "finished_at": "",
+    "last_success_at": "",
+    "last_error": "",
+    "trigger": "",
+    "duration_ms": 0,
+    "schedule_enabled": False,
+    "schedule_interval_hours": 0.5,
+    "schedule_window_days": 30,
+    "next_run_at": "",
+    "last_scheduled_at": "",
+}
+BACKUP_STATE: dict[str, object] = {
+    "status": "idle",
+    "started_at": "",
+    "finished_at": "",
+    "last_success_at": "",
+    "last_error": "",
+    "trigger": "",
+    "duration_ms": 0,
+    "changed": False,
+    "skipped": False,
+    "reason": "",
+}
 MAX_JOB_ITEMS = 120
 POKEMON_NEWS_CACHE_MINUTES = 50
 DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
 DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
+DEFAULT_X_SYNC_INTERVAL_HOURS = 0.5
+DEFAULT_X_SYNC_WINDOW_DAYS = 30
 POKEMON_NEWS_STATE: dict[str, dict] = {}
 AUTH_COOKIE_NAME = "intel_admin_session"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -52,8 +95,8 @@ PROTECTED_POST_PATHS = {
     "/api/intel/pick",
     "/api/intel/feedback",
     "/api/intel/job-status",
+    "/api/intel/backup",
 }
-
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "")).strip().lower()
@@ -74,7 +117,7 @@ def _parse_allowed_origins(raw: str | None) -> set[str]:
     if not text:
         return set(DEFAULT_ALLOWED_ORIGINS)
     parts = [x.strip() for x in text.split(",") if x.strip()]
-    return set(parts) or set(DEFAULT_ALLOWED_ORIGINS)
+    return set(DEFAULT_ALLOWED_ORIGINS).union(parts)
 
 
 AUTH_REQUIRED = _env_flag("INTEL_AUTH_REQUIRED", True)
@@ -87,6 +130,9 @@ COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
 COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
 COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("INTEL_ALLOWED_ORIGINS", ""))
+
+TRANSLATE_MAX_ITEMS = 220
+TRANSLATE_MAX_CHARS = 320
 
 
 def _now_iso() -> str:
@@ -211,10 +257,18 @@ def _trim_jobs_unlocked(jobs: dict) -> None:
 
 
 def _normalize_lang_tag(lang: str | None) -> str:
-    raw = str(lang or "").strip()
+    raw = str(lang or "").strip().lower()
     if not raw:
         return "zh-Hant"
-    return raw
+    if raw.startswith("zh-hant") or raw in {"zh-tw", "zh-hk", "zh-mo"}:
+        return "zh-Hant"
+    if raw.startswith("zh"):
+        return "zh-Hans"
+    if raw.startswith("ko"):
+        return "ko"
+    if raw.startswith("en"):
+        return "en"
+    return "zh-Hant"
 
 
 def _state_for_lang_unlocked(lang: str) -> dict:
@@ -253,7 +307,403 @@ def _news_cache_path(lang: str | None) -> Path:
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", tag)
     if not safe:
         return POKEMON_NEWS_CACHE_PATH
-    return ROOT / "data" / f"pokemon_latest_news_{safe}.json"
+    return DATA_ROOT / f"pokemon_latest_news_{safe}.json"
+
+
+def _read_feed_snapshot() -> dict:
+    if not FEED_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return int(default)
+
+
+def _count_recent_cards(cards: list[dict], hours: int) -> int:
+    if not cards:
+        return 0
+    now = datetime.now(timezone.utc)
+    window = timedelta(hours=max(1, int(hours)))
+    total = 0
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        dt = _parse_iso_utc(card.get("published_at"))
+        if not dt:
+            continue
+        if now - dt <= window:
+            total += 1
+    return total
+
+
+def _latest_card_time(cards: list[dict]) -> str:
+    latest: datetime | None = None
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        dt = _parse_iso_utc(card.get("published_at"))
+        if not dt:
+            continue
+        if latest is None or dt > latest:
+            latest = dt
+    return latest.isoformat() if latest else ""
+
+
+def _sync_state_snapshot() -> dict:
+    with SYNC_STATE_LOCK:
+        return dict(SYNC_STATE)
+
+
+def _start_sync_state(trigger: str = "") -> None:
+    with SYNC_STATE_LOCK:
+        SYNC_STATE["status"] = "running"
+        SYNC_STATE["started_at"] = _now_iso()
+        SYNC_STATE["finished_at"] = ""
+        SYNC_STATE["last_error"] = ""
+        SYNC_STATE["trigger"] = str(trigger or "manual")
+        SYNC_STATE["duration_ms"] = 0
+
+
+def _finish_sync_state_ok(started_monotonic: float) -> None:
+    now_iso = _now_iso()
+    duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
+    with SYNC_STATE_LOCK:
+        SYNC_STATE["status"] = "ok"
+        SYNC_STATE["finished_at"] = now_iso
+        SYNC_STATE["last_success_at"] = now_iso
+        SYNC_STATE["last_error"] = ""
+        SYNC_STATE["duration_ms"] = duration_ms
+
+
+def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
+    now_iso = _now_iso()
+    duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
+    with SYNC_STATE_LOCK:
+        SYNC_STATE["status"] = "failed"
+        SYNC_STATE["finished_at"] = now_iso
+        SYNC_STATE["last_error"] = str(error_message or "unknown_error")
+        SYNC_STATE["duration_ms"] = duration_ms
+
+
+def _mark_sync_schedule(
+    *,
+    enabled: bool,
+    interval_hours: float,
+    window_days: int,
+    next_run_at: str = "",
+    last_scheduled_at: str = "",
+) -> None:
+    with SYNC_STATE_LOCK:
+        SYNC_STATE["schedule_enabled"] = bool(enabled)
+        SYNC_STATE["schedule_interval_hours"] = float(interval_hours)
+        SYNC_STATE["schedule_window_days"] = int(window_days)
+        if next_run_at:
+            SYNC_STATE["next_run_at"] = next_run_at
+        if last_scheduled_at:
+            SYNC_STATE["last_scheduled_at"] = last_scheduled_at
+
+
+def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict:
+    started_monotonic = time.monotonic()
+    _start_sync_state(trigger=trigger)
+    try:
+        result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
+        build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
+        _finish_sync_state_ok(started_monotonic)
+        return result
+    except Exception as sync_error:
+        _finish_sync_state_failed(started_monotonic, str(sync_error))
+        raise
+
+
+def _warm_i18n_bundle_from_feed() -> None:
+    if not FEED_PATH.exists():
+        return
+    try:
+        feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(feed, dict):
+        return
+    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+
+
+def _start_x_sync_scheduler(
+    *,
+    interval_hours: float = DEFAULT_X_SYNC_INTERVAL_HOURS,
+    window_days: int = DEFAULT_X_SYNC_WINDOW_DAYS,
+    run_on_startup: bool = False,
+) -> None:
+    safe_interval_hours = max(0.25, float(interval_hours or DEFAULT_X_SYNC_INTERVAL_HOURS))
+    safe_window_days = max(1, int(window_days or DEFAULT_X_SYNC_WINDOW_DAYS))
+    interval_seconds = int(round(safe_interval_hours * 60 * 60))
+    first_delay = 8 if run_on_startup else interval_seconds
+    first_next = (datetime.now(timezone.utc) + timedelta(seconds=first_delay)).isoformat()
+    _mark_sync_schedule(
+        enabled=True,
+        interval_hours=safe_interval_hours,
+        window_days=safe_window_days,
+        next_run_at=first_next,
+    )
+
+    def _loop() -> None:
+        delay = first_delay
+        while True:
+            time.sleep(max(1, int(delay)))
+            scheduled_at = _now_iso()
+            next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
+            _mark_sync_schedule(
+                enabled=True,
+                interval_hours=safe_interval_hours,
+                window_days=safe_window_days,
+                next_run_at=next_run,
+                last_scheduled_at=scheduled_at,
+            )
+            with SYNC_STATE_LOCK:
+                is_running = str(SYNC_STATE.get("status") or "").strip().lower() == "running"
+            if is_running:
+                with SYNC_STATE_LOCK:
+                    SYNC_STATE["last_error"] = "scheduled sync skipped: another sync is running"
+                delay = interval_seconds
+                continue
+            try:
+                _run_intel_sync(accounts=None, days=safe_window_days, trigger="scheduled")
+            except Exception:
+                pass
+            delay = interval_seconds
+
+    Thread(target=_loop, daemon=True).start()
+
+
+def _backup_state_snapshot() -> dict:
+    with BACKUP_STATE_LOCK:
+        return dict(BACKUP_STATE)
+
+
+def _start_backup_state(trigger: str = "") -> float:
+    with BACKUP_STATE_LOCK:
+        BACKUP_STATE["status"] = "running"
+        BACKUP_STATE["started_at"] = _now_iso()
+        BACKUP_STATE["finished_at"] = ""
+        BACKUP_STATE["last_error"] = ""
+        BACKUP_STATE["trigger"] = str(trigger or "manual")
+        BACKUP_STATE["duration_ms"] = 0
+        BACKUP_STATE["changed"] = False
+        BACKUP_STATE["skipped"] = False
+        BACKUP_STATE["reason"] = ""
+    return time.monotonic()
+
+
+def _finish_backup_state(result: dict, started_monotonic: float) -> None:
+    now_iso = _now_iso()
+    duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
+    ok = bool(result.get("ok"))
+    skipped = bool(result.get("skipped"))
+    with BACKUP_STATE_LOCK:
+        BACKUP_STATE["status"] = "ok" if ok else ("skipped" if skipped else "failed")
+        BACKUP_STATE["finished_at"] = now_iso
+        BACKUP_STATE["duration_ms"] = duration_ms
+        BACKUP_STATE["changed"] = bool(result.get("changed"))
+        BACKUP_STATE["skipped"] = skipped
+        BACKUP_STATE["reason"] = str(result.get("reason") or "")
+        BACKUP_STATE["last_error"] = "" if ok else str(result.get("error") or result.get("reason") or "unknown_error")
+        if ok:
+            BACKUP_STATE["last_success_at"] = now_iso
+
+
+def _spawn_website_backup(trigger: str = "manual") -> bool:
+    with BACKUP_STATE_LOCK:
+        if str(BACKUP_STATE.get("status") or "") == "running":
+            return False
+
+    def _worker() -> None:
+        started = _start_backup_state(trigger=trigger)
+        result = run_website_backup(DATA_ROOT, ROOT.parent, reason=trigger)
+        _finish_backup_state(result, started)
+
+    Thread(target=_worker, daemon=True).start()
+    return True
+
+
+def _collect_jobs_snapshot(limit: int = 12) -> dict:
+    with JOBS_LOCK:
+        state = _read_jobs_unlocked()
+    jobs_map = state.get("jobs") if isinstance(state, dict) else {}
+    jobs_map = jobs_map if isinstance(jobs_map, dict) else {}
+    rows = []
+    for item in jobs_map.values():
+        if not isinstance(item, dict):
+            continue
+        rows.append(dict(item))
+    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    rows = rows[: max(1, min(int(limit), 40))]
+    counts = {
+        "queued": 0,
+        "running": 0,
+        "done": 0,
+        "failed": 0,
+    }
+    for row in jobs_map.values():
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+    return {
+        "counts": counts,
+        "total": len(jobs_map),
+        "items": rows,
+    }
+
+
+def _collect_news_state_snapshot() -> list[dict]:
+    with POKEMON_NEWS_STATE_LOCK:
+        langs = sorted(POKEMON_NEWS_STATE.keys())
+        rows = [dict(_state_for_lang_unlocked(lang)) for lang in langs]
+    for row in rows:
+        tag = _normalize_lang_tag(row.get("lang"))
+        cache = _read_news_cache(tag)
+        provider = str(cache.get("provider") or os.getenv("NEWS_SEARCH_PROVIDER") or "minimax_cli_search").strip()
+        row["provider"] = provider
+        row["items"] = len(cache.get("items") or []) if isinstance(cache.get("items"), list) else 0
+    return rows
+
+
+def _build_admin_status(limit: int = 10) -> dict:
+    feed = _read_feed_snapshot()
+    cards_raw = feed.get("cards")
+    cards: list[dict] = cards_raw if isinstance(cards_raw, list) else []
+    card_rows = [x for x in cards if isinstance(x, dict)]
+    sync_state = _sync_state_snapshot()
+    jobs = _collect_jobs_snapshot(limit=limit)
+    news_states = _collect_news_state_snapshot()
+    i18n_state = i18n_state_snapshot()
+    memory_stats = feedback_memory_stats()
+    backup_status = get_website_backup_status(DATA_ROOT)
+    backup_state = _backup_state_snapshot()
+
+    discord_info = feed.get("discord_monitor")
+    discord_info = discord_info if isinstance(discord_info, dict) else {}
+
+    generated_at = str(feed.get("generated_at") or "").strip()
+    latest_source_at = _latest_card_time(card_rows)
+    recent_6h = _count_recent_cards(card_rows, hours=6)
+    recent_24h = _count_recent_cards(card_rows, hours=24)
+
+    running_jobs = _safe_int(jobs.get("counts", {}).get("running"))
+    queued_jobs = _safe_int(jobs.get("counts", {}).get("queued"))
+    sync_running = str(sync_state.get("status") or "").strip().lower() == "running"
+    pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
+
+    return {
+        "server_time": _now_iso(),
+        "sync": {
+            "status": str(sync_state.get("status") or "idle"),
+            "started_at": str(sync_state.get("started_at") or ""),
+            "finished_at": str(sync_state.get("finished_at") or ""),
+            "last_success_at": str(sync_state.get("last_success_at") or generated_at),
+            "last_error": str(sync_state.get("last_error") or ""),
+            "trigger": str(sync_state.get("trigger") or ""),
+            "duration_ms": _safe_int(sync_state.get("duration_ms"), 0),
+            "schedule_enabled": bool(sync_state.get("schedule_enabled")),
+            "schedule_interval_hours": float(sync_state.get("schedule_interval_hours") or DEFAULT_X_SYNC_INTERVAL_HOURS),
+            "schedule_window_days": _safe_int(sync_state.get("schedule_window_days"), DEFAULT_X_SYNC_WINDOW_DAYS),
+            "next_run_at": str(sync_state.get("next_run_at") or ""),
+            "last_scheduled_at": str(sync_state.get("last_scheduled_at") or ""),
+            "feed_generated_at": generated_at,
+            "latest_source_at": latest_source_at,
+            "total_cards": _safe_int(feed.get("total_cards"), len(card_rows)),
+            "raw_total_cards": _safe_int(feed.get("raw_total_cards"), len(card_rows)),
+            "source_total_cards": _safe_int(feed.get("source_total_cards"), _safe_int(feed.get("raw_total_cards"), len(card_rows))),
+            "excluded_cards": _safe_int(feed.get("excluded_cards"), 0),
+            "excluded_by_selection": _safe_int(feed.get("excluded_by_selection"), 0),
+            "excluded_by_feedback": _safe_int(feed.get("excluded_by_feedback"), 0),
+            "excluded_by_source_preference": _safe_int(feed.get("excluded_by_source_preference"), 0),
+            "dedupe_ai_removed": _safe_int((feed.get("dedupe_stats") or {}).get("ai_removed"), 0),
+            "dedupe_local_removed": _safe_int((feed.get("dedupe_stats") or {}).get("local_removed"), 0),
+            "pipeline_counts": pipeline_counts,
+            "new_cards_6h": recent_6h,
+            "new_cards_24h": recent_24h,
+        },
+        "jobs": jobs,
+        "new_posts": {
+            "new_cards_6h": recent_6h,
+            "new_cards_24h": recent_24h,
+            "sync_running": sync_running,
+            "queued_jobs": queued_jobs,
+            "running_jobs": running_jobs,
+            "pending_processing": queued_jobs + running_jobs + (1 if sync_running else 0),
+            "is_processing": bool(queued_jobs + running_jobs + (1 if sync_running else 0)),
+        },
+        "memory": memory_stats,
+        "agents": [
+            {
+                "name": "x_sync_agent",
+                "status": str(sync_state.get("status") or "idle"),
+                "detail": (
+                    f"last_sync={generated_at or '--'} "
+                    f"next={str(sync_state.get('next_run_at') or '--')} "
+                    f"interval={float(sync_state.get('schedule_interval_hours') or DEFAULT_X_SYNC_INTERVAL_HOURS):g}h "
+                    f"cards={_safe_int(feed.get('total_cards'), len(card_rows))}"
+                ),
+            },
+            {
+                "name": "url_analyzer_agent",
+                "status": "running" if running_jobs > 0 else ("queued" if queued_jobs > 0 else "idle"),
+                "detail": f"queued={queued_jobs} running={running_jobs}",
+            },
+            {
+                "name": "pokemon_news_agent",
+                "status": "running" if any(bool(x.get("refreshing")) for x in news_states) else "idle",
+                "detail": f"langs={len(news_states)}",
+            },
+            {
+                "name": "i18n_feed_agent",
+                "status": str(i18n_state.get("status") or "idle"),
+                "detail": f"langs={','.join([str(x) for x in (i18n_state.get('langs') or [])]) or '--'} source={str(i18n_state.get('source_generated_at') or '--')}",
+            },
+            {
+                "name": "feedback_memory_agent",
+                "status": "active",
+                "detail": f"rules={_safe_int(memory_stats.get('rules'), 0) + _safe_int(memory_stats.get('default_rules'), 0)} feedback={_safe_int(memory_stats.get('feedback_items'), 0)} profiles={_safe_int(memory_stats.get('source_profiles'), 0)}",
+            },
+            {
+                "name": "website_backup_agent",
+                "status": str(backup_state.get("status") or ("enabled" if backup_status.get("enabled") else "disabled")),
+                "detail": f"provider={backup_status.get('provider')} subdir={backup_status.get('subdir')} repo={'set' if backup_status.get('has_repo') else 'unset'} changed={backup_state.get('changed')}",
+            },
+        ],
+        "monitors": {
+            "discord": {
+                "enabled": bool(discord_info.get("enabled")),
+                "configured": bool(discord_info.get("configured")),
+                "cards_total": _safe_int(discord_info.get("cards_total"), 0),
+                "channel_ids": [str(x) for x in (discord_info.get("channel_ids") or []) if str(x).strip()],
+                "channel_stats": discord_info.get("channel_stats") if isinstance(discord_info.get("channel_stats"), dict) else {},
+                "errors": [str(x) for x in (discord_info.get("errors") or []) if str(x).strip()][:6],
+            }
+        },
+        "news": {
+            "langs": news_states,
+        },
+        "i18n": i18n_state,
+        "storage": {
+            **STORAGE_STATE,
+            "restore": RESTORE_STATE,
+        },
+        "backup": {
+            **backup_status,
+            "runtime": backup_state,
+        },
+    }
 
 
 def _read_news_cache_unlocked(path: Path) -> dict:
@@ -296,7 +746,7 @@ def _compose_news_payload(cache: dict, lang: str, *, pending: bool = False, refr
     if not base:
         base = {
             "generated_at": "",
-            "provider": "minimax_mcp_web_search",
+            "provider": str(os.getenv("NEWS_SEARCH_PROVIDER") or "minimax_cli_search"),
             "lang": _normalize_lang_tag(lang),
             "summary_mode": "pending",
             "items": [],
@@ -324,10 +774,30 @@ def _get_pokemon_news(force: bool = False, max_items: int = 8, lang: str | None 
         payload = dict(cache)
         payload["cached"] = True
         return payload
+    if lang_tag != POKEMON_NEWS_CANONICAL_LANG:
+        base_path = _news_cache_path(POKEMON_NEWS_CANONICAL_LANG)
+        with POKEMON_NEWS_LOCK:
+            base_cache = _read_news_cache_unlocked(base_path)
+        if force or not base_cache or not _is_news_cache_fresh(base_cache):
+            base_cache = _get_pokemon_news(force=True, max_items=max_items, lang=POKEMON_NEWS_CANONICAL_LANG)
+            base_cache.pop("cached", None)
+        try:
+            translated = translate_pokemon_news_payload(base_cache, lang_tag)
+            with POKEMON_NEWS_LOCK:
+                _write_news_cache_unlocked(cache_path, translated)
+            translated["cached"] = False
+            return translated
+        except Exception as exc:
+            if cache:
+                payload = dict(cache)
+                payload["cached"] = True
+                payload["warning"] = f"新聞翻譯失敗，已回退快取：{exc}"
+                return payload
+            raise
     try:
         fresh = fetch_pokemon_latest_news(
             max_items=max(3, min(int(max_items), 16)),
-            lang=lang_tag,
+            lang=POKEMON_NEWS_CANONICAL_LANG,
         )
         with POKEMON_NEWS_LOCK:
             _write_news_cache_unlocked(cache_path, fresh)
@@ -342,8 +812,10 @@ def _get_pokemon_news(force: bool = False, max_items: int = 8, lang: str | None 
         raise
 
 
-def _refresh_pokemon_news_worker(lang: str, max_items: int, reason: str) -> None:
+def _refresh_pokemon_news_worker(lang: str, max_items: int, reason: str, delay_seconds: float = 0) -> None:
     tag = _normalize_lang_tag(lang)
+    if delay_seconds > 0:
+        time.sleep(float(delay_seconds))
     try:
         news = _get_pokemon_news(force=True, max_items=max_items, lang=tag)
         warning = str(news.get("warning") or "").strip()
@@ -353,7 +825,7 @@ def _refresh_pokemon_news_worker(lang: str, max_items: int, reason: str) -> None
         _update_news_state(tag, refreshing=False, last_error=str(exc), last_reason=reason)
 
 
-def _spawn_pokemon_news_refresh(lang: str, max_items: int, reason: str) -> bool:
+def _spawn_pokemon_news_refresh(lang: str, max_items: int, reason: str, delay_seconds: float = 0) -> bool:
     tag = _normalize_lang_tag(lang)
     with POKEMON_NEWS_STATE_LOCK:
         state = _state_for_lang_unlocked(tag)
@@ -362,7 +834,7 @@ def _spawn_pokemon_news_refresh(lang: str, max_items: int, reason: str) -> bool:
         state["refreshing"] = True
         state["last_reason"] = reason
         state["updated_at"] = _now_iso()
-    Thread(target=_refresh_pokemon_news_worker, args=(tag, max_items, reason), daemon=True).start()
+    Thread(target=_refresh_pokemon_news_worker, args=(tag, max_items, reason, float(delay_seconds or 0)), daemon=True).start()
     return True
 
 
@@ -378,17 +850,17 @@ def _start_pokemon_news_scheduler(interval_minutes: int, langs: list[str], max_i
         normalized_langs = ["zh-Hant"]
 
     first_next = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
-    for lang in normalized_langs:
+    for idx, lang in enumerate(normalized_langs):
         _update_news_state(lang, interval_minutes=safe_interval_min, next_refresh_at=first_next)
-        _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="startup")
+        _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="startup", delay_seconds=idx * 20)
 
     def _loop() -> None:
         while True:
             time.sleep(interval_seconds)
             next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
-            for lang in normalized_langs:
+            for idx, lang in enumerate(normalized_langs):
                 _update_news_state(lang, interval_minutes=safe_interval_min, next_refresh_at=next_run)
-                _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="scheduled")
+                _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="scheduled", delay_seconds=idx * 20)
 
     Thread(target=_loop, daemon=True).start()
 
@@ -442,6 +914,8 @@ def _run_analyze_job(job_id: str, url: str) -> None:
             raise RuntimeError(err_msg)
         tweet = result.get("tweet") if isinstance(result.get("tweet"), dict) else {}
         feed = result.get("feed") if isinstance(result.get("feed"), dict) else {}
+        if feed:
+            build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
         _update_job(
             job_id,
             status="done",
@@ -589,6 +1063,30 @@ class Handler(SimpleHTTPRequestHandler):
             "mode": "protected",
         }
 
+    def _require_admin_access(self) -> bool:
+        if not AUTH_REQUIRED:
+            return True
+        if not AUTH_CONFIGURED:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "管理帳號尚未設定。請設定 INTEL_ADMIN_USER 與 INTEL_ADMIN_PASS_HASH。",
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return False
+        if self._current_user():
+            return True
+        self._send_json(
+            {
+                "ok": False,
+                "error": "需要登入管理員帳號才能查看或執行此操作。",
+                "auth_required": True,
+            },
+            status=HTTPStatus.UNAUTHORIZED,
+        )
+        return False
+
     def _send_json(
         self,
         payload: dict,
@@ -613,28 +1111,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _require_admin(self, path: str) -> bool:
         if path not in PROTECTED_POST_PATHS:
             return True
-        if not AUTH_REQUIRED:
-            return True
-        if not AUTH_CONFIGURED:
-            self._send_json(
-                {
-                    "ok": False,
-                    "error": "管理帳號尚未設定。請設定 INTEL_ADMIN_USER 與 INTEL_ADMIN_PASS_HASH。",
-                },
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
-            return False
-        if self._current_user():
-            return True
-        self._send_json(
-            {
-                "ok": False,
-                "error": "需要登入管理員帳號才能執行此操作。",
-                "auth_required": True,
-            },
-            status=HTTPStatus.UNAUTHORIZED,
-        )
-        return False
+        return self._require_admin_access()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -646,10 +1123,28 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/auth/me":
             self._send_json(self._auth_me_payload())
             return
+        if path == "/api/intel/admin-status":
+            if not self._require_admin_access():
+                return
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                limit = _safe_int((params.get("limit") or ["10"])[0], 10)
+                status_payload = _build_admin_status(limit=limit)
+                self._send_json({"ok": True, "status": status_payload})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to build admin status: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
                 return
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                request_lang = str((params.get("lang") or ["zh-Hant"])[0] or "zh-Hant")
+            except Exception:
+                request_lang = "zh-Hant"
             try:
                 feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
             except Exception as exc:
@@ -658,7 +1153,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(feed, dict):
                 self._send_json({"ok": False, "error": "feed format invalid"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-            self._send_json({"ok": True, "feed": feed})
+            localized_feed = localized_feed_from_bundle(feed, request_lang)
+            self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
         if path.startswith("/api/"):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -675,7 +1171,9 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/pick",
             "/api/intel/feedback",
             "/api/intel/job-status",
+            "/api/intel/backup",
             "/api/intel/pokemon-news",
+            "/api/intel/translate-texts",
         }:
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -743,6 +1241,30 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
+        if path == "/api/intel/translate-texts":
+            lang = _normalize_lang_tag(payload.get("lang"))
+            raw_texts = payload.get("texts")
+            if not isinstance(raw_texts, list):
+                self._send_json({"ok": False, "error": "texts must be an array"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            rows: list[str] = []
+            for item in raw_texts[:TRANSLATE_MAX_ITEMS]:
+                text = str(item or "").strip()
+                if not text:
+                    rows.append("")
+                    continue
+                rows.append(text[:TRANSLATE_MAX_CHARS])
+            translated, mode = translate_texts(rows, lang=lang)
+            self._send_json(
+                {
+                    "ok": True,
+                    "lang": lang,
+                    "mode": mode,
+                    "items": translated,
+                }
+            )
+            return
+
         if not self._require_admin(path):
             return
 
@@ -754,16 +1276,22 @@ class Handler(SimpleHTTPRequestHandler):
                 else:
                     accounts = None
                 days = int(payload.get("days", 30) or 30)
-                result = sync_accounts(accounts=accounts, window_days=max(1, days))
+                trigger = self._current_user() or "manual"
+                result = _run_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
                 self._send_json({"ok": True, "feed": result})
                 return
 
             if path == "/api/intel/pick":
                 tweet_id = str(payload.get("id") or "").strip()
                 action = str(payload.get("action") or "").strip().lower()
+                reason = str(payload.get("reason") or "").strip()
                 selection = set_manual_selection(tweet_id, action)
+                feedback = None
+                if action == "exclude" and reason:
+                    feedback = add_classification_feedback(tweet_id, "exclude", reason=reason)
                 result = sync_accounts()
-                self._send_json({"ok": True, "selection": selection, "feed": result})
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
                 return
 
             if path == "/api/intel/feedback":
@@ -772,6 +1300,7 @@ class Handler(SimpleHTTPRequestHandler):
                 reason = str(payload.get("reason") or "").strip()
                 feedback = add_classification_feedback(tweet_id, label, reason=reason)
                 result = sync_accounts()
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "feedback": feedback, "feed": result})
                 return
 
@@ -785,6 +1314,11 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "job not found"}, status=HTTPStatus.NOT_FOUND)
                     return
                 self._send_json({"ok": True, "job": job})
+                return
+
+            if path == "/api/intel/backup":
+                started = _spawn_website_backup(trigger=self._current_user() or "manual")
+                self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
                 return
 
             if path == "/api/intel/pokemon-news":
@@ -820,19 +1354,71 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8787, help="Bind port")
     parser.add_argument("--news-interval-minutes", type=int, default=DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES, help="Pokemon news auto refresh interval in minutes")
     parser.add_argument("--news-langs", default="zh-Hant", help="Comma separated language tags for background news cache")
+    parser.add_argument(
+        "--sync-interval-hours",
+        type=float,
+        default=float(os.getenv("X_SYNC_INTERVAL_HOURS", str(DEFAULT_X_SYNC_INTERVAL_HOURS)) or DEFAULT_X_SYNC_INTERVAL_HOURS),
+        help="X/Discord intel auto sync interval in hours",
+    )
+    parser.add_argument(
+        "--sync-window-days",
+        type=int,
+        default=int(os.getenv("X_SYNC_WINDOW_DAYS", str(DEFAULT_X_SYNC_WINDOW_DAYS)) or DEFAULT_X_SYNC_WINDOW_DAYS),
+        help="X/Discord intel sync window in days",
+    )
+    parser.add_argument(
+        "--sync-run-on-startup",
+        action="store_true",
+        default=_env_flag("X_SYNC_RUN_ON_STARTUP", False),
+        help="Run one X/Discord sync shortly after server startup",
+    )
+    parser.add_argument(
+        "--no-sync-scheduler",
+        action="store_true",
+        default=not _env_flag("X_SYNC_ENABLED", True),
+        help="Disable automatic X/Discord intel sync scheduler",
+    )
     args = parser.parse_args()
 
     langs = [str(x).strip() for x in str(args.news_langs or "").split(",") if str(x).strip()]
     _start_pokemon_news_scheduler(interval_minutes=max(1, int(args.news_interval_minutes)), langs=langs, max_items=DEFAULT_POKEMON_NEWS_MAX_ITEMS)
-
+    if args.no_sync_scheduler:
+        _mark_sync_schedule(
+            enabled=False,
+            interval_hours=max(0.25, float(args.sync_interval_hours)),
+            window_days=max(1, int(args.sync_window_days)),
+        )
+    else:
+        _start_x_sync_scheduler(
+            interval_hours=max(0.25, float(args.sync_interval_hours)),
+            window_days=max(1, int(args.sync_window_days)),
+            run_on_startup=bool(args.sync_run_on_startup),
+        )
+    _warm_i18n_bundle_from_feed()
+    start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")
+    print(
+        "[ai-intel] storage "
+        f"data_root={DATA_ROOT} symlink={bool(STORAGE_STATE.get('using_symlink'))} "
+        f"migrated={bool(STORAGE_STATE.get('migrated'))}"
+    )
     print(f"[ai-intel] pokemon news auto refresh every {max(1, int(args.news_interval_minutes))} minutes; langs={langs or ['zh-Hant']}")
+    if args.no_sync_scheduler:
+        print("[ai-intel] X/Discord auto sync disabled")
+    else:
+        print(
+            "[ai-intel] X/Discord auto sync "
+            f"every {max(0.25, float(args.sync_interval_hours)):g} hours; "
+            f"window_days={max(1, int(args.sync_window_days))}; "
+            f"startup={bool(args.sync_run_on_startup)}"
+        )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, "
+        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
-        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/pokemon-news"
+        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/pokemon-news, "
+        "POST /api/intel/translate-texts"
     )
     print(
         "[ai-intel] auth mode: "

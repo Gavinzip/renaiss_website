@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MiniMax MCP web_search helpers for latest Pokemon news."""
+"""MiniMax search helpers for latest Pokemon news."""
 
 from __future__ import annotations
 
@@ -7,15 +7,23 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from urllib.parse import urlparse
 
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
 import requests
+
+try:
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+except Exception:  # MCP is optional when NEWS_SEARCH_PROVIDER=mmx.
+    ClientSession = None  # type: ignore[assignment]
+    StdioServerParameters = None  # type: ignore[assignment]
+    stdio_client = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT.parent
@@ -400,7 +408,7 @@ def _parse_json_block(text: str) -> dict | None:
         return None
 
 
-def _minimax_chat(prompt: str, api_key: str, max_tokens: int = 2200) -> str:
+def _minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
     model_name = str(
         os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
@@ -409,15 +417,30 @@ def _minimax_chat(prompt: str, api_key: str, max_tokens: int = 2200) -> str:
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
         "temperature": 0.25,
         "reasoning_split": False,
     }
+    token_limit = max_tokens
+    env_limit = str(os.getenv("MINIMAX_NEWS_MAX_TOKENS") or "").strip()
+    if token_limit is None and env_limit:
+        try:
+            token_limit = int(env_limit)
+        except Exception:
+            token_limit = None
+    if token_limit is not None and token_limit > 0:
+        payload["max_tokens"] = int(token_limit)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    resp = requests.post(MINIMAX_TEXT_URL, headers=headers, json=payload, timeout=90)
+    timeout_sec = 180
+    env_timeout = str(os.getenv("MINIMAX_TEXT_TIMEOUT_SECONDS") or "").strip()
+    if env_timeout:
+        try:
+            timeout_sec = max(30, int(env_timeout))
+        except Exception:
+            timeout_sec = 180
+    resp = requests.post(MINIMAX_TEXT_URL, headers=headers, json=payload, timeout=timeout_sec)
     resp.raise_for_status()
     data = resp.json()
     choices = data.get("choices")
@@ -479,7 +502,90 @@ def _extract_items(payload_text: str, query: str) -> list[dict]:
     return out
 
 
-async def _run_queries(queries: list[str], api_key: str, api_host: str) -> list[dict]:
+def _extract_mmx_search_items(payload_text: str, query: str) -> list[dict]:
+    rows = _extract_items(payload_text, query)
+    if rows:
+        return rows
+    raw = str(payload_text or "")
+    out: list[dict] = []
+    line_chunks = [x.strip() for x in raw.splitlines() if x.strip()]
+    for line in line_chunks:
+        urls = re.findall(r"https?://[^\s)>\"]+", line)
+        for url in urls:
+            title = line.replace(url, " ").strip(" -:|")
+            out.append(
+                {
+                    "title": title or url,
+                    "url": url,
+                    "date": "",
+                    "snippet": title,
+                    "source": _source_name(url),
+                    "query": query,
+                }
+            )
+    return out
+
+
+def _mmx_bin() -> str:
+    configured = str(os.getenv("MINIMAX_CLI_BIN") or "").strip()
+    if configured:
+        return configured
+    return shutil.which("mmx") or ""
+
+
+def _run_single_mmx_search(bin_path: str, query: str, api_key: str, api_host: str, timeout_sec: int) -> str:
+    env = os.environ.copy()
+    if api_key:
+        env["MINIMAX_API_KEY"] = api_key
+    if api_host:
+        env["MINIMAX_API_HOST"] = api_host
+        # mmx-cli uses MINIMAX_BASE_URL / --base-url instead of MINIMAX_API_HOST.
+        env["MINIMAX_BASE_URL"] = api_host
+    env["MINIMAX_OUTPUT"] = "json"
+    variants = [
+        [bin_path, "search", "query", "--q", query, "--output", "json", "--non-interactive"],
+        [bin_path, "search", "web", "--q", query, "--output", "json", "--non-interactive"],
+        [bin_path, "search", query, "--output", "json", "--non-interactive"],
+    ]
+    last_error = ""
+    for cmd in variants:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(8, int(timeout_sec)),
+                env=env,
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+        stdout = str(proc.stdout or "").strip()
+        stderr = str(proc.stderr or "").strip()
+        if proc.returncode == 0 and stdout:
+            return stdout
+        last_error = stderr or stdout or f"exit {proc.returncode}"
+        if "unknown command" not in last_error.lower() and "unknown option" not in last_error.lower():
+            break
+    raise RuntimeError(f"MiniMax CLI search failed: {last_error or 'no output'}")
+
+
+def _run_queries_mmx_cli(queries: list[str], api_key: str, api_host: str, timeout_sec: int = 45) -> list[dict]:
+    bin_path = _mmx_bin()
+    if not bin_path:
+        raise RuntimeError("MiniMax CLI not installed: install with `npm install -g mmx-cli` and authenticate with `mmx auth login --api-key ...`")
+    collected: list[dict] = []
+    per_query_timeout = max(10, min(int(timeout_sec), 60))
+    for query in queries:
+        payload_text = _run_single_mmx_search(bin_path, query, api_key, api_host, per_query_timeout)
+        collected.extend(_extract_mmx_search_items(payload_text, query))
+    return collected
+
+
+async def _run_queries_mcp(queries: list[str], api_key: str, api_host: str) -> list[dict]:
+    if ClientSession is None or StdioServerParameters is None or stdio_client is None:
+        raise RuntimeError("MCP package is not installed; use NEWS_SEARCH_PROVIDER=mmx or install mcp dependencies")
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "uv", "tool", "run", "minimax-coding-plan-mcp", "-y"],
@@ -501,6 +607,40 @@ async def _run_queries(queries: list[str], api_key: str, api_host: str) -> list[
                 payload_text = _extract_text_payload(reply)
                 collected.extend(_extract_items(payload_text, query))
     return collected
+
+
+def _news_search_provider() -> str:
+    raw = str(os.getenv("NEWS_SEARCH_PROVIDER") or os.getenv("POKEMON_NEWS_PROVIDER") or "mmx").strip().lower()
+    if raw in {"cli", "mmx", "minimax_cli"}:
+        return "mmx"
+    if raw in {"mcp", "minimax_mcp"}:
+        return "mcp"
+    if raw in {"off", "false", "0", "disabled", "none"}:
+        return "disabled"
+    if raw == "auto":
+        return "auto"
+    return "mmx"
+
+
+def _run_queries(queries: list[str], api_key: str, api_host: str, timeout_sec: int = 45) -> tuple[list[dict], str]:
+    provider = _news_search_provider()
+    if provider == "disabled":
+        raise RuntimeError("News search disabled by NEWS_SEARCH_PROVIDER=disabled")
+    if provider == "mcp":
+        return asyncio.run(asyncio.wait_for(_run_queries_mcp(queries, api_key, api_host), timeout=max(10, int(timeout_sec)))), "minimax_mcp_web_search"
+    if provider == "auto":
+        errors: list[str] = []
+        try:
+            return _run_queries_mmx_cli(queries, api_key, api_host, timeout_sec=timeout_sec), "minimax_cli_search"
+        except Exception as exc:
+            errors.append(f"mmx={exc}")
+        if str(os.getenv("NEWS_ALLOW_MCP_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                return asyncio.run(asyncio.wait_for(_run_queries_mcp(queries, api_key, api_host), timeout=max(10, int(timeout_sec)))), "minimax_mcp_web_search"
+            except Exception as exc:
+                errors.append(f"mcp={exc}")
+        raise RuntimeError("; ".join(errors) or "no news search provider succeeded")
+    return _run_queries_mmx_cli(queries, api_key, api_host, timeout_sec=timeout_sec), "minimax_cli_search"
 
 
 def _dedupe_items(items: list[dict], max_items: int) -> list[dict]:
@@ -841,6 +981,17 @@ def _is_low_quality_generated_text(text: str) -> bool:
         "all rights reserved",
         "privacy policy",
         "skip to",
+        "依網址判断",
+        "依網址判斷",
+        "從網址判斷",
+        "根据网址判断",
+        "根據網址判斷",
+        "猜測",
+        "推測",
+        "probably",
+        "likely",
+        "from the url",
+        "based on the url",
     ]
     return any(flag in row for flag in flags)
 
@@ -848,6 +999,14 @@ def _is_low_quality_generated_text(text: str) -> bool:
 def _batch_summarize_items(items: list[dict], api_key: str, lang: str) -> list[dict]:
     if not items:
         return []
+    if len(items) > 1:
+        out: list[dict] = []
+        for item in items:
+            try:
+                out.extend(_batch_summarize_items([item], api_key=api_key, lang=lang))
+            except Exception:
+                out.append({**item, **_fallback_summary_item(item, lang)})
+        return out
     lang_hint = _lang_prompt_hint(lang)
     compact_rows = []
     for idx, item in enumerate(items, start=1):
@@ -874,11 +1033,12 @@ def _batch_summarize_items(items: list[dict], api_key: str, lang: str) -> list[d
         "3) key_points 固定 3 條，內容要有資訊密度（時間/內容/影響）。\n"
         "4) detail_lines 固定 4 條，列出更細的重點敘述。\n"
         "5) 若資訊不足，明確指出需看原文確認。\n"
-        "6) 禁止捏造。\n\n"
+        "6) 禁止捏造；不可依網址、標題或常識猜地點/時間/獎勵。沒有明確寫出就寫「未標示」或「需看原文確認」。\n"
+        "7) 禁止出現「依網址判斷」「猜測」「推測」「probably」「likely」等字眼。\n\n"
         f"新聞資料：{json.dumps(compact_rows, ensure_ascii=False)}"
     )
 
-    raw = _minimax_chat(prompt, api_key, max_tokens=2600)
+    raw = _minimax_chat(prompt, api_key)
     parsed = _parse_json_block(raw) or {}
     rows = parsed.get("items") if isinstance(parsed.get("items"), list) else []
 
@@ -949,6 +1109,110 @@ def _batch_summarize_items(items: list[dict], api_key: str, lang: str) -> list[d
     return ordered
 
 
+def translate_pokemon_news_payload(payload: dict, lang: str, api_key: str | None = None) -> dict:
+    """Translate a canonical Pokemon news payload without running web search again."""
+    target_lang = _normalize_lang(lang)
+    source = dict(payload) if isinstance(payload, dict) else {}
+    source_lang = _normalize_lang(str(source.get("lang") or "zh-Hant"))
+    if target_lang == source_lang:
+        out = dict(source)
+        out["lang"] = target_lang
+        return out
+
+    items = source.get("items") if isinstance(source.get("items"), list) else []
+    if not items:
+        out = dict(source)
+        out["lang"] = target_lang
+        out["translation_source_lang"] = source_lang
+        out["summary_mode"] = f"{source.get('summary_mode') or 'unknown'}+translated"
+        return out
+    if len(items) > 1:
+        translated_items: list[dict] = []
+        for item in items:
+            chunk_payload = dict(source)
+            chunk_payload["items"] = [item]
+            try:
+                translated_items.extend(translate_pokemon_news_payload(chunk_payload, target_lang, api_key=api_key).get("items") or [])
+            except Exception:
+                translated_items.extend(dict(x) for x in chunk_payload.get("items", []) if isinstance(x, dict))
+        out = dict(source)
+        out["lang"] = target_lang
+        out["translation_source_lang"] = source_lang
+        out["summary_mode"] = f"{source.get('summary_mode') or 'ai'}+translated"
+        out["items"] = translated_items
+        return out
+
+    key = (api_key or _resolve_minimax_credentials()[0]).strip()
+    if not key:
+        raise RuntimeError("未設定 MINIMAX_API_KEY，無法翻譯 NewsAgent 快取")
+
+    lang_hint = _lang_prompt_hint(target_lang)
+    rows = []
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "idx": idx,
+                "summary_title": _normalize_text(item.get("summary_title") or item.get("title")),
+                "summary": _normalize_text(item.get("summary")),
+                "key_points": [_normalize_text(x) for x in (item.get("key_points") if isinstance(item.get("key_points"), list) else [])],
+                "detail_lines": [_normalize_text(x) for x in (item.get("detail_lines") if isinstance(item.get("detail_lines"), list) else [])],
+                "detail_excerpt": _normalize_text(item.get("detail_excerpt")),
+            }
+        )
+
+    prompt = (
+        "你是 News Translation Agent。請只翻譯已整理好的新聞卡片，不要重新搜尋、不要改變事實、不要新增猜測。\n"
+        f"目標語言：{lang_hint}\n"
+        "輸出只允許 JSON，格式："
+        '{"items":[{"idx":1,"summary_title":"...","summary":"...","key_points":["..."],"detail_lines":["..."],"detail_excerpt":"..."}]}\n'
+        "規則：\n"
+        "1) idx 必須對應原資料，順序不重要但不可漏。\n"
+        "2) 保留 URL、來源、日期、數字、貨幣、Pokemon/Pokémon、TCG、SBT 等專有名詞。\n"
+        "3) 不可把未標示改成具體時間或地點。\n"
+        "4) 不要輸出 Markdown，不要附註解。\n\n"
+        f"source={json.dumps(rows, ensure_ascii=False)}"
+    )
+    raw = _minimax_chat(prompt, key)
+    parsed = _parse_json_block(raw) or {}
+    translated_rows = parsed.get("items") if isinstance(parsed.get("items"), list) else []
+    by_idx: dict[int, dict] = {}
+    for row in translated_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            idx = int(row.get("idx"))
+        except Exception:
+            continue
+        by_idx[idx] = row
+
+    out_items = []
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        new_item = dict(item)
+        row = by_idx.get(idx) or {}
+        for key_name in ("summary_title", "summary", "detail_excerpt"):
+            value = _clean_content_text(_normalize_text(row.get(key_name) or ""))
+            if value and not _is_low_quality_generated_text(value):
+                new_item[key_name] = _truncate_text(value, 760 if key_name == "detail_excerpt" else 260)
+        for key_name, limit, item_limit in (("key_points", 3, 140), ("detail_lines", 4, 240)):
+            value = row.get(key_name)
+            if isinstance(value, list):
+                cleaned = [_clean_content_text(_normalize_text(x))[:item_limit] for x in value if _normalize_text(x)]
+                if cleaned:
+                    new_item[key_name] = cleaned[:limit]
+        out_items.append(new_item)
+
+    out = dict(source)
+    out["lang"] = target_lang
+    out["translation_source_lang"] = source_lang
+    out["summary_mode"] = f"{source.get('summary_mode') or 'ai'}+translated"
+    out["items"] = out_items
+    return out
+
+
 def fetch_pokemon_latest_news(
     *,
     max_items: int = 8,
@@ -965,10 +1229,7 @@ def fetch_pokemon_latest_news(
     if not query_list:
         raise RuntimeError("查詢字串為空")
 
-    async def _task() -> list[dict]:
-        return await _run_queries(query_list, api_key, api_host)
-
-    collected = asyncio.run(asyncio.wait_for(_task(), timeout=max(10, int(timeout_sec))))
+    collected, provider = _run_queries(query_list, api_key, api_host, timeout_sec=timeout_sec)
     merged = _dedupe_items(collected, max_items=max_items)
     for item in merged:
         item["source"] = _source_name(item.get("url"))
@@ -988,7 +1249,7 @@ def fetch_pokemon_latest_news(
 
     return {
         "generated_at": _now_iso(),
-        "provider": "minimax_mcp_web_search",
+        "provider": provider,
         "lang": out_lang,
         "summary_mode": summary_mode,
         "query_count": len(query_list),
