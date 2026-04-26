@@ -48,6 +48,20 @@
       return nodes;
     }
 
+    function applyStaticUiTranslations() {
+      const tag = normalizeUiLang(currentUiLang);
+      document.querySelectorAll("[data-i18n-key]").forEach((el) => {
+        const key = String(el.getAttribute("data-i18n-key") || "").trim();
+        if (!key) return;
+        const rows = UI_STATIC_TRANSLATIONS[key];
+        if (!rows || typeof rows !== "object") return;
+        const next = String(rows[tag] || rows["zh-Hant"] || "").trim();
+        if (!next) return;
+        el.textContent = next;
+        el.setAttribute("data-no-i18n", "1");
+      });
+    }
+
     function containsCjk(text) {
       return /[\u3400-\u9fff]/.test(String(text || ""));
     }
@@ -205,6 +219,7 @@
     async function applyUiLanguage() {
       const version = ++uiTranslateVersion;
       updateLangSwitcherUi();
+      applyStaticUiTranslations();
       const nodes = collectTranslatableTextNodes(document.body);
       const originals = nodes.map((node) => {
         const stored = uiTextNodeCache.get(node);
