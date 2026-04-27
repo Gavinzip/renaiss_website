@@ -205,8 +205,6 @@
     const LANG_MORPH_CJK = "天地玄黃宇宙洪荒風火雷電星月山海光影流轉";
     const LANG_MORPH_HANGUL = "가나다라마바사아자차카타파하우리세계여정";
     let pendingUiLangMorph = false;
-    let uiLangMorphRunning = false;
-    let uiLangApplyQueued = false;
 
     function canUseLangMorphFx() {
       try {
@@ -370,10 +368,6 @@
     }
 
     async function applyUiLanguage() {
-      if (uiLangMorphRunning && !pendingUiLangMorph) {
-        uiLangApplyQueued = true;
-        return;
-      }
       const version = ++uiTranslateVersion;
       updateLangSwitcherUi();
       const wantsMorphFx = pendingUiLangMorph;
@@ -411,18 +405,7 @@
             entry.set(entry.to);
           }
         });
-        uiLangMorphRunning = true;
-        try {
-          await runLangMorphFx(entries, version);
-        } finally {
-          uiLangMorphRunning = false;
-        }
-        if (uiLangApplyQueued) {
-          uiLangApplyQueued = false;
-          window.requestAnimationFrame(() => {
-            applyUiLanguage().catch(() => {});
-          });
-        }
+        await runLangMorphFx(entries, version);
         return;
       }
       staticEntries.forEach((entry) => {
@@ -431,12 +414,6 @@
       nodes.forEach((node, idx) => {
         node.nodeValue = nextRows[idx];
       });
-      if (uiLangApplyQueued) {
-        uiLangApplyQueued = false;
-        window.requestAnimationFrame(() => {
-          applyUiLanguage().catch(() => {});
-        });
-      }
     }
 
     function setupLanguageSwitcher() {
@@ -450,7 +427,7 @@
         saveUiLang(next);
         updateLangSwitcherUi();
         applyUiLanguage().catch(() => {});
-        const cached = readCachedIntelFeed(next, true);
+        const cached = readCachedIntelFeed(next, false);
         if (cached) {
           renderIntelFeed(cached);
           scheduleLangFeedRefresh(cached);
@@ -1304,6 +1281,7 @@
     async function fetchIntelFeed(langOverride = "") {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
       const canUseApi = window.location.protocol !== "file:";
+      let apiError = null;
       if (canUseApi) {
         try {
           const controller = new AbortController();
@@ -1321,18 +1299,13 @@
             }
             return payload.feed;
           }
-          throw new Error(payload?.error || `HTTP ${response.status}`);
+          apiError = new Error(payload?.error || `HTTP ${response.status}`);
         } catch (error) {
-          throw (error instanceof Error ? error : new Error(String(error || "api_fetch_failed")));
+          apiError = error instanceof Error ? error : new Error(String(error || "api_fetch_failed"));
         }
       }
-      const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
-      if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
-      const fallback = await response.json();
-      if (fallback && typeof fallback === "object" && !fallback.lang) {
-        fallback.lang = "zh-Hant";
-      }
-      return fallback;
+      if (apiError) throw apiError;
+      throw new Error(`intel_api_unavailable:${requestLang}`);
     }
 
     async function refreshIntelFeedForCurrentLang() {
@@ -1508,12 +1481,16 @@
       }
       const i18nProgress = i18n?.lang_progress && typeof i18n.lang_progress === "object" ? i18n.lang_progress : {};
       if (i18nEl) {
-        const i18nStatus = String(i18n?.status || "idle");
+        const i18nStatus = String(i18n?.status || "idle").toLowerCase();
         const publishedLangs = Array.isArray(i18n?.langs) ? i18n.langs.filter(Boolean) : [];
         if (i18nStatus === "running" || i18nStatus === "queued") {
-          i18nEl.textContent = `翻譯${i18nStatus === "running" ? "進行中" : "排隊中"} · 已發布 ${publishedLangs.length} 語言`;
+          i18nEl.textContent = `翻譯進行中 · 已發布 ${publishedLangs.length} 語言`;
+        } else if (i18nStatus === "ok") {
+          i18nEl.textContent = `翻譯完成 · 已發布 ${publishedLangs.length} 語言`;
+        } else if (i18nStatus === "failed") {
+          i18nEl.textContent = `翻譯異常 · 已發布 ${publishedLangs.length} 語言`;
         } else {
-          i18nEl.textContent = `翻譯${i18nStatus === "ok" ? "完成" : "待命"} · 已發布 ${publishedLangs.length} 語言`;
+          i18nEl.textContent = `仍有未翻譯內容 · 已發布 ${publishedLangs.length} 語言`;
         }
       }
       if (i18nMetaEl) {
@@ -1523,13 +1500,12 @@
           const row = i18nProgress[tag] || {};
           const done = Number(row?.done || 0);
           const total = Number(row?.total || 0);
-          const percent = Number(row?.percent || 0);
-          const rawStatus = String(row?.status || "pending");
+          const rawStatus = String(row?.status || "pending").toLowerCase();
           const cacheHits = Number(row?.cached_hits || 0);
           const pendingCount = Number(row?.pending_count || Math.max(0, total - done));
-          const finalizing = rawStatus === "running" && total > 0 && done >= total && !publishedLangs.includes(tag);
-          const status = finalizing ? "finalizing" : rawStatus;
-          return `${tag}:${status} ${percent}% (${done}/${total}) cache${cacheHits} pending${pendingCount}`;
+          const translated = total > 0 ? done >= total : rawStatus === "ok";
+          const stateLabel = translated ? "已翻譯" : "未翻譯";
+          return `${tag}:${stateLabel} (${done}/${total}) cache${cacheHits} pending${pendingCount}`;
         });
         i18nMetaEl.textContent = `已發布：${publishedLangs.length ? publishedLangs.join(", ") : "--"} · ${details.join(" · ")}`;
       }
@@ -1633,13 +1609,12 @@
       monitorRows.push(`I18N feed ${i18nStatus} · langs ${i18nLangs} · finished ${i18nFinishedAt}`);
       ["zh-Hant", "zh-Hans", "en", "ko"].forEach((tag) => {
         const row = i18nProgress[tag] || {};
-        const status = String(row?.status || "pending");
-        const percent = Number(row?.percent || 0);
+        const status = String(row?.status || "pending").toLowerCase();
         const done = Number(row?.done || 0);
         const total = Number(row?.total || 0);
         const remaining = Number(row?.remaining || Math.max(0, total - done));
-        const mode = String(row?.mode || "");
-        monitorRows.push(`I18N[${tag}] ${status}${mode ? `/${mode}` : ""} · 完成 ${percent}% · ${done}/${total} · 剩餘 ${remaining}`);
+        const translated = total > 0 ? done >= total : status === "ok";
+        monitorRows.push(`I18N[${tag}] ${translated ? "已翻譯" : "未翻譯"} · ${done}/${total} · 剩餘 ${remaining}`);
       });
       renderIntelAdminList(monitorListEl, monitorRows, "目前沒有 monitor 狀態資料");
       applyUiLanguage().catch(() => {});
@@ -1920,7 +1895,7 @@
     }
 
     async function renderIntelOnLoad() {
-      const cached = readCachedIntelFeed(currentUiLang, true);
+      const cached = readCachedIntelFeed(currentUiLang, false);
       if (cached) {
         renderIntelFeed(cached);
         scheduleLangFeedRefresh(cached);

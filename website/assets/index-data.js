@@ -310,18 +310,8 @@
     let pokemonNewsPollTimer = null;
     let pokemonNewsItemsState = [];
     const DEFAULT_INTEL_API_BASE = "https://gavinx.zeabur.app";
-    const INTEL_API_BASE = (() => {
-      const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
-      const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
-      const fromData = normalize(document.body?.dataset?.intelApiBase || "");
-      const search = new URLSearchParams(window.location.search || "");
-      const fromQuery = normalize(search.get("intel_api_base") || "");
-      const resolved = fromQuery
-        || fromWindow
-        || fromData
-        || DEFAULT_INTEL_API_BASE;
-      return resolved;
-    })();
+    // Force production remote API only.
+    const INTEL_API_BASE = DEFAULT_INTEL_API_BASE;
 
     function clampMasterIndex(index, len) {
       if (!len) return 0;
