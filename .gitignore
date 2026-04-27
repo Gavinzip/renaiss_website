@@ -24,5 +24,7 @@ renaiss_sync_data/
 
 # External restored data repo
 data/
+!frontend_chain/data/
+!frontend_chain/data/i18n_text_cache.json
 
 website/data

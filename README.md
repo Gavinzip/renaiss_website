@@ -1,12 +1,11 @@
-# Renaiss Website Backend (Frontend Separated)
+# Renaiss Website (Backend + Frontend Chain Backup)
 
-This repository now tracks **backend only**:
-- API + scheduler: `scripts/ai_intel_server.py`
-- Intel pipeline: `scripts/x_intel_core.py`, `scripts/minimax_news.py`
-- Runtime data: `data/`
+This repository tracks both parts in one place:
+- Backend runtime (Zeabur): API + scheduler in `scripts/` and `main.py`
+- Frontend chain deployment package (backup): `frontend_chain/`
 
-Frontend files are kept in local folder `frontend_local/` and ignored by Git.
-Use `frontend_local/` for Walrus/Walgo deployment.
+`frontend_chain/` is static backup data for Walrus/Walgo publishing.
+It does not add backend runtime behavior on Zeabur.
 
 ## 1) Local run
 
@@ -30,12 +29,11 @@ pip install -r requirements.txt && ./start.sh
 
 The server reads `PORT` from environment and binds `0.0.0.0` by default via `start.sh`.
 
-### Frontend/Backend split (team rule)
+### Frontend/Backend split (runtime rule)
 
-- Frontend is maintained and deployed separately from backend.
-- Frontend source package lives in `ganbitlabs/walgo` under `examples/renaiss-frontend/`.
-- Backend API remains on Zeabur (this repository).
-- Start local backend only when doing local debug/testing.
+- Zeabur runs backend only.
+- Frontend is deployed on-chain from `frontend_chain/`.
+- Keeping `frontend_chain/` inside this repo is for backup and traceability.
 
 ### Required env vars
 - `MINIMAX_API_KEY`
@@ -72,10 +70,24 @@ To keep backend cards and translations consistent across restarts:
 
 ## 3) Frontend deployment (Walrus / chain)
 
-Put frontend files under `frontend_local/` (ignored by Git), then deploy with Walgo.
+Frontend package location:
+- `frontend_chain/index.html`
+- `frontend_chain/game.html`
+- `frontend_chain/assets/`
+- `frontend_chain/sbt_icons.json`
+- `frontend_chain/data/i18n_text_cache.json`
 
-Latest testnet site object ID:
-- `0x2ab99ef1c3a9c45a4048fe0d9abdf253fbcfaa1cfed339b84d1b9e0120d643fa`
+Publish command example:
+
+```bash
+site-builder --context mainnet --gas-budget 500000000 publish --dry-run --epochs 1 ./frontend_chain
+```
+
+Latest published site object ID (clean frontend package):
+- `0xbdce612ad5728af48fc2361f083ad6d615d41b16c7018f99920471e479c243c8`
+
+Latest publish metadata file:
+- `frontend_chain/ws-resources.json`
 
 If frontend and backend are deployed separately:
 - Point frontend API requests to your backend domain.
