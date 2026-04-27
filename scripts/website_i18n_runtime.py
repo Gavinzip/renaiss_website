@@ -25,6 +25,8 @@ I18N_LOCK = Lock()
 I18N_STATE_LOCK = Lock()
 TRANSLATION_CACHE: dict[str, str] = {}
 TRANSLATION_CACHE_DIRTY = False
+# User decision: disable translation text cache to avoid stale/mixed-language reuse.
+TRANSLATION_CACHE_ENABLED = False
 I18N_BUILD_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -222,6 +224,14 @@ def _looks_translated_for_lang(text: str, lang: str) -> bool:
 
 def _load_translation_cache_unlocked() -> None:
     global TRANSLATION_CACHE
+    if not TRANSLATION_CACHE_ENABLED:
+        TRANSLATION_CACHE = {}
+        try:
+            if TRANSLATION_CACHE_PATH.exists():
+                TRANSLATION_CACHE_PATH.unlink()
+        except Exception:
+            pass
+        return
     if TRANSLATION_CACHE:
         return
     if not TRANSLATION_CACHE_PATH.exists():
@@ -250,6 +260,9 @@ def _load_translation_cache_unlocked() -> None:
 
 def _flush_translation_cache_unlocked(force: bool = False) -> None:
     global TRANSLATION_CACHE_DIRTY
+    if not TRANSLATION_CACHE_ENABLED:
+        TRANSLATION_CACHE_DIRTY = False
+        return
     if not force and not TRANSLATION_CACHE_DIRTY:
         return
     TRANSLATION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -687,26 +700,29 @@ def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
     load_environment()
     api_key = resolve_minimax_key()
 
-    with TRANSLATION_LOCK:
-        _load_translation_cache_unlocked()
-        cached = TRANSLATION_CACHE
-        out = list(rows)
-        need_indices: list[int] = []
-        need_texts: list[str] = []
-        for idx, text in enumerate(rows):
-            if not text:
-                continue
-            key = _translation_cache_key(tag, text)
-            got = cached.get(key)
-            if got and not (tag != "zh-Hant" and _contains_cjk(text) and str(got) == text):
-                out[idx] = got
-            else:
-                if got and tag != "zh-Hant" and _contains_cjk(text) and str(got) == text:
-                    cached.pop(key, None)
-                need_indices.append(idx)
-                need_texts.append(text)
-        if not need_texts:
-            return out, "cache"
+    out = list(rows)
+    need_texts: list[str] = []
+    if TRANSLATION_CACHE_ENABLED:
+        with TRANSLATION_LOCK:
+            _load_translation_cache_unlocked()
+            cached = TRANSLATION_CACHE
+            need_indices: list[int] = []
+            for idx, text in enumerate(rows):
+                if not text:
+                    continue
+                key = _translation_cache_key(tag, text)
+                got = cached.get(key)
+                if got and not (tag != "zh-Hant" and _contains_cjk(text) and str(got) == text):
+                    out[idx] = got
+                else:
+                    if got and tag != "zh-Hant" and _contains_cjk(text) and str(got) == text:
+                        cached.pop(key, None)
+                    need_indices.append(idx)
+                    need_texts.append(text)
+            if not need_texts:
+                return out, "cache"
+    else:
+        need_texts = [text for text in rows if text]
 
     if not api_key:
         return rows, "no-key"
@@ -731,18 +747,19 @@ def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
             candidate = str(translated[idx] if idx < len(translated) else original).strip()
             translated_map[original] = candidate or original
 
-    with TRANSLATION_LOCK:
-        _load_translation_cache_unlocked()
-        for original, translated in translated_map.items():
-            if not original:
-                continue
-            if tag != "zh-Hant" and _contains_cjk(original) and str(translated) == original:
-                continue
-            key = _translation_cache_key(tag, original)
-            TRANSLATION_CACHE[key] = translated
-        global TRANSLATION_CACHE_DIRTY
-        TRANSLATION_CACHE_DIRTY = True
-        _flush_translation_cache_unlocked()
+    if TRANSLATION_CACHE_ENABLED:
+        with TRANSLATION_LOCK:
+            _load_translation_cache_unlocked()
+            for original, translated in translated_map.items():
+                if not original:
+                    continue
+                if tag != "zh-Hant" and _contains_cjk(original) and str(translated) == original:
+                    continue
+                key = _translation_cache_key(tag, original)
+                TRANSLATION_CACHE[key] = translated
+            global TRANSLATION_CACHE_DIRTY
+            TRANSLATION_CACHE_DIRTY = True
+            _flush_translation_cache_unlocked()
 
     final_rows = []
     for text in rows:
@@ -961,19 +978,40 @@ def _build_best_effort_mapping(feed: dict[str, object], lang: str) -> tuple[dict
             mapping[entry_key] = out
         return mapping, {"lang": tag, "total": total, "translated": total, "coverage": 1.0, "mode": "local"}
 
+    if not TRANSLATION_CACHE_ENABLED:
+        for entry_key, text in entries:
+            mapping[entry_key] = text
+        return mapping, {
+            "lang": tag,
+            "total": total,
+            "translated": 0,
+            "coverage": 0.0 if total else 1.0,
+            "mode": "no-cache-best-effort",
+        }
+
     with TRANSLATION_LOCK:
         _load_translation_cache_unlocked()
         cache = TRANSLATION_CACHE
+        dirty = False
         for entry_key, text in entries:
             key = _translation_cache_key(tag, text, entry_key=entry_key)
             out = str(cache.get(key) or "").strip()
             if not out:
                 out = str(cache.get(_translation_cache_key_legacy(tag, text)) or "").strip()
+            if out and _is_untranslated_for_lang(text, out, tag):
+                cache.pop(key, None)
+                cache.pop(_translation_cache_key_legacy(tag, text), None)
+                out = ""
+                dirty = True
             if out:
                 mapping[entry_key] = out
                 translated += 1
             else:
                 mapping[entry_key] = text
+        if dirty:
+            global TRANSLATION_CACHE_DIRTY
+            TRANSLATION_CACHE_DIRTY = True
+            _flush_translation_cache_unlocked()
     coverage = round((translated / total), 4) if total else 1.0
     return mapping, {
         "lang": tag,
@@ -1098,9 +1136,18 @@ def _fallback_feed_from_base(feed: dict[str, object], lang: str, reason: str) ->
 
 
 def _is_untranslated_for_lang(source: str, translated: str, lang: str) -> bool:
+    src = str(source or "").strip()
     dst = str(translated or "").strip()
     if _normalize_lang_tag(lang) in {"en", "ko"}:
-        return not bool(dst)
+        if not dst:
+            return True
+        # For EN/KO, reject CJK echo outputs so they don't poison cache.
+        if _contains_cjk(dst):
+            return True
+        # Source has CJK but output still doesn't look like target language.
+        if _contains_cjk(src) and not _looks_translated_for_lang(dst, _normalize_lang_tag(lang)):
+            return True
+        return False
     return False
 
 
@@ -1189,27 +1236,36 @@ def _translate_feed_text_map(
         return mapping, qa
 
     pending_entries: list[tuple[str, str]] = []
-    with TRANSLATION_LOCK:
-        _load_translation_cache_unlocked()
-        migrated = False
-        for entry_key, source in normalized_entries:
-            key = _translation_cache_key(tag, source, entry_key=entry_key)
-            cached = str(TRANSLATION_CACHE.get(key) or "").strip()
-            if not cached:
-                legacy = str(TRANSLATION_CACHE.get(_translation_cache_key_legacy(tag, source)) or "").strip()
-                if legacy:
-                    cached = legacy
-                    TRANSLATION_CACHE[key] = legacy
+    if TRANSLATION_CACHE_ENABLED:
+        with TRANSLATION_LOCK:
+            _load_translation_cache_unlocked()
+            migrated = False
+            for entry_key, source in normalized_entries:
+                key = _translation_cache_key(tag, source, entry_key=entry_key)
+                legacy_key = _translation_cache_key_legacy(tag, source)
+                cached = str(TRANSLATION_CACHE.get(key) or "").strip()
+                if not cached:
+                    legacy = str(TRANSLATION_CACHE.get(legacy_key) or "").strip()
+                    if legacy:
+                        cached = legacy
+                        TRANSLATION_CACHE[key] = legacy
+                        migrated = True
+                if cached and _is_untranslated_for_lang(source, cached, tag):
+                    TRANSLATION_CACHE.pop(key, None)
+                    TRANSLATION_CACHE.pop(legacy_key, None)
+                    cached = ""
                     migrated = True
-            if cached:
-                mapping[entry_key] = cached
-                qa["cached_hits"] = int(qa.get("cached_hits") or 0) + 1
-                continue
-            pending_entries.append((entry_key, source))
-        if migrated:
-            global TRANSLATION_CACHE_DIRTY
-            TRANSLATION_CACHE_DIRTY = True
-            _flush_translation_cache_unlocked()
+                if cached:
+                    mapping[entry_key] = cached
+                    qa["cached_hits"] = int(qa.get("cached_hits") or 0) + 1
+                    continue
+                pending_entries.append((entry_key, source))
+            if migrated:
+                global TRANSLATION_CACHE_DIRTY
+                TRANSLATION_CACHE_DIRTY = True
+                _flush_translation_cache_unlocked()
+    else:
+        pending_entries = list(normalized_entries)
 
     translated_count = len(normalized_entries) - len(pending_entries)
     qa["translated"] = translated_count
@@ -1249,6 +1305,7 @@ def _translate_feed_text_map(
 
     chunk_size = I18N_FEED_CHUNK_SIZE
     done_count = translated_count
+    unresolved_keys: set[str] = set()
     _set_i18n_lang_progress(
         tag,
         total=len(normalized_entries),
@@ -1264,7 +1321,13 @@ def _translate_feed_text_map(
             translated = list(chunk)
         for idx, source in enumerate(chunk):
             candidate = str(translated[idx] if idx < len(translated) else source).strip() or source
-            for entry_key in entry_keys_by_source.get(source, []):
+            source_entry_keys = entry_keys_by_source.get(source, [])
+            if _is_untranslated_for_lang(source, candidate, tag):
+                for entry_key in source_entry_keys:
+                    mapping[entry_key] = source
+                    unresolved_keys.add(entry_key)
+                continue
+            for entry_key in source_entry_keys:
                 mapping[entry_key] = candidate
                 done_count += 1
         _set_i18n_lang_progress(
@@ -1275,18 +1338,40 @@ def _translate_feed_text_map(
             mode="live",
         )
 
-    with TRANSLATION_LOCK:
-        _load_translation_cache_unlocked()
-        cache_updated = False
-        for entry_key, source in pending_entries:
-            translated = str(mapping.get(entry_key, source) or "").strip() or source
-            key = _translation_cache_key(tag, source, entry_key=entry_key)
-            if TRANSLATION_CACHE.get(key) != translated:
-                TRANSLATION_CACHE[key] = translated
-                cache_updated = True
-        if cache_updated:
-            TRANSLATION_CACHE_DIRTY = True
-            _flush_translation_cache_unlocked()
+    if TRANSLATION_CACHE_ENABLED:
+        with TRANSLATION_LOCK:
+            _load_translation_cache_unlocked()
+            cache_updated = False
+            for entry_key, source in pending_entries:
+                if entry_key in unresolved_keys:
+                    continue
+                translated = str(mapping.get(entry_key, source) or "").strip() or source
+                if _is_untranslated_for_lang(source, translated, tag):
+                    continue
+                key = _translation_cache_key(tag, source, entry_key=entry_key)
+                if TRANSLATION_CACHE.get(key) != translated:
+                    TRANSLATION_CACHE[key] = translated
+                    cache_updated = True
+            if cache_updated:
+                TRANSLATION_CACHE_DIRTY = True
+                _flush_translation_cache_unlocked()
+
+    if unresolved_keys:
+        translated_final = max(0, len(normalized_entries) - len(unresolved_keys))
+        pending_final = len(unresolved_keys)
+        qa["mode"] = "live-partial"
+        qa["translated"] = translated_final
+        qa["pending_count"] = pending_final
+        qa["coverage"] = round((translated_final / len(normalized_entries)), 4) if normalized_entries else 1.0
+        qa["sample_pending"] = sorted(list(unresolved_keys))[:8]
+        _set_i18n_lang_progress(
+            tag,
+            total=len(normalized_entries),
+            done=translated_final,
+            status="pending",
+            mode="live-partial",
+        )
+        return mapping, qa
 
     qa["mode"] = "live"
     qa["translated"] = len(normalized_entries)
