@@ -461,6 +461,45 @@
       return Boolean(intelAuthState.authConfigured && intelAuthState.authenticated);
     }
 
+    const INTEL_AUTH_TOKEN_KEY = "intel_admin_bearer_token_v1";
+
+    function readIntelAuthToken() {
+      try {
+        return String(window.localStorage.getItem(INTEL_AUTH_TOKEN_KEY) || "").trim();
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function saveIntelAuthToken(token) {
+      const value = String(token || "").trim();
+      if (!value) return;
+      try {
+        window.localStorage.setItem(INTEL_AUTH_TOKEN_KEY, value);
+      } catch (_error) {}
+    }
+
+    function clearIntelAuthToken() {
+      try {
+        window.localStorage.removeItem(INTEL_AUTH_TOKEN_KEY);
+      } catch (_error) {}
+    }
+
+    function buildIntelAuthHeaders(baseHeaders = {}) {
+      const headers = { ...(baseHeaders || {}) };
+      const token = readIntelAuthToken();
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      return headers;
+    }
+
+    function handleIntelUnauthorized() {
+      clearIntelAuthToken();
+      intelAuthState.authenticated = false;
+      updateIntelAuthUi();
+    }
+
     function updateIntelAuthUi() {
       const statusEl = document.getElementById("intel-auth-status");
       const adminPanel = document.getElementById("intel-admin-monitor");
@@ -543,11 +582,16 @@
         const response = await fetch(intelApiUrl("/api/auth/me"), {
           method: "GET",
           credentials: "include",
+          headers: buildIntelAuthHeaders(),
           cache: "no-store",
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.ok) {
           throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        const token = String(data?.token || "").trim();
+        if (token) {
+          saveIntelAuthToken(token);
         }
         intelAuthState.ready = true;
         intelAuthState.authRequired = Boolean(data?.auth_required);
@@ -556,6 +600,9 @@
         intelAuthState.user = String(data?.user || "");
         intelAuthState.mode = String(data?.mode || "");
         intelAuthState.error = String(data?.error || "");
+        if (intelAuthState.authRequired && !intelAuthState.authenticated) {
+          clearIntelAuthToken();
+        }
       } catch (error) {
         intelAuthState.ready = true;
         intelAuthState.authRequired = false;
@@ -574,12 +621,16 @@
       const response = await fetch(intelApiUrl("/api/auth/login"), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ username, password }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || `HTTP ${response.status}`);
+      }
+      const token = String(data?.token || "").trim();
+      if (token) {
+        saveIntelAuthToken(token);
       }
       await fetchIntelAuthState();
       if (intelFeedCache) renderIntelFeed(intelFeedCache);
@@ -590,13 +641,14 @@
       const response = await fetch(intelApiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({}),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || `HTTP ${response.status}`);
       }
+      clearIntelAuthToken();
       await fetchIntelAuthState();
       if (intelFeedCache) renderIntelFeed(intelFeedCache);
       return data;
@@ -1337,14 +1389,13 @@
       const response = await fetch(intelApiUrl(path), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body || {}),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok) {
         if (response.status === 401) {
-          intelAuthState.authenticated = false;
-          updateIntelAuthUi();
+          handleIntelUnauthorized();
         }
         throw new Error(data?.error || `HTTP ${response.status}`);
       }
@@ -1356,10 +1407,14 @@
       const response = await fetch(intelApiUrl(`/api/intel/admin-status?limit=${safeLimit}`), {
         method: "GET",
         credentials: "include",
+        headers: buildIntelAuthHeaders(),
         cache: "no-store",
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.ok || typeof data?.status !== "object") {
+        if (response.status === 401) {
+          handleIntelUnauthorized();
+        }
         throw new Error(data?.error || `HTTP ${response.status}`);
       }
       return data.status;
@@ -1368,6 +1423,11 @@
     async function triggerWebsiteBackup() {
       const data = await postIntel("/api/intel/backup", {});
       return data?.backup || {};
+    }
+
+    async function triggerWebsiteRestore(force = true) {
+      const data = await postIntel("/api/intel/restore", { force: Boolean(force) });
+      return data?.restore || {};
     }
 
     function renderIntelAdminList(el, rows, emptyText) {
@@ -1519,13 +1579,16 @@
       }
       const restore = storage?.restore || {};
       if (dataRepoEl) {
+        const runtimeStatus = String(restore?.status || "").trim().toLowerCase();
         const reason = String(restore?.reason || "").trim();
         const ok = restore?.ok !== false;
         const restored = Boolean(restore?.restored);
         const repoReady = Boolean(backup?.has_repo);
         if (!repoReady) dataRepoEl.textContent = "Repo 未設定";
+        else if (runtimeStatus === "running") dataRepoEl.textContent = "從 Repo 還原中";
         else if (!ok) dataRepoEl.textContent = "連線/還原失敗";
         else if (restored) dataRepoEl.textContent = "已從 Repo 還原";
+        else if (reason === "manual_only") dataRepoEl.textContent = "等待手動還原";
         else if (reason === "data_root_not_empty") dataRepoEl.textContent = "Repo 已設定，資料已存在";
         else if (reason === "disabled") dataRepoEl.textContent = "啟動還原未啟用";
         else dataRepoEl.textContent = "Repo 已設定";
@@ -1535,7 +1598,11 @@
         const subdir = String(restore?.subdir || backup?.subdir || "--");
         const branch = String(restore?.branch || backup?.branch || "--");
         const error = String(restore?.error || "").trim();
-        dataRepoMetaEl.textContent = `restore=${reason} · branch=${branch} · subdir=${subdir}${error ? ` · ${error}` : ""}`;
+        const status = String(restore?.status || "idle").trim() || "idle";
+        const trigger = String(restore?.trigger || "--").trim() || "--";
+        const force = restore?.force ? "yes" : "no";
+        const doneAt = toLocalTime(restore?.finished_at || restore?.last_success_at);
+        dataRepoMetaEl.textContent = `status=${status} · restore=${reason} · trigger=${trigger} · force=${force} · branch=${branch} · subdir=${subdir} · finished ${doneAt}${error ? ` · ${error}` : ""}`;
       }
       if (backupEl) {
         const runtimeStatus = String(backupRuntime?.status || "").trim();
@@ -1569,7 +1636,7 @@
       const backupRows = [];
       backupRows.push(`Data root：${String(storage?.website_data_root || backup?.data_root || "--")}`);
       backupRows.push(`Frontend data link：${String(storage?.data_dir || "--")} · symlink=${storage?.using_symlink ? "yes" : "no"}`);
-      backupRows.push(`Restore：ok=${restore?.ok === false ? "no" : "yes"} · restored=${restore?.restored ? "yes" : "no"} · reason=${String(restore?.reason || "--")} · branch=${String(restore?.branch || backup?.branch || "--")} · subdir=${String(restore?.subdir || backup?.subdir || "--")}`);
+      backupRows.push(`Restore：status=${String(restore?.status || "idle")} · ok=${restore?.ok === false ? "no" : "yes"} · restored=${restore?.restored ? "yes" : "no"} · reason=${String(restore?.reason || "--")} · trigger=${String(restore?.trigger || "--")} · force=${restore?.force ? "yes" : "no"} · branch=${String(restore?.branch || backup?.branch || "--")} · subdir=${String(restore?.subdir || backup?.subdir || "--")}`);
       if (String(restore?.error || "").trim()) backupRows.push(`Restore error：${String(restore.error)}`);
       backupRows.push(`Backup：enabled=${backup?.enabled ? "yes" : "no"} · provider=${String(backup?.provider || "--")} · branch=${String(backup?.branch || "--")} · subdir=${String(backup?.subdir || "--")}`);
       backupRows.push(`Repo：${backup?.has_repo ? "configured" : "missing"} · PAT：${backup?.has_pat ? "configured" : "missing"} · repo_dir=${String(backup?.repo_dir || "--")}`);

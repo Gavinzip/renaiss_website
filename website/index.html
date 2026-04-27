@@ -695,9 +695,12 @@
         </div>
         <div class="intel-admin-actions-row">
           <div class="intel-admin-actions-copy">
-            手動備份會把目前資料資料夾上傳到設定的 Git 備份 repo。若 repo / PAT 未設定，只會回報缺少設定，不會上傳。
+            「從 Git 還原覆蓋」會把備份 repo 的 data 覆蓋到目前伺服器 data。手動備份則會把目前資料上傳到設定的 Git 備份 repo。
           </div>
-          <button id="intel-admin-backup-run" type="button" class="intel-auth-btn">手動備份上傳</button>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="intel-admin-restore-run" type="button" class="intel-auth-btn">從 Git 還原覆蓋</button>
+            <button id="intel-admin-backup-run" type="button" class="intel-auth-btn">手動備份上傳</button>
+          </div>
         </div>
         <div class="intel-admin-list-wrap">
           <div class="intel-admin-label">最近整理任務</div>
@@ -766,7 +769,7 @@
 
   <script src="./assets/index-i18n.js?v=20260427-i18n3"></script>
   <script src="./assets/index-data.js?v=20260427-intelfast2"></script>
-  <script src="./assets/index-render.js?v=20260427-intelfast6"></script>
-  <script src="./assets/index-actions.js?v=20260427-intelfast4"></script>
+  <script src="./assets/index-render.js?v=20260427-adminrestore1"></script>
+  <script src="./assets/index-actions.js?v=20260427-adminrestore1"></script>
 </body>
 </html>

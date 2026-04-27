@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -33,7 +34,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # Ensure project/website .env is loaded before storage/auth/env constants are resolved.
 load_environment()
 DATA_ROOT = get_website_data_dir(ROOT)
-RESTORE_STATE = restore_website_data_from_backup(DATA_ROOT, ROOT.parent)
 STORAGE_STATE = setup_website_storage(ROOT)
 
 FEED_PATH = DATA_ROOT / "x_intel_feed.json"
@@ -47,6 +47,7 @@ POKEMON_NEWS_STATE_LOCK = Lock()
 SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
+RESTORE_STATE_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
@@ -74,6 +75,21 @@ BACKUP_STATE: dict[str, object] = {
     "skipped": False,
     "reason": "",
 }
+RESTORE_STATE: dict[str, object] = {
+    "ok": True,
+    "restored": False,
+    "reason": "manual_only",
+    "status": "idle",
+    "started_at": "",
+    "finished_at": "",
+    "last_success_at": "",
+    "last_error": "",
+    "trigger": "",
+    "duration_ms": 0,
+    "force": False,
+    "branch": "",
+    "subdir": "",
+}
 MAX_JOB_ITEMS = 120
 POKEMON_NEWS_CACHE_MINUTES = 50
 DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
@@ -83,6 +99,8 @@ DEFAULT_X_SYNC_WINDOW_DAYS = 30
 POKEMON_NEWS_STATE: dict[str, dict] = {}
 AUTH_COOKIE_NAME = "intel_admin_session"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
+DEFAULT_TOKEN_TTL_SECONDS = DEFAULT_SESSION_TTL_SECONDS
+AUTH_TOKEN_PREFIX = "iat1"
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
@@ -96,6 +114,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/feedback",
     "/api/intel/job-status",
     "/api/intel/backup",
+    "/api/intel/restore",
     "/api/intel/retranslate",
 }
 
@@ -127,6 +146,8 @@ AUTH_PASSWORD_HASH = str(os.getenv("INTEL_ADMIN_PASS_HASH", "")).strip()
 AUTH_PASSWORD_PLAIN = str(os.getenv("INTEL_ADMIN_PASS", "")).strip()
 AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN))
 SESSION_TTL_SECONDS = max(300, int(os.getenv("INTEL_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL_SECONDS)) or DEFAULT_SESSION_TTL_SECONDS))
+TOKEN_TTL_SECONDS = max(300, int(os.getenv("INTEL_AUTH_TOKEN_TTL_SECONDS", str(DEFAULT_TOKEN_TTL_SECONDS)) or DEFAULT_TOKEN_TTL_SECONDS))
+TOKEN_SECRET_ENV = str(os.getenv("INTEL_AUTH_TOKEN_SECRET", "")).strip()
 COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
 COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
 COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
@@ -138,6 +159,78 @@ TRANSLATE_MAX_CHARS = 320
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(raw: str) -> bytes:
+    text = str(raw or "").strip()
+    if not text:
+        return b""
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(f"{text}{padding}".encode("utf-8"))
+
+
+def _auth_token_secret() -> str:
+    if TOKEN_SECRET_ENV:
+        return TOKEN_SECRET_ENV
+    # Keep token verification stable across restarts without requiring extra env.
+    seed = f"{AUTH_USERNAME}|{AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN}|renaiss-intel-token-v1"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _create_auth_token(username: str) -> str:
+    now_ts = int(time.time())
+    payload = {
+        "v": 1,
+        "u": str(username or "").strip(),
+        "iat": now_ts,
+        "exp": now_ts + TOKEN_TTL_SECONDS,
+    }
+    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = _b64url_encode(payload_raw)
+    signature = hmac.new(_auth_token_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    return f"{AUTH_TOKEN_PREFIX}.{payload_b64}.{_b64url_encode(signature)}"
+
+
+def _verify_auth_token(token: str) -> str:
+    raw = str(token or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return ""
+    prefix, payload_b64, signature_b64 = parts
+    if prefix != AUTH_TOKEN_PREFIX:
+        return ""
+    try:
+        expected_sig = hmac.new(
+            _auth_token_secret().encode("utf-8"),
+            payload_b64.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        actual_sig = _b64url_decode(signature_b64)
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            return ""
+        payload_raw = _b64url_decode(payload_b64)
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    if int(payload.get("v") or 0) != 1:
+        return ""
+    expires_at = int(payload.get("exp") or 0)
+    if expires_at <= int(time.time()):
+        return ""
+    username = str(payload.get("u") or "").strip()
+    if not username:
+        return ""
+    if AUTH_USERNAME and username != AUTH_USERNAME:
+        return ""
+    return username
 
 
 def _verify_password(raw_password: str) -> bool:
@@ -534,6 +627,66 @@ def _spawn_website_backup(trigger: str = "manual") -> bool:
     return True
 
 
+def _restore_state_snapshot() -> dict:
+    with RESTORE_STATE_LOCK:
+        return dict(RESTORE_STATE)
+
+
+def _start_restore_state(trigger: str = "", force: bool = False) -> float:
+    with RESTORE_STATE_LOCK:
+        RESTORE_STATE["status"] = "running"
+        RESTORE_STATE["started_at"] = _now_iso()
+        RESTORE_STATE["finished_at"] = ""
+        RESTORE_STATE["last_error"] = ""
+        RESTORE_STATE["trigger"] = str(trigger or "manual")
+        RESTORE_STATE["duration_ms"] = 0
+        RESTORE_STATE["force"] = bool(force)
+    return time.monotonic()
+
+
+def _finish_restore_state(result: dict, started_monotonic: float) -> None:
+    now_iso = _now_iso()
+    duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
+    ok = bool(result.get("ok"))
+    restored = bool(result.get("restored"))
+    status = "ok" if ok else "failed"
+    with RESTORE_STATE_LOCK:
+        RESTORE_STATE.update(
+            {
+                "ok": ok,
+                "restored": restored,
+                "reason": str(result.get("reason") or ("restored" if restored else ("ok" if ok else "restore_failed"))),
+                "status": status,
+                "finished_at": now_iso,
+                "duration_ms": duration_ms,
+                "branch": str(result.get("branch") or RESTORE_STATE.get("branch") or ""),
+                "subdir": str(result.get("subdir") or RESTORE_STATE.get("subdir") or ""),
+                "last_error": "" if ok else str(result.get("error") or result.get("reason") or "unknown_error"),
+            }
+        )
+        if ok:
+            RESTORE_STATE["last_success_at"] = now_iso
+
+
+def _spawn_website_restore(trigger: str = "manual", force: bool = True) -> bool:
+    with RESTORE_STATE_LOCK:
+        if str(RESTORE_STATE.get("status") or "").strip().lower() == "running":
+            return False
+
+    def _worker() -> None:
+        started = _start_restore_state(trigger=trigger, force=force)
+        result = restore_website_data_from_backup(
+            DATA_ROOT,
+            ROOT.parent,
+            manual=True,
+            force_override=bool(force),
+        )
+        _finish_restore_state(result, started)
+
+    Thread(target=_worker, daemon=True).start()
+    return True
+
+
 def _collect_jobs_snapshot(limit: int = 12) -> dict:
     with JOBS_LOCK:
         state = _read_jobs_unlocked()
@@ -590,6 +743,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
+    restore_state = _restore_state_snapshot()
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
@@ -681,6 +835,15 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "status": str(backup_state.get("status") or ("enabled" if backup_status.get("enabled") else "disabled")),
                 "detail": f"provider={backup_status.get('provider')} subdir={backup_status.get('subdir')} repo={'set' if backup_status.get('has_repo') else 'unset'} changed={backup_state.get('changed')}",
             },
+            {
+                "name": "website_restore_agent",
+                "status": str(restore_state.get("status") or "idle"),
+                "detail": (
+                    f"restored={bool(restore_state.get('restored'))} "
+                    f"reason={str(restore_state.get('reason') or '--')} "
+                    f"branch={str(restore_state.get('branch') or backup_status.get('branch') or '--')}"
+                ),
+            },
         ],
         "monitors": {
             "discord": {
@@ -698,7 +861,7 @@ def _build_admin_status(limit: int = 10) -> dict:
         "i18n": i18n_state,
         "storage": {
             **STORAGE_STATE,
-            "restore": RESTORE_STATE,
+            "restore": restore_state,
         },
         "backup": {
             **backup_status,
@@ -1023,9 +1186,23 @@ class Handler(SimpleHTTPRequestHandler):
             return ""
         return str(node.value or "").strip()
 
+    def _auth_token_from_header(self) -> str:
+        value = str(self.headers.get("Authorization") or "").strip()
+        if not value:
+            return ""
+        parts = value.split(" ", 1)
+        if len(parts) != 2:
+            return ""
+        if parts[0].strip().lower() != "bearer":
+            return ""
+        return parts[1].strip()
+
     def _current_user(self) -> str:
         if not AUTH_REQUIRED:
             return "admin"
+        token_user = _verify_auth_token(self._auth_token_from_header())
+        if token_user:
+            return token_user
         session_id = self._session_id_from_cookie()
         if not session_id:
             return ""
@@ -1043,6 +1220,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "authenticated": True,
                 "user": "admin",
                 "mode": "open",
+                "token_type": "Bearer",
+                "token_ttl_seconds": TOKEN_TTL_SECONDS,
             }
         if not AUTH_CONFIGURED:
             return {
@@ -1062,6 +1241,8 @@ class Handler(SimpleHTTPRequestHandler):
             "authenticated": bool(user),
             "user": user,
             "mode": "protected",
+            "token_type": "Bearer",
+            "token_ttl_seconds": TOKEN_TTL_SECONDS,
         }
 
     def _require_admin_access(self) -> bool:
@@ -1173,6 +1354,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/feedback",
             "/api/intel/job-status",
             "/api/intel/backup",
+            "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
@@ -1191,6 +1373,7 @@ class Handler(SimpleHTTPRequestHandler):
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
             if not AUTH_REQUIRED:
+                token = _create_auth_token("admin")
                 self._send_json(
                     {
                         "ok": True,
@@ -1198,6 +1381,9 @@ class Handler(SimpleHTTPRequestHandler):
                         "authenticated": True,
                         "user": "admin",
                         "mode": "open",
+                        "token_type": "Bearer",
+                        "token_ttl_seconds": TOKEN_TTL_SECONDS,
+                        "token": token,
                     }
                 )
                 return
@@ -1214,6 +1400,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "帳號或密碼錯誤"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             sid = _create_session(username)
+            token = _create_auth_token(username)
             self._send_json(
                 {
                     "ok": True,
@@ -1222,6 +1409,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": True,
                     "user": username,
                     "mode": "protected",
+                    "token_type": "Bearer",
+                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
+                    "token": token,
                 },
                 extra_headers={"Set-Cookie": self._session_cookie_header(sid)},
             )
@@ -1238,6 +1428,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": False,
                     "user": "",
                     "mode": "protected" if AUTH_REQUIRED else "open",
+                    "token_type": "Bearer",
+                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
                 },
                 extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
             )
@@ -1321,6 +1513,12 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/intel/backup":
                 started = _spawn_website_backup(trigger=self._current_user() or "manual")
                 self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
+                return
+
+            if path == "/api/intel/restore":
+                force = bool(payload.get("force", True))
+                started = _spawn_website_restore(trigger=self._current_user() or "manual", force=force)
+                self._send_json({"ok": True, "started": started, "restore": _restore_state_snapshot()})
                 return
 
             if path == "/api/intel/retranslate":
@@ -1433,7 +1631,7 @@ def main() -> int:
         "[ai-intel] API endpoints: "
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
-        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )
     print(

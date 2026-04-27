@@ -21,6 +21,7 @@
       const adminSyncNowBtn = document.getElementById("intel-admin-sync-now");
       const adminRetranslateBtn = document.getElementById("intel-admin-retranslate");
       const adminBackupRunBtn = document.getElementById("intel-admin-backup-run");
+      const adminRestoreRunBtn = document.getElementById("intel-admin-restore-run");
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
       const masterStage = document.getElementById("intel-master-stage");
@@ -289,6 +290,30 @@
           } finally {
             adminBackupRunBtn.disabled = false;
             adminBackupRunBtn.textContent = "手動備份上傳";
+          }
+        });
+      }
+
+      if (adminRestoreRunBtn && !adminRestoreRunBtn.dataset.boundRestoreRun) {
+        adminRestoreRunBtn.dataset.boundRestoreRun = "1";
+        adminRestoreRunBtn.addEventListener("click", async () => {
+          if (!intelCanEdit()) {
+            openIntelAuthModal();
+            setIntelMessage("請先登入管理員帳號後再執行還原。", "error");
+            return;
+          }
+          if (!window.confirm("確定要從 Git 抓資料並覆蓋目前伺服器 data 嗎？這會直接覆蓋現有檔案。")) return;
+          adminRestoreRunBtn.disabled = true;
+          adminRestoreRunBtn.textContent = "還原啟動中...";
+          try {
+            await triggerWebsiteRestore(true);
+            setIntelMessage("已啟動背景還原，請在 AI 監控面板查看進度。", "ok");
+            await refreshIntelAdminStatus();
+          } catch (error) {
+            setIntelMessage(`還原啟動失敗：${error.message}`, "error");
+          } finally {
+            adminRestoreRunBtn.disabled = false;
+            adminRestoreRunBtn.textContent = "從 Git 還原覆蓋";
           }
         });
       }
