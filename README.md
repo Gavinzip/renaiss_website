@@ -30,6 +30,13 @@ pip install -r requirements.txt && ./start.sh
 
 The server reads `PORT` from environment and binds `0.0.0.0` by default via `start.sh`.
 
+### Frontend/Backend split (team rule)
+
+- Frontend is maintained and deployed separately from backend.
+- Frontend source package lives in `ganbitlabs/walgo` under `examples/renaiss-frontend/`.
+- Backend API remains on Zeabur (this repository).
+- Start local backend only when doing local debug/testing.
+
 ### Required env vars
 - `MINIMAX_API_KEY`
 - `INTEL_ADMIN_USER`
