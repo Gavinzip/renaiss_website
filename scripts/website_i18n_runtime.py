@@ -97,6 +97,7 @@ I18N_CARD_TEXT_KEYS = (
     "headline",
 )
 I18N_CARD_FACT_TEXT_KEYS = (
+    "participation",
     "schedule",
     "location",
     "audience",
