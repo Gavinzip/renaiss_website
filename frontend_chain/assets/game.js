@@ -904,31 +904,20 @@
         } else {
           const current = layers[base];
           const next = layers[base + 1];
-          const transitionDeadZone = 0.08;
+          const leftInset = clamp01(1 - local) * 100;
 
           current.classList.add("is-active");
           current.style.opacity = "1";
           current.style.zIndex = "2";
 
-          if (local <= transitionDeadZone) {
-            if (divider) divider.style.opacity = "0";
-          } else if (local >= 1 - transitionDeadZone) {
-            next.classList.add("is-next");
-            next.style.opacity = "1";
-            next.style.zIndex = "3";
-            next.style.clipPath = "inset(0 0 0 0)";
-            if (divider) divider.style.opacity = "0";
-          } else {
-            const transitionProgress = clamp01((local - transitionDeadZone) / (1 - transitionDeadZone * 2));
-            const leftInset = clamp01(1 - transitionProgress) * 100;
-            next.classList.add("is-next");
-            next.style.opacity = "1";
-            next.style.zIndex = "3";
-            next.style.clipPath = `inset(0 0 0 ${leftInset}%)`;
-            if (divider) {
-              divider.style.opacity = "1";
-              divider.style.left = `${leftInset}%`;
-            }
+          next.classList.add("is-next");
+          next.style.opacity = "1";
+          next.style.zIndex = "3";
+          next.style.clipPath = `inset(0 0 0 ${leftInset}%)`;
+
+          if (divider) {
+            divider.style.opacity = "1";
+            divider.style.left = `${leftInset}%`;
           }
         }
 

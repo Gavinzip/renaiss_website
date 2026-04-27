@@ -84,7 +84,7 @@ site-builder --context mainnet --gas-budget 500000000 publish --dry-run --epochs
 ```
 
 Latest published site object ID (clean frontend package):
-- `0xbdce612ad5728af48fc2361f083ad6d615d41b16c7018f99920471e479c243c8`
+- `0x1773bd88d6bbd925a14f8730eab0a98be8c7ebc103ea411e228c6f6cd2ee30f0`
 
 Latest publish metadata file:
 - `frontend_chain/ws-resources.json`
