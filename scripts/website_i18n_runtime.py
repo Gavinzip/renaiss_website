@@ -995,8 +995,10 @@ def _apply_card_level_fallback(
 
 
 def _resolve_card_fallback_mode(lang: str) -> str:
-    normalized = str(I18N_FEED_FALLBACK_MODE or "base").strip().lower()
-    return "hide" if normalized == "hide" else "base"
+    # Always keep cards visible for end users. If the target-language
+    # text is not ready yet, we fall back to base (zh-Hant) card content.
+    # This avoids empty category pages during translation catch-up.
+    return "base"
 
 
 def _fallback_feed_from_base(feed: dict[str, object], lang: str, reason: str) -> dict[str, object]:
