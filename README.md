@@ -46,6 +46,22 @@ The server reads `PORT` from environment and binds `0.0.0.0` by default via `sta
 - `INTEL_COOKIE_SAMESITE`, `INTEL_COOKIE_SECURE`, `INTEL_COOKIE_DOMAIN`
 - `INTEL_SESSION_TTL_SECONDS`
 - `NEWS_INTERVAL_MINUTES`, `NEWS_LANGS`
+- `APP_ENV=server`, `WEBSITE_DATA_ROOT=/data/RENAISS_WEBSITE`
+- `WEBSITE_DATA_RESTORE_ON_STARTUP=1`, `WEBSITE_DATA_RESTORE_POLICY=always`
+- `I18N_FEED_FALLBACK_MODE=base`
+
+### Recommended persistent data env for Zeabur
+
+To keep backend cards and translations consistent across restarts:
+
+- `APP_ENV=server`
+- `WEBSITE_DATA_ROOT=/data/RENAISS_WEBSITE`
+- `WEBSITE_DATA_RESTORE_ON_STARTUP=1`
+- `WEBSITE_DATA_RESTORE_POLICY=always`
+- `WEBSITE_BACKUP_PROVIDER=git`
+- `WEBSITE_BACKUP_REPO=https://github.com/Gavinzip/webdata.git`
+- `WEBSITE_BACKUP_SUBDIR=RENAISS_WEBSITE`
+- Keep `WEBSITE_BACKUP_ENABLED=0` by default unless you explicitly want server-side auto-push back to git.
 
 ## 3) Frontend deployment (Walrus / chain)
 
