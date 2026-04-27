@@ -183,6 +183,8 @@
     const LANG_MORPH_CJK = "天地玄黃宇宙洪荒風火雷電星月山海光影流轉";
     const LANG_MORPH_HANGUL = "가나다라마바사아자차카타파하우리세계여정";
     let pendingUiLangMorph = false;
+    let uiLangMorphRunning = false;
+    let uiLangApplyQueued = false;
 
     function canUseLangMorphFx() {
       try {
@@ -346,6 +348,10 @@
     }
 
     async function applyUiLanguage() {
+      if (uiLangMorphRunning && !pendingUiLangMorph) {
+        uiLangApplyQueued = true;
+        return;
+      }
       const version = ++uiTranslateVersion;
       updateLangSwitcherUi();
       const wantsMorphFx = pendingUiLangMorph;
@@ -383,7 +389,18 @@
             entry.set(entry.to);
           }
         });
-        await runLangMorphFx(entries, version);
+        uiLangMorphRunning = true;
+        try {
+          await runLangMorphFx(entries, version);
+        } finally {
+          uiLangMorphRunning = false;
+        }
+        if (uiLangApplyQueued) {
+          uiLangApplyQueued = false;
+          window.requestAnimationFrame(() => {
+            applyUiLanguage().catch(() => {});
+          });
+        }
         return;
       }
       staticEntries.forEach((entry) => {
@@ -392,6 +409,12 @@
       nodes.forEach((node, idx) => {
         node.nodeValue = nextRows[idx];
       });
+      if (uiLangApplyQueued) {
+        uiLangApplyQueued = false;
+        window.requestAnimationFrame(() => {
+          applyUiLanguage().catch(() => {});
+        });
+      }
     }
 
     function setupLanguageSwitcher() {
@@ -1259,7 +1282,6 @@
     async function fetchIntelFeed(langOverride = "") {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
       const canUseApi = window.location.protocol !== "file:";
-      let apiError = null;
       if (canUseApi) {
         try {
           const controller = new AbortController();
@@ -1277,23 +1299,18 @@
             }
             return payload.feed;
           }
-          apiError = new Error(payload?.error || `HTTP ${response.status}`);
+          throw new Error(payload?.error || `HTTP ${response.status}`);
         } catch (error) {
-          apiError = error instanceof Error ? error : new Error(String(error || "api_fetch_failed"));
+          throw (error instanceof Error ? error : new Error(String(error || "api_fetch_failed")));
         }
       }
-      try {
-        const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
-        if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
-        const fallback = await response.json();
-        if (fallback && typeof fallback === "object" && !fallback.lang) {
-          fallback.lang = "zh-Hant";
-        }
-        return fallback;
-      } catch (fallbackError) {
-        if (apiError) throw apiError;
-        throw fallbackError;
+      const response = await fetch("./data/x_intel_feed.json", { cache: "no-store" });
+      if (!response.ok) throw new Error("Failed to load x_intel_feed.json");
+      const fallback = await response.json();
+      if (fallback && typeof fallback === "object" && !fallback.lang) {
+        fallback.lang = "zh-Hant";
       }
+      return fallback;
     }
 
     async function refreshIntelFeedForCurrentLang() {
