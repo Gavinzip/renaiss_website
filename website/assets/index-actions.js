@@ -581,6 +581,48 @@
       other: "社群精選",
     };
 
+    function normalizeLangTag(raw) {
+      const tag = String(raw || "").trim().toLowerCase();
+      if (tag === "zh-hans" || tag === "zh-cn" || tag === "zh-sg") return "zh-Hans";
+      if (tag === "en" || tag.startsWith("en-")) return "en";
+      if (tag === "ko" || tag.startsWith("ko-")) return "ko";
+      return "zh-Hant";
+    }
+
+    function getUiLangTag() {
+      const select = document.getElementById("lang-select");
+      if (select && select.value) return normalizeLangTag(select.value);
+      const htmlLang = document.documentElement?.lang || "";
+      if (htmlLang) return normalizeLangTag(htmlLang);
+      return "zh-Hant";
+    }
+
+    function getStaticI18nByKey(key, fallback = "") {
+      const rows = window.INTEL_UI_STATIC_TRANSLATIONS && window.INTEL_UI_STATIC_TRANSLATIONS[key];
+      if (!rows || typeof rows !== "object") return String(fallback || "");
+      const lang = getUiLangTag();
+      return String(rows[lang] || rows["zh-Hant"] || fallback || "");
+    }
+
+    function renderCategoryHint(category) {
+      const labelKeyMap = {
+        events: "category.events",
+        official: "category.official",
+        sbt: "category.sbt",
+        pokemon: "category.pokemon",
+        alpha: "category.alpha",
+        tools: "category.tools",
+        other: "category.other",
+      };
+      const prefix = getStaticI18nByKey("category.hintPrefix", "目前顯示：");
+      const suffix = getStaticI18nByKey("category.hintSuffix", "。");
+      const labelKey = labelKeyMap[category] || "";
+      const label = labelKey
+        ? getStaticI18nByKey(labelKey, categoryLabels[category] || category)
+        : (categoryLabels[category] || category);
+      return `${prefix}${label}${suffix}`;
+    }
+
     const categoryTargets = {
       events: "events",
       official: "intel",
@@ -644,7 +686,7 @@
         link.classList.toggle("is-active", link.dataset.navCategory === nextCategory);
       });
       if (categoryHint) {
-        categoryHint.textContent = `目前顯示：${categoryLabels[nextCategory] || nextCategory}。`;
+        categoryHint.textContent = renderCategoryHint(nextCategory);
       }
       if (opts.updateHash) {
         history.replaceState(null, "", `#cat-${nextCategory}`);

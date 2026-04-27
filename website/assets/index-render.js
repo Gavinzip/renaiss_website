@@ -58,13 +58,35 @@
         if (!rows || typeof rows !== "object") return;
         const next = String(rows[tag] || rows["zh-Hant"] || "").trim();
         if (!next) return;
-        const current = String(el.textContent || "");
+        const asHtml = String(el.getAttribute("data-i18n-html") || "") === "1";
+        const directTextNode = !asHtml && el.childElementCount > 0
+          ? Array.from(el.childNodes || []).find(
+              (node) => node && node.nodeType === Node.TEXT_NODE && String(node.nodeValue || "").trim().length > 0
+            )
+          : null;
+        const current = String(
+          asHtml
+            ? el.innerHTML
+            : directTextNode
+              ? directTextNode.nodeValue || ""
+              : el.textContent || ""
+        );
         el.setAttribute("data-no-i18n", "1");
         entries.push({
           from: current,
           to: next,
           anchor: el,
-          set(value) { el.textContent = String(value || ""); },
+          set(value) {
+            if (asHtml) {
+              el.innerHTML = String(value || "");
+              return;
+            }
+            if (directTextNode) {
+              directTextNode.nodeValue = String(value || "");
+              return;
+            }
+            el.textContent = String(value || "");
+          },
         });
       });
       return entries;
