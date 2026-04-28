@@ -278,12 +278,12 @@
     }
 
     .world-landing {
-      min-height: clamp(560px, calc(100svh - 5.6rem), 760px);
+      min-height: clamp(460px, calc(100svh - 7rem), 640px);
       margin-top: 0.9rem;
       display: grid;
-      place-items: start center;
+      place-items: center;
       text-align: center;
-      padding: 1.6rem 0 1.5rem;
+      padding: 1rem 0 1.1rem;
       position: relative;
       isolation: isolate;
       overflow: hidden;
@@ -302,9 +302,9 @@
       position: relative;
       z-index: 2;
       width: min(1040px, 100%);
-      padding: clamp(1.15rem, 4.2vh, 2.5rem) 1rem 0.9rem;
+      padding: clamp(1.3rem, 4vh, 2.3rem) 1rem 1rem;
       display: grid;
-      gap: 0.58rem;
+      gap: 1rem;
       justify-items: center;
     }
 
@@ -398,15 +398,15 @@
     }
 
     .world-manifesto {
-      margin: 0.36rem 0 0;
+      margin: 0.9rem 0 0;
       width: auto;
       max-width: min(28ch, 100%);
       font-family: var(--display-font);
       font-size: clamp(1.08rem, 2vw, 1.54rem);
-      line-height: 1.06;
+      line-height: 1.14;
       letter-spacing: -0.012em;
       color: #13243c;
-      text-wrap: nowrap;
+      text-wrap: balance;
       text-shadow: 0 8px 24px rgba(40, 69, 102, 0.12), 0 1px 0 rgba(255, 255, 255, 0.68);
     }
 
@@ -420,7 +420,7 @@
     }
 
     .world-manifesto-en {
-      margin-top: 0.12rem;
+      margin-top: 0.24rem;
       color: #3f5f81;
       font-size: clamp(0.82rem, 1.02vw, 0.98rem);
       letter-spacing: 0.02em;
@@ -451,6 +451,7 @@
       justify-content: center;
       gap: 0.7rem;
       flex-wrap: wrap;
+      margin-top: 0.42rem;
     }
 
     .hero-dashboard {
@@ -510,7 +511,7 @@
     }
 
     .scroll-hint {
-      margin-top: 0.12rem;
+      margin-top: 0.4rem;
       font-size: 0.78rem;
       font-family: var(--mono-font);
       color: #607c9a;
@@ -1760,6 +1761,8 @@
       padding: 1rem;
       overflow: hidden;
       position: relative;
+      width: min(1380px, 100%);
+      margin-inline: auto;
     }
 
     .season-header {

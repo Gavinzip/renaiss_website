@@ -77,10 +77,16 @@ Frontend package location:
 - `frontend_chain/sbt_icons.json`
 - `frontend_chain/data/i18n_text_cache.json`
 
-Publish command example:
+Update command example (use this for daily deploy, do not create a new site):
 
 ```bash
-site-builder --context mainnet --gas-budget 500000000 publish --dry-run --epochs 1 ./frontend_chain
+./scripts/update_frontend_chain.sh
+```
+
+Dry-run example:
+
+```bash
+DRY_RUN=1 GAS_BUDGET=200000000 ./scripts/update_frontend_chain.sh
 ```
 
 Latest published site object ID (clean frontend package, pinned):

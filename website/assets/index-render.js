@@ -343,7 +343,7 @@
       const mode = String(i18n?.mode || "");
       const lang = normalizeUiLang(payload?.lang || currentUiLang);
       const progress = i18n?.state?.lang_progress?.[lang] || {};
-      if (mode === "building") {
+      if (mode === "building" || mode === "building-stale") {
         const percent = Number(progress?.percent || 0);
         const remaining = Number(progress?.remaining || 0);
         const remainingLabel = currentUiLang === "en" ? "remaining" : (currentUiLang === "ko" ? "남음" : "剩");
@@ -504,6 +504,7 @@
       const statusEl = document.getElementById("intel-auth-status");
       const adminPanel = document.getElementById("intel-admin-monitor");
       const adminOpenBtn = document.getElementById("nav-admin-monitor-btn");
+      const adminPipelineLink = document.getElementById("nav-admin-pipeline-link");
       const loginButtons = [
         document.getElementById("intel-login-btn"),
         document.getElementById("nav-intel-login-btn"),
@@ -527,6 +528,7 @@
       if (input) input.disabled = !editable;
       if (adminPanel) adminPanel.style.display = showAdminPanel ? "grid" : "none";
       if (adminOpenBtn) adminOpenBtn.style.display = showAdminPanel ? "inline-flex" : "none";
+      if (adminPipelineLink) adminPipelineLink.style.display = showAdminPanel ? "inline-flex" : "none";
       if (showAdminPanel) startIntelAdminPolling();
       else {
         stopIntelAdminPolling();
@@ -543,6 +545,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
       if (!intelAuthState.ready || intelAuthState.checking) {
@@ -554,6 +557,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
       if (!intelAuthState.authConfigured) {
@@ -562,6 +566,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
       if (intelAuthState.authenticated) {
@@ -1102,9 +1107,16 @@
     function renderIntelFeed(payload) {
       intelFeedCache = payload && typeof payload === "object" ? payload : null;
       const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
+      const payloadMode = String(payload?._i18n?.mode || "");
+      const shouldPersistSnapshot = !(
+        payloadLang !== "zh-Hant"
+        && (payloadMode === "building" || payloadMode === "building-stale" || payloadMode === "base-fallback")
+      );
       if (intelFeedCache) {
         intelFeedLangCache.set(payloadLang, intelFeedCache);
-        saveIntelFeedSnapshot(payloadLang, intelFeedCache);
+        if (shouldPersistSnapshot) {
+          saveIntelFeedSnapshot(payloadLang, intelFeedCache);
+        }
       }
       const generatedAt = document.getElementById("intel-generated-at");
       const latestSourceAt = document.getElementById("intel-latest-source-at");
@@ -1362,6 +1374,22 @@
 
     async function refreshIntelFeedForCurrentLang() {
       const payload = await fetchIntelFeed(currentUiLang);
+      const requestLang = normalizeUiLang(currentUiLang);
+      const mode = String(payload?._i18n?.mode || "");
+      const cached = readCachedIntelFeed(requestLang, false);
+      if (
+        requestLang !== "zh-Hant"
+        && (mode === "building" || mode === "building-stale")
+        && cached
+        && typeof cached === "object"
+        && Array.isArray(cached.cards)
+        && cached.cards.length
+      ) {
+        const merged = { ...cached, _i18n: payload?._i18n || cached?._i18n, lang: requestLang };
+        renderIntelFeed(merged);
+        scheduleLangFeedRefresh(payload);
+        return merged;
+      }
       renderIntelFeed(payload);
       scheduleLangFeedRefresh(payload);
       return payload;
