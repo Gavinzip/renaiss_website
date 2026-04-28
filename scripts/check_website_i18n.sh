@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-https://gavinx.zeabur.app}}}"
+API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-http://renaiss.zeabur.app}}}"
 TIMEOUT=10
 
 echo "=== 1) API base ==="

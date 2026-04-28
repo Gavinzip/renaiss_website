@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const INTEL_API_BASE = "https://gavinx.zeabur.app";
+  const INTEL_API_BASE = "http://renaiss.zeabur.app";
   const INTEL_AUTH_TOKEN_KEY = "intel_admin_bearer_token_v1";
   const pollState = {
     timer: null,
