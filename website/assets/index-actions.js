@@ -19,7 +19,6 @@
       const authSubmit = document.getElementById("intel-auth-submit");
       const adminRefreshBtn = document.getElementById("intel-admin-refresh");
       const adminSyncNowBtn = document.getElementById("intel-admin-sync-now");
-      const adminRetranslateBtn = document.getElementById("intel-admin-retranslate");
       const adminBackupRunBtn = document.getElementById("intel-admin-backup-run");
       const adminRestoreRunBtn = document.getElementById("intel-admin-restore-run");
       const secretLine = document.getElementById("intel-auth-stealth-line");
@@ -239,33 +238,6 @@
             await refreshIntelAdminStatus();
           } finally {
             adminRefreshBtn.disabled = false;
-          }
-        });
-      }
-
-      if (adminRetranslateBtn && !adminRetranslateBtn.dataset.boundRetranslate) {
-        adminRetranslateBtn.dataset.boundRetranslate = "1";
-        adminRetranslateBtn.addEventListener("click", async () => {
-          if (!intelCanEdit()) {
-            openIntelAuthModal();
-            setIntelMessage("請先登入管理員帳號後再執行全部重新翻譯。", "error");
-            return;
-          }
-          const targetLang = "all";
-          const targetLabel = "EN / KO / 簡中";
-          if (!window.confirm(`確定要全部重新翻譯 ${targetLabel} 嗎？只會重翻目前已上牆的卡片與摘要區塊。`)) return;
-          adminRetranslateBtn.disabled = true;
-          adminRetranslateBtn.textContent = "全部重翻中...";
-          try {
-            await postIntel("/api/intel/retranslate", { lang: targetLang });
-            setIntelMessage(`已啟動 ${targetLabel} 全部重新翻譯（背景處理中）。`, "ok");
-            await refreshIntelAdminStatus();
-            await refreshIntelFeedForCurrentLang();
-          } catch (error) {
-            setIntelMessage(`全部重新翻譯失敗：${error.message}`, "error");
-          } finally {
-            adminRetranslateBtn.disabled = false;
-            adminRetranslateBtn.textContent = "全部重新翻譯";
           }
         });
       }

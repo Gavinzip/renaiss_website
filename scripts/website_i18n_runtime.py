@@ -40,7 +40,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 7
+I18N_BUILD_VERSION = 8
 I18N_FEED_TEXT_KEYS = {
     "headline",
     "conclusion",
@@ -892,6 +892,16 @@ def _collect_feed_i18n_strings(node: object) -> list[str]:
     return [text for _, text in _collect_feed_i18n_entries(node)]
 
 
+def _entry_map_from_node(node: object) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for entry_key, value in _collect_feed_i18n_entries(node):
+        key = str(entry_key or "").strip()
+        if not key:
+            continue
+        out[key] = str(value or "")
+    return out
+
+
 def _apply_feed_translation(node: object, mapping: dict[str, str]) -> object:
     def _walk(value: object, parent_key: str = "", path: str = "") -> object:
         if isinstance(value, dict):
@@ -1045,11 +1055,60 @@ def _card_lookup_key(card: dict[str, object], index: int) -> str:
     return f"{account}|{published}|{title}|{index}"
 
 
-def _card_has_target_text(card: dict[str, object], lang: str) -> bool:
+def _iter_card_translatable_pairs(
+    base_card: dict[str, object] | None,
+    localized_card: dict[str, object],
+) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    src_card = base_card if isinstance(base_card, dict) else localized_card
+    dst_card = localized_card if isinstance(localized_card, dict) else {}
+
+    for key in I18N_CARD_TEXT_KEYS:
+        source = str(src_card.get(key) or "").strip()
+        translated = str(dst_card.get(key) or "").strip()
+        if not source and not translated:
+            continue
+        pairs.append((source, translated))
+
+    for key in I18N_FEED_LIST_KEYS:
+        src_rows = src_card.get(key) if isinstance(src_card.get(key), list) else []
+        dst_rows = dst_card.get(key) if isinstance(dst_card.get(key), list) else []
+        total = max(len(src_rows), len(dst_rows))
+        for idx in range(total):
+            source = str(src_rows[idx] or "").strip() if idx < len(src_rows) else ""
+            translated = str(dst_rows[idx] or "").strip() if idx < len(dst_rows) else ""
+            if not source and not translated:
+                continue
+            pairs.append((source, translated))
+
+    src_facts = src_card.get("event_facts") if isinstance(src_card.get("event_facts"), dict) else {}
+    dst_facts = dst_card.get("event_facts") if isinstance(dst_card.get("event_facts"), dict) else {}
+    for fact_key in I18N_CARD_FACT_TEXT_KEYS:
+        source = str(src_facts.get(fact_key) or "").strip()
+        translated = str(dst_facts.get(fact_key) or "").strip()
+        if not source and not translated:
+            continue
+        pairs.append((source, translated))
+    return pairs
+
+
+def _card_has_target_text(
+    card: dict[str, object],
+    lang: str,
+    base_card: dict[str, object] | None = None,
+) -> bool:
     tag = _normalize_lang_tag(lang)
     if tag in {"en", "ko"}:
-        # For EN/KO publishing we treat cards as translated once they enter
-        # the localized bundle cache. Manual retranslate handles correction.
+        src_card = base_card if isinstance(base_card, dict) else card
+        # EN/KO publish gating is based on core card text only.
+        # Secondary lists/facts may lag and should not hide the entire card.
+        for key in I18N_CARD_TEXT_KEYS:
+            source = str(src_card.get(key) or "").strip()
+            translated = str(card.get(key) or "").strip()
+            if not source and not translated:
+                continue
+            if _is_untranslated_for_lang(source, translated, tag):
+                return False
         return True
     if tag in {"zh-Hant", "zh-Hans"}:
         if tag == "zh-Hans":
@@ -1078,29 +1137,38 @@ def _apply_card_level_fallback(
 
     normalized_mode = "hide" if str(mode or "").strip().lower() == "hide" else "base"
     base_index: dict[str, dict[str, object]] = {}
+    localized_index: dict[str, dict[str, object]] = {}
     for idx, raw in enumerate(base_cards):
         if not isinstance(raw, dict):
             continue
         base_index[_card_lookup_key(raw, idx)] = raw
+
+    for idx, raw in enumerate(localized_cards):
+        if not isinstance(raw, dict):
+            continue
+        key = _card_lookup_key(raw, idx)
+        if key not in localized_index:
+            localized_index[key] = raw
 
     out_cards: list[dict[str, object]] = []
     total = 0
     ready = 0
     fallback = 0
     hidden = 0
-    for idx, raw in enumerate(localized_cards):
-        if not isinstance(raw, dict):
+    for idx, base_raw in enumerate(base_cards):
+        if not isinstance(base_raw, dict):
             continue
+        key = _card_lookup_key(base_raw, idx)
+        localized_raw = localized_index.get(key)
         total += 1
-        if _card_has_target_text(raw, lang):
+        if isinstance(localized_raw, dict) and _card_has_target_text(localized_raw, lang, base_card=base_raw):
             ready += 1
-            out_cards.append(raw)
+            out_cards.append(localized_raw)
             continue
-        key = _card_lookup_key(raw, idx)
-        base_card = base_index.get(key)
         if normalized_mode == "hide":
             hidden += 1
             continue
+        base_card = base_index.get(key)
         if isinstance(base_card, dict):
             fallback += 1
             out_cards.append(copy.deepcopy(base_card))
@@ -1117,6 +1185,8 @@ def _resolve_card_fallback_mode(lang: str) -> str:
     # Card-level publishing mode:
     # - hide: only show cards already translated for target language
     # - base: show translated cards first, fallback to base-language card per item
+    if _normalize_lang_tag(lang) in {"en", "ko"}:
+        return "hide"
     raw_mode = str(I18N_FEED_FALLBACK_MODE or "base").strip().lower()
     if raw_mode in {"hide", "strict", "translated-only"}:
         return "hide"
@@ -1170,16 +1240,25 @@ def _translate_chunk_agent(texts: list[str], lang: str, api_key: str, strict: bo
         f"{strict_rules}\n"
         f"source={json.dumps(texts, ensure_ascii=False)}"
     )
-    raw = minimax_chat(prompt, api_key)
-    parsed = _parse_json_array(raw)
-    if len(parsed) != len(texts):
-        return list(texts)
-    return [str(x or "").strip() or texts[idx] for idx, x in enumerate(parsed)]
+    max_attempts = int(str(os.getenv("I18N_TRANSLATE_RETRY_MAX_ATTEMPTS") or "0") or 0)
+    retry_forever = str(os.getenv("I18N_TRANSLATE_RETRY_FOREVER", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    attempt = 0
+    while True:
+        attempt += 1
+        raw = minimax_chat(prompt, api_key)
+        parsed = _parse_json_array(raw)
+        if len(parsed) == len(texts):
+            return [str(x or "").strip() or texts[idx] for idx, x in enumerate(parsed)]
+        if not retry_forever and max_attempts > 0 and attempt >= max_attempts:
+            raise RuntimeError(f"translate chunk parse mismatch: expected={len(texts)} got={len(parsed)}")
+        time.sleep(min(12.0, 1.2 * (1.5 ** max(0, attempt - 1))))
 
 
 def _translate_feed_text_map(
     entries: list[tuple[str, str]] | list[str],
     lang: str,
+    previous_source_map: dict[str, str] | None = None,
+    previous_translation_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], dict[str, object]]:
     tag = _normalize_lang_tag(lang)
     normalized_entries: list[tuple[str, str]] = []
@@ -1210,6 +1289,7 @@ def _translate_feed_text_map(
         "lang": tag,
         "total": len(normalized_entries),
         "cached_hits": 0,
+        "reused_hits": 0,
         "pending_count": 0,
         "translated": 0,
         "coverage": 0.0,
@@ -1225,6 +1305,7 @@ def _translate_feed_text_map(
             done=len(normalized_entries),
             status="ok",
             mode=str(qa["mode"]),
+            sample_pending=[],
         )
         return mapping, qa
     if tag == "zh-Hans":
@@ -1232,15 +1313,45 @@ def _translate_feed_text_map(
         qa["mode"] = "local"
         qa["translated"] = len(normalized_entries)
         qa["coverage"] = 1.0
-        _set_i18n_lang_progress(tag, total=len(normalized_entries), done=len(normalized_entries), status="ok", mode="local")
+        _set_i18n_lang_progress(
+            tag,
+            total=len(normalized_entries),
+            done=len(normalized_entries),
+            status="ok",
+            mode="local",
+            sample_pending=[],
+        )
         return mapping, qa
 
+    prev_sources = previous_source_map if isinstance(previous_source_map, dict) else {}
+    prev_translations = previous_translation_map if isinstance(previous_translation_map, dict) else {}
+
     pending_entries: list[tuple[str, str]] = []
+    reused_hits = 0
+    for entry_key, source in normalized_entries:
+        old_source = str(prev_sources.get(entry_key) or "")
+        old_translated = str(prev_translations.get(entry_key) or "").strip()
+        if old_translated and not _is_untranslated_for_lang(source, old_translated, tag):
+            # Normal incremental reuse: source text unchanged.
+            if old_source and old_source == source:
+                mapping[entry_key] = old_translated
+                reused_hits += 1
+                continue
+            # Legacy migration path: old bundles may not have `sources`.
+            if not old_source:
+                mapping[entry_key] = old_translated
+                reused_hits += 1
+                continue
+        pending_entries.append((entry_key, source))
+    qa["reused_hits"] = reused_hits
+    qa["cached_hits"] = reused_hits
+
     if TRANSLATION_CACHE_ENABLED:
         with TRANSLATION_LOCK:
             _load_translation_cache_unlocked()
             migrated = False
-            for entry_key, source in normalized_entries:
+            pending_next: list[tuple[str, str]] = []
+            for entry_key, source in pending_entries:
                 key = _translation_cache_key(tag, source, entry_key=entry_key)
                 legacy_key = _translation_cache_key_legacy(tag, source)
                 cached = str(TRANSLATION_CACHE.get(key) or "").strip()
@@ -1259,32 +1370,49 @@ def _translate_feed_text_map(
                     mapping[entry_key] = cached
                     qa["cached_hits"] = int(qa.get("cached_hits") or 0) + 1
                     continue
-                pending_entries.append((entry_key, source))
+                pending_next.append((entry_key, source))
             if migrated:
                 global TRANSLATION_CACHE_DIRTY
                 TRANSLATION_CACHE_DIRTY = True
                 _flush_translation_cache_unlocked()
-    else:
-        pending_entries = list(normalized_entries)
+        pending_entries = pending_next
 
     translated_count = len(normalized_entries) - len(pending_entries)
     qa["translated"] = translated_count
     qa["pending_count"] = len(pending_entries)
+    pending_entry_keys = [entry_key for entry_key, _ in pending_entries]
     if not pending_entries:
-        qa["mode"] = "cache"
+        qa["mode"] = "reused" if int(qa.get("reused_hits") or 0) > 0 else "cache"
         qa["coverage"] = 1.0
         _set_i18n_lang_progress(
             tag,
             total=len(normalized_entries),
             done=len(normalized_entries),
             status="ok",
-            mode="cache",
+            mode=str(qa.get("mode") or "cache"),
+            sample_pending=[],
         )
         return mapping, qa
 
     load_environment()
     api_key = resolve_minimax_key()
     if not api_key:
+        still_pending: list[tuple[str, str]] = []
+        reused_without_key = 0
+        for entry_key, source in pending_entries:
+            old_translated = str(prev_translations.get(entry_key) or "").strip()
+            if old_translated and not _is_untranslated_for_lang(source, old_translated, tag):
+                mapping[entry_key] = old_translated
+                reused_without_key += 1
+            else:
+                still_pending.append((entry_key, source))
+        if reused_without_key:
+            qa["reused_hits"] = int(qa.get("reused_hits") or 0) + reused_without_key
+            qa["cached_hits"] = int(qa.get("cached_hits") or 0) + reused_without_key
+            translated_count += reused_without_key
+            pending_entries = still_pending
+            qa["translated"] = translated_count
+            qa["pending_count"] = len(pending_entries)
         qa["mode"] = "no-key"
         qa["coverage"] = round((translated_count / len(normalized_entries)), 4) if normalized_entries else 1.0
         qa["sample_pending"] = [entry_key for entry_key, _ in pending_entries[:8]]
@@ -1295,6 +1423,7 @@ def _translate_feed_text_map(
             status="pending",
             mode="no-key",
             error="missing MiniMax key",
+            sample_pending=[str(x) for x in qa["sample_pending"] if str(x).strip()][:8],
         )
         return mapping, qa
 
@@ -1312,20 +1441,25 @@ def _translate_feed_text_map(
         done=done_count,
         status="running",
         mode="live",
+        sample_pending=pending_entry_keys[:8],
     )
     for start in range(0, len(pending_texts), chunk_size):
         chunk = pending_texts[start:start + chunk_size]
-        try:
-            translated = _translate_chunk_agent(chunk, tag, api_key, strict=False)
-        except Exception:
-            translated = list(chunk)
+        translated = _translate_chunk_agent(chunk, tag, api_key, strict=False)
         for idx, source in enumerate(chunk):
             candidate = str(translated[idx] if idx < len(translated) else source).strip() or source
             source_entry_keys = entry_keys_by_source.get(source, [])
             if _is_untranslated_for_lang(source, candidate, tag):
                 for entry_key in source_entry_keys:
-                    mapping[entry_key] = source
-                    unresolved_keys.add(entry_key)
+                    old_translated = str(prev_translations.get(entry_key) or "").strip()
+                    if old_translated and not _is_untranslated_for_lang(source, old_translated, tag):
+                        mapping[entry_key] = old_translated
+                        done_count += 1
+                        qa["reused_hits"] = int(qa.get("reused_hits") or 0) + 1
+                        qa["cached_hits"] = int(qa.get("cached_hits") or 0) + 1
+                    else:
+                        mapping[entry_key] = source
+                        unresolved_keys.add(entry_key)
                 continue
             for entry_key in source_entry_keys:
                 mapping[entry_key] = candidate
@@ -1336,6 +1470,7 @@ def _translate_feed_text_map(
             done=done_count,
             status="running",
             mode="live",
+            sample_pending=pending_entry_keys[:8],
         )
 
     if TRANSLATION_CACHE_ENABLED:
@@ -1370,6 +1505,7 @@ def _translate_feed_text_map(
             done=translated_final,
             status="pending",
             mode="live-partial",
+            sample_pending=sorted(list(unresolved_keys))[:8],
         )
         return mapping, qa
 
@@ -1383,6 +1519,7 @@ def _translate_feed_text_map(
         done=len(normalized_entries),
         status="ok",
         mode="live",
+        sample_pending=[],
     )
     return mapping, qa
 
@@ -1425,6 +1562,7 @@ def _i18n_state_snapshot() -> dict[str, object]:
             "remaining": max(0, total - safe_done),
             "cached_hits": _safe_int(qa.get("cached_hits"), 0),
             "pending_count": _safe_int(qa.get("pending_count"), max(0, total - safe_done)),
+            "sample_pending": [str(x) for x in (qa.get("sample_pending") or []) if str(x).strip()][:8],
             "percent": percent,
             "error": "",
             "updated_at": str(qa.get("updated_at") or ""),
@@ -1459,6 +1597,7 @@ def _i18n_state_snapshot() -> dict[str, object]:
                 "remaining": 0,
                 "cached_hits": total_hint,
                 "pending_count": 0,
+                "sample_pending": [],
                 "percent": 100 if total_hint else 100,
                 "error": "",
                 "updated_at": "",
@@ -1479,6 +1618,7 @@ def _i18n_state_snapshot() -> dict[str, object]:
                 "remaining": total_hint,
                 "cached_hits": 0,
                 "pending_count": total_hint,
+                "sample_pending": [],
                 "percent": 0,
                 "error": "",
                 "updated_at": "",
@@ -1508,7 +1648,16 @@ def _i18n_state_snapshot() -> dict[str, object]:
     return state
 
 
-def _set_i18n_lang_progress(lang: str, *, total: int, done: int, status: str, mode: str = "", error: str = "") -> None:
+def _set_i18n_lang_progress(
+    lang: str,
+    *,
+    total: int,
+    done: int,
+    status: str,
+    mode: str = "",
+    error: str = "",
+    sample_pending: list[str] | None = None,
+) -> None:
     tag = _normalize_lang_tag(lang)
     safe_total = max(0, int(total or 0))
     safe_done = min(max(0, int(done or 0)), safe_total)
@@ -1518,6 +1667,9 @@ def _set_i18n_lang_progress(lang: str, *, total: int, done: int, status: str, mo
         if not isinstance(progress, dict):
             progress = {}
             I18N_BUILD_STATE["lang_progress"] = progress
+        current = progress.get(tag) if isinstance(progress.get(tag), dict) else {}
+        existing_pending = [str(x) for x in (current.get("sample_pending") or []) if str(x).strip()] if isinstance(current, dict) else []
+        sample_rows = [str(x) for x in (sample_pending or []) if str(x).strip()][:8] if sample_pending is not None else existing_pending[:8]
         progress[tag] = {
             "lang": tag,
             "status": status,
@@ -1527,6 +1679,7 @@ def _set_i18n_lang_progress(lang: str, *, total: int, done: int, status: str, mo
             "remaining": max(0, safe_total - safe_done),
             "cached_hits": _safe_int(progress.get(tag, {}).get("cached_hits"), 0) if isinstance(progress.get(tag), dict) else 0,
             "pending_count": max(0, safe_total - safe_done),
+            "sample_pending": sample_rows,
             "percent": percent,
             "error": str(error or ""),
             "updated_at": _now_iso(),
@@ -1571,32 +1724,48 @@ def _build_i18n_feed_bundle(
     with I18N_LOCK:
         cached = _load_i18n_feed_bundle()
         cache_version_ok = int(cached.get("version") or 0) == I18N_BUILD_VERSION if isinstance(cached, dict) else False
-        cache_source_ok = bool(cache_version_ok and cached and str(cached.get("source_generated_at") or "").strip() == src_generated)
-        cached_langs = cached.get("langs") if cache_source_ok and isinstance(cached.get("langs"), dict) else {}
-        cached_qa = cached.get("qa") if cache_source_ok and isinstance(cached.get("qa"), dict) else {}
+        cached_source_generated = str(cached.get("source_generated_at") or "").strip() if isinstance(cached, dict) else ""
+        cache_source_ok = bool(cache_version_ok and cached and cached_source_generated == src_generated)
+        cached_langs = cached.get("langs") if isinstance(cached.get("langs"), dict) else {}
+        cached_qa = cached.get("qa") if isinstance(cached.get("qa"), dict) else {}
+        cached_sources = cached.get("sources") if isinstance(cached.get("sources"), dict) else {}
         if not isinstance(cached_langs, dict):
             cached_langs = {}
         if not isinstance(cached_qa, dict):
             cached_qa = {}
+        if not isinstance(cached_sources, dict):
+            cached_sources = {}
         has_all_targets = all(isinstance(cached_langs.get(tag), dict) for tag in normalized_targets)
         if not force and cache_source_ok and has_all_targets:
             return cached
 
         entries = _collect_feed_i18n_entries(feed)
+        entry_source_map = {str(entry_key): str(source or "") for entry_key, source in entries if str(entry_key or "").strip()}
         langs_payload: dict[str, object] = dict(cached_langs)
         qa_payload: dict[str, object] = dict(cached_qa)
+        sources_payload: dict[str, object] = dict(cached_sources)
         bundle: dict[str, object] = {
             "version": I18N_BUILD_VERSION,
             "generated_at": _now_iso(),
             "source_generated_at": src_generated,
             "langs": langs_payload,
             "qa": qa_payload,
+            "sources": sources_payload,
             "targets_count": len(entries),
         }
         for tag in normalized_targets:
             if not _is_active_i18n_source(src_generated):
                 return _load_i18n_feed_bundle()
-            mapping, qa = _translate_feed_text_map(entries, tag)
+            previous_source_map = sources_payload.get(tag) if isinstance(sources_payload.get(tag), dict) else {}
+            if not previous_source_map and cached_source_generated == src_generated:
+                previous_source_map = dict(entry_source_map)
+            previous_translation_map = _entry_map_from_node(langs_payload.get(tag)) if isinstance(langs_payload.get(tag), dict) else {}
+            mapping, qa = _translate_feed_text_map(
+                entries,
+                tag,
+                previous_source_map=previous_source_map,
+                previous_translation_map=previous_translation_map,
+            )
             if not _is_active_i18n_source(src_generated):
                 return _load_i18n_feed_bundle()
             localized = _apply_feed_translation(copy.deepcopy(feed), mapping)
@@ -1604,6 +1773,7 @@ def _build_i18n_feed_bundle(
                 localized["lang"] = tag
             langs_payload[tag] = localized
             qa_payload[tag] = qa
+            sources_payload[tag] = dict(entry_source_map)
             # Persist per-language progress so completed langs can be served
             # immediately while other langs are still translating.
             bundle = {
@@ -1612,6 +1782,7 @@ def _build_i18n_feed_bundle(
                 "source_generated_at": src_generated,
                 "langs": dict(langs_payload),
                 "qa": dict(qa_payload),
+                "sources": dict(sources_payload),
                 "targets_count": len(entries),
             }
             if not _is_active_i18n_source(src_generated):
@@ -1624,6 +1795,7 @@ def _build_i18n_feed_bundle(
             "source_generated_at": src_generated,
             "langs": dict(langs_payload),
             "qa": dict(qa_payload),
+            "sources": dict(sources_payload),
             "targets_count": len(entries),
         }
         if not _is_active_i18n_source(src_generated):
@@ -1757,6 +1929,12 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             out = dict(feed)
         cards = out.get("cards")
         total_cards = len(cards) if isinstance(cards, list) else 0
+        if tag in {"en", "ko"}:
+            out["cards"] = []
+            out["total_cards"] = 0
+            card_state = {"total": total_cards, "ready": 0, "fallback": 0, "hidden": total_cards}
+        else:
+            card_state = {"total": total_cards, "ready": total_cards, "fallback": 0, "hidden": 0}
         out["lang"] = tag
         out["_i18n"] = {
             "mode": "building",
@@ -1765,8 +1943,39 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
                 "lang": tag,
                 "coverage": 0.0,
                 "reason": reason,
-                "card_state": {"total": total_cards, "ready": total_cards, "fallback": 0, "hidden": 0},
+                "card_state": card_state,
             },
+            "state": _i18n_state_snapshot(),
+        }
+        return out
+
+    def _stale_building_response(bundle_obj: dict[str, object], reason: str) -> dict[str, object] | None:
+        if not isinstance(bundle_obj, dict):
+            return None
+        langs = bundle_obj.get("langs") if isinstance(bundle_obj.get("langs"), dict) else {}
+        stale = langs.get(tag) if isinstance(langs, dict) else None
+        if not isinstance(stale, dict):
+            return None
+        out = copy.deepcopy(stale)
+        if not isinstance(out, dict):
+            return None
+        fallback_mode = _resolve_card_fallback_mode(tag)
+        out, card_state = _apply_card_level_fallback(
+            base_feed=feed,
+            localized_feed=out,
+            lang=tag,
+            mode=fallback_mode,
+        )
+        qa_rows = bundle_obj.get("qa") if isinstance(bundle_obj.get("qa"), dict) else {}
+        qa_for_tag = qa_rows.get(tag) if isinstance(qa_rows.get(tag), dict) else {}
+        qa_with_cards = dict(qa_for_tag or {})
+        qa_with_cards["reason"] = reason
+        qa_with_cards["card_state"] = card_state
+        out["lang"] = tag
+        out["_i18n"] = {
+            "mode": "building-stale",
+            "source_generated_at": str(feed.get("generated_at") or ""),
+            "qa": qa_with_cards,
             "state": _i18n_state_snapshot(),
         }
         return out
@@ -1777,6 +1986,9 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION if isinstance(bundle, dict) else False
     if not bundle or bundle_generated != src_generated or not bundle_version_ok:
         _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        stale = _stale_building_response(bundle if isinstance(bundle, dict) else {}, "bundle_missing_or_outdated")
+        if isinstance(stale, dict):
+            return stale
         return _base_building_response("bundle_missing_or_outdated")
 
     langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
@@ -1787,6 +1999,9 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     acceptable = tag in {"zh-Hant", "zh-Hans"} or coverage >= I18N_MIN_ACCEPTABLE_COVERAGE
     if not isinstance(localized, dict):
         _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        stale = _stale_building_response(bundle, "lang_not_ready")
+        if isinstance(stale, dict):
+            return stale
         return _base_building_response("lang_not_ready")
 
     out = copy.deepcopy(localized)
@@ -1798,9 +2013,13 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     if not isinstance(out_cards, list) and isinstance(base_cards, list):
         out_cards = copy.deepcopy(base_cards)
         out["cards"] = out_cards
-    safe_cards = out_cards if isinstance(out_cards, list) else []
-    out["total_cards"] = len(safe_cards)
-    card_state = {"total": len(safe_cards), "ready": len(safe_cards), "fallback": 0, "hidden": 0}
+    fallback_mode = _resolve_card_fallback_mode(tag)
+    out, card_state = _apply_card_level_fallback(
+        base_feed=feed,
+        localized_feed=out,
+        lang=tag,
+        mode=fallback_mode,
+    )
     qa_with_cards = dict(qa_for_tag or {})
     qa_with_cards["card_state"] = card_state
     out["_i18n"] = {
@@ -1871,6 +2090,7 @@ def _drop_bundle_langs(target_langs: list[str]) -> None:
             return
         langs = bundle.get("langs")
         qa = bundle.get("qa")
+        sources = bundle.get("sources")
         changed = False
         if isinstance(langs, dict):
             for tag in tags:
@@ -1881,6 +2101,11 @@ def _drop_bundle_langs(target_langs: list[str]) -> None:
             for tag in tags:
                 if tag in qa:
                     qa.pop(tag, None)
+                    changed = True
+        if isinstance(sources, dict):
+            for tag in tags:
+                if tag in sources:
+                    sources.pop(tag, None)
                     changed = True
         if changed:
             bundle["generated_at"] = _now_iso()
@@ -1895,9 +2120,8 @@ def _queue_i18n_retranslate(
     if not tags:
         return {"langs": [], "cache_removed": 0, "queued": False}
     removed = _clear_translation_cache_for_langs(tags)
-    _drop_bundle_langs(tags)
     for tag in tags:
-        _set_i18n_lang_progress(tag, total=0, done=0, status="pending", mode="manual")
+        _set_i18n_lang_progress(tag, total=0, done=0, status="pending", mode="manual", sample_pending=[])
     _build_i18n_feed_bundle_async(feed, force=True, target_langs=tags)
     return {
         "langs": tags,

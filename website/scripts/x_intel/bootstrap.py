@@ -232,6 +232,13 @@ def resolve_minimax_key() -> str:
     ]
     for name in candidates:
         value = str(os.getenv(name) or "").strip()
+        if value and (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        ):
+            value = value[1:-1].strip()
+        if value.lower().startswith("bearer "):
+            value = value.split(" ", 1)[1].strip()
         if value:
             return value
     return ""
@@ -1598,5 +1605,4 @@ def build_event_facts(text: str) -> dict[str, str]:
             "schedule": schedule,
         }
     )
-
 

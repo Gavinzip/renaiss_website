@@ -33,24 +33,58 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    resp = requests.post(MINIMAX_URL, headers=headers, json=payload, timeout=90)
-    resp.raise_for_status()
-    data = resp.json()
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-    direct = data.get("reply") or data.get("output_text") or data.get("text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-    base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else {}
-    status_msg = str(base_resp.get("status_msg") or "").strip()
-    if status_msg:
-        raise RuntimeError(f"MiniMax response error: {status_msg}")
-    raise RuntimeError(f"MiniMax response missing content; model={model_name}")
+    timeout_sec = 35.0
+    env_timeout = str(
+        os.getenv("MINIMAX_HTTP_TIMEOUT_SECONDS")
+        or os.getenv("MINIMAX_TIMEOUT_SECONDS")
+        or ""
+    ).strip()
+    if env_timeout:
+        try:
+            timeout_sec = float(env_timeout)
+        except Exception:
+            timeout_sec = 35.0
+    timeout_sec = max(8.0, min(120.0, timeout_sec))
+    max_attempts = int(str(os.getenv("MINIMAX_RETRY_MAX_ATTEMPTS") or "0") or 0)
+    retry_forever = str(os.getenv("MINIMAX_RETRY_FOREVER", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = requests.post(MINIMAX_URL, headers=headers, json=payload, timeout=timeout_sec)
+            resp.raise_for_status()
+            data = resp.json()
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                message = first.get("message") if isinstance(first.get("message"), dict) else {}
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+            direct = data.get("reply") or data.get("output_text") or data.get("text")
+            if isinstance(direct, str) and direct.strip():
+                return direct.strip()
+            base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else {}
+            status_msg = str(base_resp.get("status_msg") or "").strip()
+            if status_msg:
+                raise RuntimeError(f"MiniMax response error: {status_msg}")
+            raise RuntimeError(f"MiniMax response missing content; model={model_name}")
+        except Exception as error:
+            msg = str(error or "")
+            msg_lower = msg.lower()
+            auth_error = (
+                "login fail" in msg_lower
+                or "authorization" in msg_lower
+                or "api secret key" in msg_lower
+                or "401" in msg_lower
+                or "403" in msg_lower
+            )
+            if auth_error:
+                raise
+            if not retry_forever and max_attempts > 0 and attempt >= max_attempts:
+                raise
+            sleep_sec = min(20.0, 1.5 * (1.6 ** max(0, attempt - 1)))
+            time.sleep(sleep_sec)
 
 
 def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_context: str = "") -> None:
@@ -1234,5 +1268,3 @@ def read_json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
-
-
