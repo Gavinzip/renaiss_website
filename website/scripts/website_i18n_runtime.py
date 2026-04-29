@@ -121,6 +121,18 @@ I18N_VISIBLE_FEED_ROOT_KEYS = (
     "format_templates",
     "key_terms",
 )
+I18N_ASYNC_REBUILD_LANGS = ["en", "ko", "zh-Hans"]
+I18N_CARD_ENTRY_RE = re.compile(r"^cards\[([^\]]+)\]")
+
+
+def _entry_card_key(entry_key: str) -> str:
+    raw = str(entry_key or "").strip()
+    if not raw:
+        return ""
+    match = I18N_CARD_ENTRY_RE.match(raw)
+    if not match:
+        return ""
+    return str(match.group(1) or "").strip()
 
 
 def configure_i18n_runtime(data_root: Path, feed_path: Path | None = None) -> None:
@@ -264,6 +276,10 @@ def _looks_translated_for_lang(text: str, lang: str) -> bool:
         if hangul >= 6:
             return True
         if hangul_ratio >= 0.30:
+            return True
+        # Allow short mixed labels (for example location strings that keep
+        # proper nouns in Latin script) when they still contain Hangul.
+        if hangul >= 2 and len(src) <= 40:
             return True
         return False
     return True
@@ -1321,9 +1337,22 @@ def _translate_feed_text_map(
             normalized_entries.append((entry_key, source))
 
     mapping = {entry_key: source for entry_key, source in normalized_entries}
+    source_by_key = dict(normalized_entries)
+    card_order: list[str] = []
+    card_seen: set[str] = set()
+    for entry_key, _ in normalized_entries:
+        card_key = _entry_card_key(entry_key)
+        if not card_key or card_key in card_seen:
+            continue
+        card_seen.add(card_key)
+        card_order.append(card_key)
+    card_total = len(card_order)
+    entry_total = len(normalized_entries)
+
     qa: dict[str, object] = {
         "lang": tag,
-        "total": len(normalized_entries),
+        "total": card_total,
+        "entry_total": entry_total,
         "cached_hits": 0,
         "reused_hits": 0,
         "pending_count": 0,
@@ -1333,12 +1362,14 @@ def _translate_feed_text_map(
         "sample_pending": [],
     }
     if tag == "zh-Hant" or not normalized_entries:
-        qa["translated"] = len(normalized_entries)
+        qa["translated"] = card_total
+        qa["entry_translated"] = entry_total
+        qa["entry_pending"] = 0
         qa["coverage"] = 1.0
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
-            done=len(normalized_entries),
+            total=card_total,
+            done=card_total,
             status="ok",
             mode=str(qa["mode"]),
             sample_pending=[],
@@ -1347,12 +1378,14 @@ def _translate_feed_text_map(
     if tag == "zh-Hans":
         mapping = {entry_key: _to_zh_hans(source) for entry_key, source in normalized_entries}
         qa["mode"] = "local"
-        qa["translated"] = len(normalized_entries)
+        qa["translated"] = card_total
+        qa["entry_translated"] = entry_total
+        qa["entry_pending"] = 0
         qa["coverage"] = 1.0
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
-            done=len(normalized_entries),
+            total=card_total,
+            done=card_total,
             status="ok",
             mode="local",
             sample_pending=[],
@@ -1409,17 +1442,33 @@ def _translate_feed_text_map(
                 _flush_translation_cache_unlocked()
         pending_entries = pending_next
 
-    translated_count = len(normalized_entries) - len(pending_entries)
-    qa["translated"] = translated_count
-    qa["pending_count"] = len(pending_entries)
-    pending_entry_keys = [entry_key for entry_key, _ in pending_entries]
-    if not pending_entries:
+    pending_cards: dict[str, list[tuple[str, str]]] = {}
+    pending_globals: list[tuple[str, str]] = []
+    for entry_key, source in pending_entries:
+        card_key = _entry_card_key(entry_key)
+        if card_key:
+            pending_cards.setdefault(card_key, []).append((entry_key, source))
+        else:
+            pending_globals.append((entry_key, source))
+    pending_card_keys = [key for key in card_order if key in pending_cards]
+    translated_cards = max(0, card_total - len(pending_card_keys))
+    qa["translated"] = translated_cards
+    qa["pending_count"] = len(pending_card_keys)
+
+    if not pending_card_keys:
         qa["mode"] = "reused" if int(qa.get("reused_hits") or 0) > 0 else "cache"
         qa["coverage"] = 1.0
+        entry_done = 0
+        for entry_key, source in normalized_entries:
+            translated = str(mapping.get(entry_key, source) or "").strip() or source
+            if not _is_untranslated_for_lang(source, translated, tag):
+                entry_done += 1
+        qa["entry_translated"] = entry_done
+        qa["entry_pending"] = max(0, entry_total - entry_done)
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
-            done=len(normalized_entries),
+            total=card_total,
+            done=card_total,
             status="ok",
             mode=str(qa.get("mode") or "cache"),
             sample_pending=[],
@@ -1430,12 +1479,14 @@ def _translate_feed_text_map(
     api_key = resolve_minimax_key()
     if not api_key:
         qa["mode"] = "no-key"
-        qa["coverage"] = round((translated_count / len(normalized_entries)), 4) if normalized_entries else 1.0
-        qa["sample_pending"] = [entry_key for entry_key, _ in pending_entries[:8]]
+        qa["coverage"] = round((translated_cards / card_total), 4) if card_total else 1.0
+        qa["sample_pending"] = [f"cards[{key}]" for key in pending_card_keys[:8]]
+        qa["entry_translated"] = 0
+        qa["entry_pending"] = entry_total
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
-            done=translated_count,
+            total=card_total,
+            done=translated_cards,
             status="pending",
             mode="no-key",
             error="missing MiniMax key",
@@ -1443,47 +1494,66 @@ def _translate_feed_text_map(
         )
         return mapping, qa
 
-    entry_keys_by_source: dict[str, list[str]] = {}
-    for entry_key, source in pending_entries:
-        entry_keys_by_source.setdefault(source, []).append(entry_key)
-    pending_texts = list(entry_keys_by_source.keys())
-
     chunk_size = I18N_FEED_CHUNK_SIZE
-    done_count = translated_count
+    done_count = translated_cards
     unresolved_keys: set[str] = set()
+    unresolved_cards: set[str] = set()
+    pending_card_queue = list(pending_card_keys)
+    processed_cards: set[str] = set()
     _set_i18n_lang_progress(
         tag,
-        total=len(normalized_entries),
+        total=card_total,
         done=done_count,
         status="running",
         mode="live",
-        sample_pending=pending_entry_keys[:8],
+        sample_pending=[f"cards[{key}]" for key in pending_card_queue[:8]],
     )
-    for start in range(0, len(pending_texts), chunk_size):
-        chunk = pending_texts[start:start + chunk_size]
-        try:
-            translated = _translate_chunk_agent(chunk, tag, api_key, strict=False)
-        except Exception:
-            translated = list(chunk)
-        for idx, source in enumerate(chunk):
-            candidate = str(translated[idx] if idx < len(translated) else source).strip() or source
-            source_entry_keys = entry_keys_by_source.get(source, [])
-            if _is_untranslated_for_lang(source, candidate, tag):
+
+    for card_key in pending_card_keys:
+        rows = pending_cards.get(card_key, [])
+        by_source: dict[str, list[str]] = {}
+        for entry_key, source in rows:
+            by_source.setdefault(source, []).append(entry_key)
+        pending_texts = list(by_source.keys())
+        card_failed = False
+        for start in range(0, len(pending_texts), chunk_size):
+            chunk = pending_texts[start:start + chunk_size]
+            try:
+                translated = _translate_chunk_agent(chunk, tag, api_key, strict=False)
+            except Exception:
+                translated = list(chunk)
+            for idx, source in enumerate(chunk):
+                candidate = str(translated[idx] if idx < len(translated) else source).strip() or source
+                source_entry_keys = by_source.get(source, [])
+                if _is_untranslated_for_lang(source, candidate, tag):
+                    card_failed = True
+                    for entry_key in source_entry_keys:
+                        mapping[entry_key] = source
+                        unresolved_keys.add(entry_key)
+                    continue
                 for entry_key in source_entry_keys:
-                    mapping[entry_key] = source
-                    unresolved_keys.add(entry_key)
-                continue
-            for entry_key in source_entry_keys:
-                mapping[entry_key] = candidate
-                done_count += 1
+                    mapping[entry_key] = candidate
+        if card_failed:
+            unresolved_cards.add(card_key)
+        else:
+            done_count = min(card_total, done_count + 1)
+        processed_cards.add(card_key)
+        pending_now = [k for k in pending_card_keys if k in unresolved_cards or k not in processed_cards]
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
+            total=card_total,
             done=done_count,
             status="running",
             mode="live",
-            sample_pending=pending_entry_keys[:8],
+            sample_pending=[f"cards[{key}]" for key in pending_now[:8]],
         )
+
+    # Optional global fields are kept best-effort and do not block card-level publish progress.
+    # They are translated only when easy cache reuse exists; otherwise keep source text.
+    for entry_key, source in pending_globals:
+        translated = str(mapping.get(entry_key, source) or "").strip() or source
+        if _is_untranslated_for_lang(source, translated, tag):
+            unresolved_keys.add(entry_key)
 
     if TRANSLATION_CACHE_ENABLED:
         with TRANSLATION_LOCK:
@@ -1503,32 +1573,41 @@ def _translate_feed_text_map(
                 TRANSLATION_CACHE_DIRTY = True
                 _flush_translation_cache_unlocked()
 
-    if unresolved_keys:
-        translated_final = max(0, len(normalized_entries) - len(unresolved_keys))
-        pending_final = len(unresolved_keys)
+    entry_done = 0
+    for entry_key, source in normalized_entries:
+        translated = str(mapping.get(entry_key, source) or "").strip() or source
+        if not _is_untranslated_for_lang(source, translated, tag):
+            entry_done += 1
+    entry_pending = max(0, entry_total - entry_done)
+    translated_final = max(0, card_total - len(unresolved_cards))
+    pending_final = len(unresolved_cards)
+    qa["entry_translated"] = entry_done
+    qa["entry_pending"] = entry_pending
+
+    if unresolved_cards:
         qa["mode"] = "live-partial"
         qa["translated"] = translated_final
         qa["pending_count"] = pending_final
-        qa["coverage"] = round((translated_final / len(normalized_entries)), 4) if normalized_entries else 1.0
-        qa["sample_pending"] = sorted(list(unresolved_keys))[:8]
+        qa["coverage"] = round((translated_final / card_total), 4) if card_total else 1.0
+        qa["sample_pending"] = [f"cards[{key}]" for key in pending_card_keys if key in unresolved_cards][:8]
         _set_i18n_lang_progress(
             tag,
-            total=len(normalized_entries),
+            total=card_total,
             done=translated_final,
             status="pending",
             mode="live-partial",
-            sample_pending=sorted(list(unresolved_keys))[:8],
+            sample_pending=[f"cards[{key}]" for key in pending_card_keys if key in unresolved_cards][:8],
         )
         return mapping, qa
 
     qa["mode"] = "live"
-    qa["translated"] = len(normalized_entries)
+    qa["translated"] = card_total
     qa["pending_count"] = 0
     qa["coverage"] = 1.0
     _set_i18n_lang_progress(
         tag,
-        total=len(normalized_entries),
-        done=len(normalized_entries),
+        total=card_total,
+        done=card_total,
         status="ok",
         mode="live",
         sample_pending=[],
@@ -1588,13 +1667,18 @@ def _i18n_state_snapshot() -> dict[str, object]:
     else:
         progress = copy.deepcopy(progress)
 
+    feed_snapshot = _read_feed_snapshot()
+    current_source_generated = str(feed_snapshot.get("generated_at") or "").strip() if isinstance(feed_snapshot, dict) else ""
     bundle = _load_i18n_feed_bundle()
+    bundle_source_generated = str(bundle.get("source_generated_at") or "").strip() if isinstance(bundle, dict) else ""
+    qa_usable = bool(bundle_source_generated and current_source_generated and bundle_source_generated == current_source_generated)
+    if not current_source_generated:
+        qa_usable = True
     qa_rows = bundle.get("qa") if isinstance(bundle.get("qa"), dict) else {}
     total_hint = _safe_int(bundle.get("targets_count"), 0)
     if total_hint <= 0:
         try:
-            feed = _read_feed_snapshot()
-            total_hint = len(_collect_feed_i18n_strings(feed)) if isinstance(feed, dict) else 0
+            total_hint = len(_collect_feed_i18n_strings(feed_snapshot)) if isinstance(feed_snapshot, dict) else 0
         except Exception:
             total_hint = 0
 
@@ -1616,10 +1700,25 @@ def _i18n_state_snapshot() -> dict[str, object]:
             }
             continue
         qa = qa_rows.get(tag) if isinstance(qa_rows.get(tag), dict) else {}
-        if qa and tag not in progress:
+        if qa and qa_usable and tag not in progress:
             progress[tag] = _progress_from_qa(tag, qa, total_hint)
-        elif qa and str(progress.get(tag, {}).get("status") or "").lower() not in {"running", "queued"}:
+        elif qa and qa_usable and str(progress.get(tag, {}).get("status") or "").lower() not in {"running", "queued"}:
             progress[tag] = _progress_from_qa(tag, qa, total_hint)
+        elif not qa_usable and str(progress.get(tag, {}).get("status") or "").lower() not in {"running", "queued"}:
+            progress[tag] = {
+                "lang": tag,
+                "status": "pending",
+                "mode": "stale-source",
+                "total": total_hint,
+                "done": 0,
+                "remaining": total_hint,
+                "cached_hits": 0,
+                "pending_count": total_hint,
+                "sample_pending": [],
+                "percent": 0,
+                "error": "",
+                "updated_at": "",
+            }
         elif tag not in progress:
             progress[tag] = {
                 "lang": tag,
@@ -1746,12 +1845,27 @@ def _build_i18n_feed_bundle(
             cached_qa = {}
         if not isinstance(cached_sources, dict):
             cached_sources = {}
-        has_all_targets = all(isinstance(cached_langs.get(tag), dict) for tag in normalized_targets)
+
+        def _lang_payload_fresh(tag: str) -> bool:
+            row = cached_langs.get(tag)
+            if not isinstance(row, dict):
+                return False
+            if tag == "zh-Hant":
+                return True
+            lang_generated = str(row.get("generated_at") or "").strip()
+            if not src_generated:
+                return True
+            return bool(lang_generated and lang_generated == src_generated)
+
+        has_all_targets = all(_lang_payload_fresh(tag) for tag in normalized_targets)
         if not force and cache_source_ok and has_all_targets:
             return cached
 
         entries = _collect_feed_i18n_entries(feed)
         entry_source_map = {str(entry_key): str(source or "") for entry_key, source in entries if str(entry_key or "").strip()}
+        # Keep previous per-language payloads so the UI can continue showing
+        # existing translated cards while a new source snapshot is rebuilding.
+        # Freshness is enforced by _lang_payload_fresh + localized stale checks.
         langs_payload: dict[str, object] = dict(cached_langs)
         qa_payload: dict[str, object] = dict(cached_qa)
         sources_payload: dict[str, object] = dict(cached_sources)
@@ -1767,8 +1881,8 @@ def _build_i18n_feed_bundle(
         for tag in normalized_targets:
             if not _is_active_i18n_source(src_generated):
                 return _load_i18n_feed_bundle()
-            previous_source_map = sources_payload.get(tag) if isinstance(sources_payload.get(tag), dict) else {}
-            previous_translation_map = _entry_map_from_node(langs_payload.get(tag)) if isinstance(langs_payload.get(tag), dict) else {}
+            previous_source_map = cached_sources.get(tag) if isinstance(cached_sources.get(tag), dict) else {}
+            previous_translation_map = _entry_map_from_node(cached_langs.get(tag)) if isinstance(cached_langs.get(tag), dict) else {}
             mapping, qa = _translate_feed_text_map(
                 entries,
                 tag,
@@ -1835,6 +1949,8 @@ def _build_i18n_feed_bundle_async(
         target_tags.append(tag)
     if not target_tags:
         target_tags = list(I18N_TARGET_LANGS)
+    cards_hint = feed.get("cards") if isinstance(feed.get("cards"), list) else []
+    total_cards_hint = len(cards_hint)
 
     with I18N_STATE_LOCK:
         status = str(I18N_BUILD_STATE.get("status") or "idle").strip().lower()
@@ -1857,9 +1973,11 @@ def _build_i18n_feed_bundle_async(
                             "lang": tag,
                             "status": "queued",
                             "mode": "",
-                            "total": 0,
+                            "total": total_cards_hint,
                             "done": 0,
-                            "remaining": 0,
+                            "remaining": total_cards_hint,
+                            "pending_count": total_cards_hint,
+                            "sample_pending": [],
                             "percent": 0,
                             "error": "",
                             "updated_at": _now_iso(),
@@ -1883,9 +2001,11 @@ def _build_i18n_feed_bundle_async(
                 "lang": tag,
                 "status": "queued",
                 "mode": "",
-                "total": 0,
+                "total": total_cards_hint,
                 "done": 0,
-                "remaining": 0,
+                "remaining": total_cards_hint,
+                "pending_count": total_cards_hint,
+                "sample_pending": [],
                 "percent": 0,
                 "error": "",
                 "updated_at": now_iso,
@@ -1922,7 +2042,17 @@ def _build_i18n_feed_bundle_async(
                         for x in (I18N_BUILD_STATE.get("target_langs") or [])
                         if str(x).strip()
                     ]
-                    pending = [x for x in requested if x not in langs]
+                    pending: list[str] = []
+                    langs_payload = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
+                    for tag in requested:
+                        payload = langs_payload.get(tag) if isinstance(langs_payload, dict) else None
+                        if not isinstance(payload, dict):
+                            pending.append(tag)
+                            continue
+                        if tag != "zh-Hant":
+                            lang_generated = str(payload.get("generated_at") or "").strip()
+                            if src_generated and lang_generated != src_generated:
+                                pending.append(tag)
                     if pending:
                         current_targets = pending
                         continue
@@ -2021,7 +2151,7 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     bundle_generated = str(bundle.get("source_generated_at") or "").strip() if isinstance(bundle, dict) else ""
     bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION if isinstance(bundle, dict) else False
     if not bundle or bundle_generated != src_generated or not bundle_version_ok:
-        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        _build_i18n_feed_bundle_async(feed, force=False, target_langs=I18N_ASYNC_REBUILD_LANGS)
         stale = _stale_building_response(bundle if isinstance(bundle, dict) else {}, "bundle_missing_or_outdated")
         if isinstance(stale, dict):
             return stale
@@ -2034,11 +2164,18 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     coverage = float(qa_for_tag.get("coverage") or 0.0) if isinstance(qa_for_tag, dict) else 0.0
     acceptable = tag in {"zh-Hant", "zh-Hans"} or coverage >= I18N_MIN_ACCEPTABLE_COVERAGE
     if not isinstance(localized, dict):
-        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        _build_i18n_feed_bundle_async(feed, force=False, target_langs=I18N_ASYNC_REBUILD_LANGS)
         stale = _stale_building_response(bundle, "lang_not_ready")
         if isinstance(stale, dict):
             return stale
         return _base_building_response("lang_not_ready")
+    lang_generated = str(localized.get("generated_at") or "").strip()
+    if tag != "zh-Hant" and src_generated and lang_generated != src_generated:
+        _build_i18n_feed_bundle_async(feed, force=False, target_langs=I18N_ASYNC_REBUILD_LANGS)
+        stale = _stale_building_response(bundle, "lang_stale")
+        if isinstance(stale, dict):
+            return stale
+        return _base_building_response("lang_stale")
 
     out = copy.deepcopy(localized)
     if not isinstance(out, dict):

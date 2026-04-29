@@ -1063,7 +1063,59 @@ def _card_lookup_key_for_i18n(card: dict, index: int) -> str:
     return f"{account}|{published}|{title}|{index}"
 
 
-def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, cards: list[dict]) -> dict[str, object]:
+def _build_i18n_card_lookup(cards: list[dict]) -> tuple[dict[str, dict[str, str]], list[str]]:
+    lookup: dict[str, dict[str, str]] = {}
+    ordered_keys: list[str] = []
+    for idx, card in enumerate(cards):
+        if not isinstance(card, dict):
+            continue
+        key = _card_lookup_key_for_i18n(card, idx)
+        row = _normalize_sync_card_item(card)
+        if not row:
+            continue
+        if key not in lookup:
+            lookup[key] = row
+            ordered_keys.append(key)
+    return lookup, ordered_keys
+
+
+def _compute_i18n_card_pending_by_lang(
+    feed: dict[str, object],
+    cards: list[dict],
+    target_langs: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    card_lookup, ordered_keys = _build_i18n_card_lookup(cards)
+    out: dict[str, list[dict[str, str]]] = {}
+    if not card_lookup or not ordered_keys or not isinstance(feed, dict):
+        return out
+    for tag in target_langs:
+        if tag == "zh-Hant":
+            continue
+        try:
+            localized = localized_feed_from_bundle(feed, tag)
+        except Exception:
+            localized = {}
+        localized_cards = localized.get("cards") if isinstance(localized, dict) else []
+        ready_keys: set[str] = set()
+        if isinstance(localized_cards, list):
+            for idx, raw in enumerate(localized_cards):
+                if not isinstance(raw, dict):
+                    continue
+                key = _card_lookup_key_for_i18n(raw, idx)
+                if key in card_lookup:
+                    ready_keys.add(key)
+        pending_rows: list[dict[str, str]] = []
+        for key in ordered_keys:
+            if key in ready_keys:
+                continue
+            row = card_lookup.get(key)
+            if row:
+                pending_rows.append(row)
+        out[tag] = pending_rows
+    return out
+
+
+def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, feed: dict[str, object], cards: list[dict]) -> dict[str, object]:
     defaults = _new_sync_pipeline_state(str(sync_state.get("run_id") or "")).get("translation")
     base_pipeline = sync_state.get("pipeline")
     base_translation = base_pipeline.get("translation") if isinstance(base_pipeline, dict) else {}
@@ -1078,15 +1130,8 @@ def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, cards:
     if not target_langs:
         target_langs = ["en", "ko", "zh-Hans"]
 
-    card_lookup: dict[str, dict[str, str]] = {}
-    for idx, card in enumerate(cards):
-        if not isinstance(card, dict):
-            continue
-        key = _card_lookup_key_for_i18n(card, idx)
-        row = _normalize_sync_card_item(card)
-        if not row:
-            continue
-        card_lookup[key] = row
+    card_lookup, _ = _build_i18n_card_lookup(cards)
+    card_pending_by_lang = _compute_i18n_card_pending_by_lang(feed, cards, target_langs)
 
     lang_progress = i18n_state.get("lang_progress")
     progress_map = lang_progress if isinstance(lang_progress, dict) else {}
@@ -1129,19 +1174,47 @@ def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, cards:
             if item_key not in pending_seen:
                 pending_seen.add(item_key)
                 pending_items.append(card_item)
+        has_card_pending_items = tag in card_pending_by_lang and isinstance(card_pending_by_lang.get(tag), list)
+        card_pending_items = card_pending_by_lang.get(tag) if has_card_pending_items else []
+        if card_pending_items:
+            lang_pending_items = [dict(item) for item in card_pending_items[:10]]
+            for card_item in card_pending_items:
+                item_key = f"{card_item.get('id')}|{card_item.get('title')}|{card_item.get('published_at')}"
+                if item_key not in pending_seen:
+                    pending_seen.add(item_key)
+                    pending_items.append(dict(card_item))
+        if has_card_pending_items:
+            card_pending_count = len(card_pending_items)
+            progress_total = _safe_int(row.get("total"), len(cards))
+            progress_done = min(max(0, _safe_int(row.get("done"), 0)), progress_total if progress_total > 0 else _safe_int(row.get("done"), 0))
+            progress_pending_hint = max(0, len(cards) - progress_done) if len(cards) > 0 and progress_total > 0 else max(0, progress_total - progress_done)
+            # When language feed is still building (not yet published),
+            # localized_feed may still show all cards as pending.
+            # Prefer in-flight runtime progress to avoid showing a frozen 0/N.
+            if status in {"running", "queued"} and progress_done > 0:
+                card_pending_count = min(card_pending_count, progress_pending_hint)
+        else:
+            card_pending_count = _safe_int(row.get("pending_count"), max(0, total - done))
+        if len(cards) > 0:
+            card_pending_count = max(0, min(len(cards), card_pending_count))
+        card_done = max(0, len(cards) - card_pending_count) if len(cards) > 0 else 0
+        card_percent = round((card_done / len(cards)) * 100, 1) if len(cards) > 0 else max(0.0, min(100.0, percent))
         lang_rows.append(
             {
                 "lang": tag,
                 "status": status or "pending",
-                "total": total,
-                "done": done,
-                "remaining": max(0, total - done) if total > 0 else _safe_int(row.get("pending_count"), 0),
-                "percent": max(0.0, min(100.0, percent)),
-                "pending_count": _safe_int(row.get("pending_count"), max(0, total - done)),
+                "total": len(cards) if len(cards) > 0 else total,
+                "done": card_done if len(cards) > 0 else done,
+                "remaining": card_pending_count,
+                "percent": max(0.0, min(100.0, card_percent)),
+                "pending_count": card_pending_count,
                 "pending_items": lang_pending_items[:10],
             }
         )
-        if total > 0:
+        if len(cards) > 0:
+            ratio_sum += min(1.0, max(0.0, card_done / len(cards)))
+            ratio_count += 1
+        elif total > 0:
             ratio_sum += min(1.0, max(0.0, done / total))
             ratio_count += 1
         elif status == "ok":
@@ -1155,7 +1228,6 @@ def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, cards:
     items_pending = max(0, total_cards - estimated_done)
     if pending_items:
         items_pending = max(items_pending, len(pending_items))
-        estimated_done = max(0, total_cards - items_pending)
 
     out.update(
         {
@@ -1302,7 +1374,7 @@ def _build_sync_pipeline_post_stages(pipeline: dict[str, object], cards: list[di
     return rows[:120]
 
 
-def _build_sync_pipeline_status(sync_state: dict, i18n_state: dict, cards: list[dict]) -> dict[str, object]:
+def _build_sync_pipeline_status(sync_state: dict, i18n_state: dict, feed: dict[str, object], cards: list[dict]) -> dict[str, object]:
     run_id = str(sync_state.get("run_id") or "").strip()
     defaults = _new_sync_pipeline_state(run_id)
     raw_pipeline = sync_state.get("pipeline")
@@ -1313,7 +1385,7 @@ def _build_sync_pipeline_status(sync_state: dict, i18n_state: dict, cards: list[
     for section in ("scan", "curation", "translation"):
         if not isinstance(pipeline.get(section), dict):
             pipeline[section] = copy.deepcopy(defaults.get(section))
-    pipeline["translation"] = _sync_pipeline_translation_status(sync_state, i18n_state, cards)
+    pipeline["translation"] = _sync_pipeline_translation_status(sync_state, i18n_state, feed, cards)
     pipeline["post_stages"] = _build_sync_pipeline_post_stages(pipeline, cards)
     return pipeline
 
@@ -1344,7 +1416,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     queued_jobs = _safe_int(jobs.get("counts", {}).get("queued"))
     sync_running = str(sync_state.get("status") or "").strip().lower() == "running"
     pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
-    sync_pipeline = _build_sync_pipeline_status(sync_state, i18n_state, card_rows)
+    sync_pipeline = _build_sync_pipeline_status(sync_state, i18n_state, feed, card_rows)
 
     return {
         "server_time": _now_iso(),
