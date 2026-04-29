@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
@@ -41,6 +42,10 @@ I18N_BUILD_STATE: dict[str, object] = {
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 I18N_BUILD_VERSION = 8
+I18N_TRACE_LOG_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
+I18N_TRACE_LOCK = Lock()
+I18N_TRACE_ENABLED = str(os.getenv("I18N_TRACE_ENABLED", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+I18N_TRACE_MAX_BYTES = max(1024 * 256, int(str(os.getenv("I18N_TRACE_MAX_BYTES", "4194304") or "4194304")))
 I18N_FEED_TEXT_KEYS = {
     "headline",
     "conclusion",
@@ -369,6 +374,69 @@ def _parse_json_array(raw: str) -> list[str]:
                 out.append(str(item if item is not None else "").strip())
             return out
     return []
+
+
+def _extract_card_ids_from_entry_keys(entry_keys: list[str] | tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in entry_keys:
+        key = str(raw or "").strip()
+        if not key:
+            continue
+        match = re.search(r"cards\[(.*?)\]", key)
+        if not match:
+            continue
+        card_id = str(match.group(1) or "").strip()
+        if not card_id or card_id in seen:
+            continue
+        seen.add(card_id)
+        out.append(card_id)
+    return out
+
+
+def _trim_i18n_trace_unlocked() -> None:
+    if not I18N_TRACE_LOG_PATH.exists():
+        return
+    try:
+        size = I18N_TRACE_LOG_PATH.stat().st_size
+    except Exception:
+        return
+    if size <= I18N_TRACE_MAX_BYTES:
+        return
+    keep_bytes = max(I18N_TRACE_MAX_BYTES // 2, 1024 * 128)
+    try:
+        with I18N_TRACE_LOG_PATH.open("rb") as fh:
+            if size <= keep_bytes:
+                data = fh.read()
+            else:
+                fh.seek(size - keep_bytes)
+                data = fh.read()
+        cut = data.find(b"\n")
+        if cut >= 0 and cut + 1 < len(data):
+            data = data[cut + 1 :]
+        with I18N_TRACE_LOG_PATH.open("wb") as fh:
+            fh.write(data)
+    except Exception:
+        return
+
+
+def _append_i18n_trace(event: dict[str, object]) -> None:
+    if not I18N_TRACE_ENABLED:
+        return
+    payload = dict(event or {})
+    payload["ts"] = _now_iso()
+    try:
+        line = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return
+    try:
+        with I18N_TRACE_LOCK:
+            I18N_TRACE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with I18N_TRACE_LOG_PATH.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            _trim_i18n_trace_unlocked()
+    except Exception:
+        return
 
 
 ZH_HANS_TRANS = str.maketrans({
@@ -1280,7 +1348,13 @@ def _is_untranslated_for_lang(source: str, translated: str, lang: str) -> bool:
     return False
 
 
-def _translate_chunk_agent(texts: list[str], lang: str, api_key: str, strict: bool = False) -> list[str]:
+def _translate_chunk_agent(
+    texts: list[str],
+    lang: str,
+    api_key: str,
+    strict: bool = False,
+    trace_meta: dict[str, object] | None = None,
+) -> list[str]:
     if not texts:
         return []
     lang_name = _lang_prompt_name(lang)
@@ -1299,8 +1373,43 @@ def _translate_chunk_agent(texts: list[str], lang: str, api_key: str, strict: bo
         f"{strict_rules}\n"
         f"source={json.dumps(texts, ensure_ascii=False)}"
     )
-    raw = minimax_chat(prompt, api_key)
+    base_trace = dict(trace_meta or {})
+    base_trace.update(
+        {
+            "stage": "translate_chunk",
+            "lang": _normalize_lang_tag(lang),
+            "expected_len": len(texts),
+            "strict": bool(strict),
+        }
+    )
+    t0 = time.time()
+    try:
+        raw = minimax_chat(prompt, api_key)
+    except Exception as exc:
+        elapsed_ms = int((time.time() - t0) * 1000)
+        _append_i18n_trace(
+            {
+                **base_trace,
+                "attempt": 1,
+                "elapsed_ms": elapsed_ms,
+                "status": "request_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        raise
+    elapsed_ms = int((time.time() - t0) * 1000)
     parsed = _parse_json_array(raw)
+    _append_i18n_trace(
+        {
+            **base_trace,
+            "attempt": 1,
+            "elapsed_ms": elapsed_ms,
+            "status": "ok" if len(parsed) == len(texts) else "parse_mismatch",
+            "parsed_len": len(parsed),
+            "raw_len": len(str(raw or "")),
+            "raw_prefix": str(raw or "")[:300],
+        }
+    )
     if len(parsed) != len(texts):
         return list(texts)
     return [str(x or "").strip() or texts[idx] for idx, x in enumerate(parsed)]
@@ -1516,10 +1625,29 @@ def _translate_feed_text_map(
             by_source.setdefault(source, []).append(entry_key)
         pending_texts = list(by_source.keys())
         card_failed = False
-        for start in range(0, len(pending_texts), chunk_size):
+        chunk_total = max(1, (len(pending_texts) + chunk_size - 1) // chunk_size) if pending_texts else 1
+        for chunk_index, start in enumerate(range(0, len(pending_texts), chunk_size), start=1):
             chunk = pending_texts[start:start + chunk_size]
+            chunk_entry_keys: list[str] = []
+            for source in chunk:
+                chunk_entry_keys.extend([str(x) for x in (by_source.get(source) or []) if str(x).strip()])
             try:
-                translated = _translate_chunk_agent(chunk, tag, api_key, strict=False)
+                translated = _translate_chunk_agent(
+                    chunk,
+                    tag,
+                    api_key,
+                    strict=False,
+                    trace_meta={
+                        "chunk_index": chunk_index,
+                        "chunk_total": chunk_total,
+                        "chunk_size": len(chunk),
+                        "pending_texts_total": len(pending_texts),
+                        "pending_entries_total": len(rows),
+                        "card_id": card_key,
+                        "chunk_entry_keys": chunk_entry_keys[:24],
+                        "chunk_card_ids": [card_key],
+                    },
+                )
             except Exception:
                 translated = list(chunk)
             for idx, source in enumerate(chunk):

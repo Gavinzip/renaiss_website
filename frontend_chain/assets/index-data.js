@@ -309,7 +309,7 @@
     let intelFeedbackModalResolver = null;
     let pokemonNewsPollTimer = null;
     let pokemonNewsItemsState = [];
-    const DEFAULT_INTEL_API_BASE = "http://renaiss.zeabur.app";
+    const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
     // Force production remote API only.
     const INTEL_API_BASE = DEFAULT_INTEL_API_BASE;
 
