@@ -11,8 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SCRIPTS_DIR = ROOT / "scripts"
 if not SCRIPTS_DIR.exists():
-    # Backward-compatible fallback for older tree layout.
-    SCRIPTS_DIR = ROOT / "website" / "scripts"
+    raise FileNotFoundError(f"Missing runtime scripts directory: {SCRIPTS_DIR}")
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 

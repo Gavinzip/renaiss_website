@@ -36,7 +36,7 @@
         analyzeBtn.disabled = true;
         syncBtn.disabled = true;
         if (pokemonNewsRefreshBtn) pokemonNewsRefreshBtn.disabled = true;
-        setIntelMessage("目前是 file:// 模式。請改用 `python website/scripts/ai_intel_server.py --port 8787` 後從 http://127.0.0.1:8787 開啟。", "error");
+        setIntelMessage("目前是 file:// 模式。請改用 `python scripts/ai_intel_server.py --port 8787` 後從 http://127.0.0.1:8787 開啟。", "error");
       }
 
       loginButtons.forEach((loginBtn) => {

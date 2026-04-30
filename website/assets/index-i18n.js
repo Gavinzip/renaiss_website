@@ -225,10 +225,10 @@
       ko: "관리자 로그인",
     },
     "official.actionMessage": {
-      "zh-Hant": "提示：送出分析後會在背景執行，可直接刷新頁面；若按鈕沒反應，先執行 `python website/scripts/ai_intel_server.py --port 8787`。",
-      "zh-Hans": "提示：送出分析后会在背景执行，可直接刷新页面；若按钮没反应，先执行 `python website/scripts/ai_intel_server.py --port 8787`。",
-      en: "Tip: analysis runs in background after submit, and you can refresh safely. If buttons do not respond, run `python website/scripts/ai_intel_server.py --port 8787` first.",
-      ko: "안내: 분석 제출 후 백그라운드에서 실행되며 페이지를 새로고침해도 됩니다. 버튼이 반응하지 않으면 먼저 `python website/scripts/ai_intel_server.py --port 8787`를 실행하세요.",
+      "zh-Hant": "提示：送出分析後會在背景執行，可直接刷新頁面；若按鈕沒反應，先執行 `python scripts/ai_intel_server.py --port 8787`。",
+      "zh-Hans": "提示：送出分析后会在背景执行，可直接刷新页面；若按钮没反应，先执行 `python scripts/ai_intel_server.py --port 8787`。",
+      en: "Tip: analysis runs in background after submit, and you can refresh safely. If buttons do not respond, run `python scripts/ai_intel_server.py --port 8787` first.",
+      ko: "안내: 분석 제출 후 백그라운드에서 실행되며 페이지를 새로고침해도 됩니다. 버튼이 반응하지 않으면 먼저 `python scripts/ai_intel_server.py --port 8787`를 실행하세요.",
     },
     "official.overviewTitle": {
       "zh-Hant": "近 7 天官方總結",
