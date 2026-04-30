@@ -586,6 +586,10 @@ def _dedupe_signature(card: StoryCard) -> str:
     topic = infer_topic_phrase(card.raw_text or card.title, card.card_type)
     topic_key = dedupe_key(topic or card.title)
     date_hint = _event_date_hint(card)
+    # Events are often reposted by different accounts for the same session.
+    # Cross-account dedupe should still collapse those into one best card.
+    if card.card_type == "event":
+        return "|".join(["event", date_hint, topic_key[:56]])
     account = str(card.account or "").strip().lower()
     return "|".join([account, card.card_type, date_hint, topic_key[:56]])
 
@@ -735,8 +739,8 @@ def apply_minimax_global_dedupe(
         "你是社群情報總編，任務是『去重』而不是重寫內容。"
         "請從候選卡片中判斷哪些是同一事件/同一更新的重複貼文，只輸出應該刪掉的 id。"
         "規則："
-        "1) 同帳號、同主題、同日期（或同場次）且內容高度重疊，視為重複；"
-        "2) 優先保留資訊更完整者（有時間/地點/獎勵/參與方式/圖片）；"
+        "1) 同主題、同日期（或同場次）且內容高度重疊，跨帳號也可視為重複；"
+        "2) 優先保留資訊更完整者（有時間/地點/獎勵/參與方式/圖片）；完整度相近時再優先官方來源；"
         "3) 不要刪掉跨主題卡片；"
         "4) 不可捏造。"
         "輸出 JSON：{\"drop_ids\":[...],\"notes\":[...]}。\n\n"
@@ -1098,6 +1102,7 @@ def build_feed_payload(cards: list[StoryCard], digest: dict[str, Any], window_da
             "brief": sum(1 for c in cards if c.layout == "brief"),
             "data": sum(1 for c in cards if c.layout == "data"),
             "timeline": sum(1 for c in cards if c.layout == "timeline"),
+            "trend": sum(1 for c in cards if c.layout == "trend"),
         },
         "digest": digest,
         "cards": [c.to_dict() for c in cards],
@@ -1119,6 +1124,12 @@ def default_format_templates() -> list[dict[str, Any]]:
             "blocks": ["這則在說什麼", "提到哪些數據", "可能影響", "下一步要看什麼"],
         },
         {
+            "id": "collectibles_trend",
+            "name": "收藏趨勢型",
+            "for": "收藏品新聞、拍賣、評級、IP 熱度",
+            "blocks": ["趨勢重點", "數據線索", "影響方向", "後續追蹤"],
+        },
+        {
             "id": "announcement_timeline",
             "name": "公告時間線型",
             "for": "功能開放、版本進度、官方更新",
@@ -1133,10 +1144,30 @@ def default_format_templates() -> list[dict[str, Any]]:
     ]
 
 
+def _emit_sync_progress(progress_hook: Any, event: str, **payload: Any) -> None:
+    if not callable(progress_hook):
+        return
+    try:
+        progress_hook({"event": str(event or "").strip(), **payload})
+    except Exception:
+        return
+
+
+def _card_progress_item(card: StoryCard) -> dict[str, Any]:
+    return {
+        "id": str(card.id or ""),
+        "url": str(card.url or ""),
+        "title": str(card.title or ""),
+        "account": str(card.account or ""),
+        "published_at": str(card.published_at or ""),
+    }
+
+
 def sync_accounts(
     accounts: list[str] | None = None,
     window_days: int = DEFAULT_WINDOW_DAYS,
     max_posts_per_account: int = DEFAULT_MAX_POSTS_PER_ACCOUNT,
+    progress_hook: Any = None,
 ) -> dict[str, Any]:
     load_environment()
     api_key = resolve_minimax_key()
@@ -1147,12 +1178,44 @@ def sync_accounts(
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
+    scan_sources = [f"@{str(username).lstrip('@')}" for username in target_accounts]
+    _done_sources: list[str] = []
+    scanned_cards = 0
+    discord_cfg = resolve_discord_monitor_config()
+    if discord_cfg.get("enabled"):
+        scan_sources.append("Discord monitor")
+    _emit_sync_progress(
+        progress_hook,
+        "scan_start",
+        total_sources=len(scan_sources),
+        done_sources=0,
+        found_cards=0,
+        latest_source="",
+        latest_source_cards=0,
+        done_source_names=[],
+        pending_source_names=list(scan_sources),
+    )
+    account_cards = []
+    account_stats = {}
     for username in target_accounts:
         cards = collect_account_cards(username, since_dt=since_dt, max_posts=max_posts_per_account)
         account_cards.extend(cards)
         account_stats[username] = len(cards)
+        scanned_cards += len(cards)
+        label = f"@{str(username).lstrip('@')}"
+        _done_sources.append(label)
+        _emit_sync_progress(
+            progress_hook,
+            "scan_progress",
+            total_sources=len(scan_sources),
+            done_sources=len(_done_sources),
+            found_cards=scanned_cards,
+            latest_source=label,
+            latest_source_cards=len(cards),
+            done_source_names=list(_done_sources),
+            pending_source_names=[x for x in scan_sources if x not in _done_sources],
+        )
 
-    discord_cfg = resolve_discord_monitor_config()
     discord_cards: list[StoryCard] = []
     discord_stats: dict[str, int] = {}
     discord_errors: list[str] = []
@@ -1165,6 +1228,30 @@ def sync_accounts(
         )
         for cid, count in discord_stats.items():
             account_stats[f"discord:{cid}"] = int(count)
+        scanned_cards += len(discord_cards)
+        _done_sources.append("Discord monitor")
+        _emit_sync_progress(
+            progress_hook,
+            "scan_progress",
+            total_sources=len(scan_sources),
+            done_sources=len(_done_sources),
+            found_cards=scanned_cards,
+            latest_source="Discord monitor",
+            latest_source_cards=len(discord_cards),
+            done_source_names=list(_done_sources),
+            pending_source_names=[x for x in scan_sources if x not in _done_sources],
+        )
+    _emit_sync_progress(
+        progress_hook,
+        "scan_done",
+        total_sources=len(scan_sources),
+        done_sources=len(_done_sources),
+        found_cards=scanned_cards,
+        latest_source="",
+        latest_source_cards=0,
+        done_source_names=list(_done_sources),
+        pending_source_names=[x for x in scan_sources if x not in _done_sources],
+    )
 
     picks = read_manual_picks()
     include_ids = set(picks["include_ids"])
@@ -1248,6 +1335,15 @@ def sync_accounts(
         max_cards=DEFAULT_CURATED_MAX_CARDS,
         force_include_ids=force_ids,
     )
+    _emit_sync_progress(
+        progress_hook,
+        "curation_start",
+        total_cards=len(curated_cards),
+        done_cards=0,
+        current_item={},
+        done_items=[],
+        pending_items=[_card_progress_item(card) for card in curated_cards],
+    )
     feedback_context = feedback_training_text()
     ai_deduped = 0
     local_deduped = 0
@@ -1266,6 +1362,17 @@ def sync_accounts(
     else:
         apply_editorial_fallback(curated_cards)
         curated_cards, local_deduped = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
+    curation_total = len(curated_cards)
+    _emit_sync_progress(
+        progress_hook,
+        "curation_start",
+        total_cards=curation_total,
+        done_cards=0,
+        current_item={},
+        done_items=[],
+        pending_items=[_card_progress_item(card) for card in curated_cards],
+    )
+    curation_done_items: list[dict[str, Any]] = []
     for card in curated_cards:
         card.manual_pick = card.manual_pick or (card.id in include_ids)
         card.manual_pin = card.id in pin_ids
@@ -1276,6 +1383,26 @@ def sync_accounts(
         apply_quality_guard(card)
         normalize_card_semantics(card, preserve_type=True)
         card.importance = score_card(card)
+        curation_done_items.append(_card_progress_item(card))
+        pending_items = [_card_progress_item(x) for x in curated_cards[len(curation_done_items):]]
+        _emit_sync_progress(
+            progress_hook,
+            "curation_progress",
+            total_cards=curation_total,
+            done_cards=len(curation_done_items),
+            current_item=_card_progress_item(card),
+            done_items=list(curation_done_items),
+            pending_items=pending_items,
+        )
+    _emit_sync_progress(
+        progress_hook,
+        "curation_done",
+        total_cards=curation_total,
+        done_cards=curation_total,
+        current_item={},
+        done_items=list(curation_done_items),
+        pending_items=[],
+    )
     curated_cards.sort(
         key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance),
         reverse=True,
@@ -1288,11 +1415,12 @@ def sync_accounts(
         event_count = sum(1 for c in curated_cards if c.card_type == "event")
         feature_count = sum(1 for c in curated_cards if c.card_type == "feature")
         announcement_count = sum(1 for c in curated_cards if c.card_type == "announcement")
+        trend_count = sum(1 for c in curated_cards if c.card_type == "trend")
         growth_count = len(agenda.get("growth_signals", []))
         future_count = len(agenda.get("future_watch", []))
-        digest["headline"] = f"Spring AI 主時間軸：活動 {event_count} / 功能 {feature_count} / 公告 {announcement_count}"
+        digest["headline"] = f"Spring AI 主時間軸：活動 {event_count} / 功能 {feature_count} / 公告 {announcement_count} / 收藏 {trend_count}"
         digest["conclusion"] = (
-            f"已整理出活動 {event_count} 件、功能 {feature_count} 件、公告 {announcement_count} 件、增長訊號 {growth_count} 件、未來觀察 {future_count} 件，"
+            f"已整理出活動 {event_count} 件、功能 {feature_count} 件、公告 {announcement_count} 件、收藏趨勢 {trend_count} 件、增長訊號 {growth_count} 件、未來觀察 {future_count} 件，"
             "可直接用於社群公告與行動排程。"
         )
         digest["takeaways"] = [
@@ -1315,6 +1443,7 @@ def sync_accounts(
     payload["template_counts"] = {
         "event_poster": sum(1 for c in curated_cards if c.template_id == "event_poster"),
         "market_signal": sum(1 for c in curated_cards if c.template_id == "market_signal"),
+        "collectibles_trend": sum(1 for c in curated_cards if c.template_id == "collectibles_trend"),
         "announcement_timeline": sum(1 for c in curated_cards if c.template_id == "announcement_timeline"),
         "community_brief": sum(1 for c in curated_cards if c.template_id == "community_brief"),
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -26,7 +27,7 @@ from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_paylo
 from x_intel_core import add_classification_feedback, add_manual_tweet, feedback_memory_stats, load_environment, set_manual_selection, sync_accounts
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
-from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
+from website_i18n_runtime import configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,6 +62,7 @@ SYNC_STATE: dict[str, object] = {
     "schedule_window_days": 30,
     "next_run_at": "",
     "last_scheduled_at": "",
+    "sync_pipeline": {},
 }
 BACKUP_STATE: dict[str, object] = {
     "status": "idle",
@@ -135,6 +137,8 @@ AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PL
 TOKEN_TTL_SECONDS = max(300, int(os.getenv("INTEL_AUTH_TOKEN_TTL_SECONDS", str(DEFAULT_TOKEN_TTL_SECONDS)) or DEFAULT_TOKEN_TTL_SECONDS))
 TOKEN_SECRET_ENV = str(os.getenv("INTEL_AUTH_TOKEN_SECRET", "")).strip()
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("INTEL_ALLOWED_ORIGINS", ""))
+FRONTEND_INTEL_API_BASE_ENV = str(os.getenv("INTEL_FRONTEND_API_BASE", "")).strip()
+FRONTEND_USE_LOCAL_API = _env_flag("INTEL_FRONTEND_USE_LOCAL_API", False)
 
 TRANSLATE_MAX_ITEMS = 220
 TRANSLATE_MAX_CHARS = 320
@@ -356,6 +360,283 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except Exception:
         return int(default)
+
+
+def _normalize_progress_item(row: object) -> dict[str, str]:
+    data = row if isinstance(row, dict) else {}
+    return {
+        "id": str(data.get("id") or "").strip(),
+        "url": str(data.get("url") or "").strip(),
+        "title": str(data.get("title") or "").strip(),
+        "account": str(data.get("account") or "").strip(),
+        "published_at": str(data.get("published_at") or "").strip(),
+    }
+
+
+def _normalize_progress_items(rows: object, limit: int = 60) -> list[dict[str, str]]:
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append(_normalize_progress_item(row))
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _blank_sync_pipeline(run_id: str = "", trigger: str = "") -> dict[str, object]:
+    return {
+        "run_id": str(run_id or ""),
+        "trigger": str(trigger or ""),
+        "scan": {
+            "status": "idle",
+            "total_sources": 0,
+            "done_sources": 0,
+            "found_cards": 0,
+            "latest_source": "",
+            "latest_source_cards": 0,
+            "done_source_names": [],
+            "pending_source_names": [],
+            "new_items": [],
+        },
+        "curation": {
+            "status": "idle",
+            "total_cards": 0,
+            "done_cards": 0,
+            "current_item": {},
+            "done_items": [],
+            "pending_items": [],
+        },
+        "translation": {
+            "status": "idle",
+            "percent": 0,
+            "items_done": 0,
+            "items_total": 0,
+            "langs": [],
+            "pending_items": [],
+        },
+        "post_stages": [],
+        "updated_at": _now_iso(),
+    }
+
+
+def _sync_progress_hook(payload: dict[str, object]) -> None:
+    if not isinstance(payload, dict):
+        return
+    event = str(payload.get("event") or "").strip().lower()
+    if not event:
+        return
+    with SYNC_STATE_LOCK:
+        pipeline = SYNC_STATE.get("sync_pipeline")
+        if not isinstance(pipeline, dict):
+            pipeline = _blank_sync_pipeline(
+                run_id=uuid4().hex,
+                trigger=str(SYNC_STATE.get("trigger") or ""),
+            )
+            SYNC_STATE["sync_pipeline"] = pipeline
+
+        scan = pipeline.get("scan")
+        if not isinstance(scan, dict):
+            scan = {}
+            pipeline["scan"] = scan
+        curation = pipeline.get("curation")
+        if not isinstance(curation, dict):
+            curation = {}
+            pipeline["curation"] = curation
+
+        if event.startswith("scan"):
+            scan["status"] = "ok" if event == "scan_done" else "running"
+            scan["total_sources"] = _safe_int(payload.get("total_sources"), _safe_int(scan.get("total_sources"), 0))
+            scan["done_sources"] = _safe_int(payload.get("done_sources"), _safe_int(scan.get("done_sources"), 0))
+            scan["found_cards"] = _safe_int(payload.get("found_cards"), _safe_int(scan.get("found_cards"), 0))
+            scan["latest_source"] = str(payload.get("latest_source") or scan.get("latest_source") or "")
+            scan["latest_source_cards"] = _safe_int(payload.get("latest_source_cards"), _safe_int(scan.get("latest_source_cards"), 0))
+            done_names = payload.get("done_source_names")
+            pending_names = payload.get("pending_source_names")
+            if isinstance(done_names, list):
+                scan["done_source_names"] = [str(x) for x in done_names if str(x).strip()]
+            if isinstance(pending_names, list):
+                scan["pending_source_names"] = [str(x) for x in pending_names if str(x).strip()]
+            new_items = payload.get("new_items")
+            if isinstance(new_items, list):
+                scan["new_items"] = _normalize_progress_items(new_items, limit=40)
+
+        if event.startswith("curation"):
+            curation["status"] = "ok" if event == "curation_done" else "running"
+            curation["total_cards"] = _safe_int(payload.get("total_cards"), _safe_int(curation.get("total_cards"), 0))
+            curation["done_cards"] = _safe_int(payload.get("done_cards"), _safe_int(curation.get("done_cards"), 0))
+            curation["current_item"] = _normalize_progress_item(payload.get("current_item"))
+            curation["done_items"] = _normalize_progress_items(payload.get("done_items"), limit=80)
+            curation["pending_items"] = _normalize_progress_items(payload.get("pending_items"), limit=80)
+
+        pipeline["updated_at"] = _now_iso()
+        SYNC_STATE["sync_pipeline"] = pipeline
+
+
+def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict, i18n_alignment: dict) -> dict:
+    base = sync_state.get("sync_pipeline")
+    pipeline = copy.deepcopy(base) if isinstance(base, dict) else _blank_sync_pipeline(
+        run_id="",
+        trigger=str(sync_state.get("trigger") or ""),
+    )
+
+    scan = pipeline.get("scan")
+    if not isinstance(scan, dict):
+        scan = {}
+        pipeline["scan"] = scan
+    curation = pipeline.get("curation")
+    if not isinstance(curation, dict):
+        curation = {}
+        pipeline["curation"] = curation
+
+    sync_status = str(sync_state.get("status") or "idle").strip().lower()
+    if str(scan.get("status") or "").strip().lower() in {"", "idle"} and sync_status == "running":
+        scan["status"] = "running"
+    if str(curation.get("status") or "").strip().lower() in {"", "idle"} and sync_status == "running":
+        curation["status"] = "running"
+
+    scan.setdefault("status", "idle")
+    scan.setdefault("total_sources", 0)
+    scan.setdefault("done_sources", 0)
+    scan.setdefault("found_cards", 0)
+    scan.setdefault("latest_source", "")
+    scan.setdefault("latest_source_cards", 0)
+    scan["done_source_names"] = [str(x) for x in (scan.get("done_source_names") or []) if str(x).strip()]
+    scan["pending_source_names"] = [str(x) for x in (scan.get("pending_source_names") or []) if str(x).strip()]
+    scan["new_items"] = _normalize_progress_items(scan.get("new_items"), limit=40)
+
+    curation.setdefault("status", "idle")
+    curation.setdefault("total_cards", 0)
+    curation.setdefault("done_cards", 0)
+    curation["current_item"] = _normalize_progress_item(curation.get("current_item"))
+    curation["done_items"] = _normalize_progress_items(curation.get("done_items"), limit=80)
+    curation["pending_items"] = _normalize_progress_items(curation.get("pending_items"), limit=80)
+
+    cards_raw = feed.get("cards")
+    cards = cards_raw if isinstance(cards_raw, list) else []
+    card_rows = [row for row in cards if isinstance(row, dict)]
+    lang_rows = i18n_alignment.get("langs") if isinstance(i18n_alignment.get("langs"), dict) else {}
+    target_langs = [lang for lang in ("en", "ko", "zh-Hans") if isinstance(lang_rows.get(lang), dict)]
+    i18n_running = str(i18n_state.get("status") or "").strip().lower() in {"running", "queued"}
+
+    translation_langs: list[dict[str, object]] = []
+    lang_pending_sets: dict[str, set[str]] = {}
+    lang_failed_sets: dict[str, set[str]] = {}
+    lang_row_state: dict[str, str] = {}
+    for lang in target_langs:
+        row = lang_rows.get(lang) if isinstance(lang_rows.get(lang), dict) else {}
+        done = _safe_int(row.get("done"), 0)
+        total = max(_safe_int(row.get("total"), len(card_rows)), len(card_rows))
+        if total <= 0:
+            total = len(card_rows)
+        percent = round((done / total) * 100, 1) if total else 0
+        state = str(row.get("state") or "").strip().lower()
+        if state == "aligned_ready":
+            status = "done"
+        elif state == "failed":
+            status = "failed"
+        elif i18n_running:
+            status = "running"
+        else:
+            status = "pending"
+        translation_langs.append(
+            {
+                "lang": lang,
+                "status": status,
+                "done": done,
+                "total": total,
+                "percent": percent,
+            }
+        )
+        lang_pending_sets[lang] = {
+            str(x).strip()
+            for x in (row.get("card_pending_ids") or [])
+            if str(x).strip()
+        }
+        lang_pending_sets[lang].update(
+            str(x).strip()
+            for x in (row.get("card_partial_ids") or [])
+            if str(x).strip()
+        )
+        lang_failed_sets[lang] = {
+            str(x).strip()
+            for x in (row.get("card_failed_ids") or [])
+            if str(x).strip()
+        }
+        lang_row_state[lang] = state
+
+    post_stages: list[dict[str, str]] = []
+    pending_items: list[dict[str, str]] = []
+    ready_cards = 0
+    for idx, card in enumerate(card_rows):
+        key = _card_lookup_key(card, idx)
+        translation_states: list[str] = []
+        for lang in target_langs:
+            if key in lang_failed_sets.get(lang, set()):
+                translation_states.append("failed")
+                continue
+            if key in lang_pending_sets.get(lang, set()):
+                translation_states.append("running")
+                continue
+            row_state = lang_row_state.get(lang, "")
+            if row_state == "aligned_ready":
+                translation_states.append("done")
+            elif row_state == "failed":
+                translation_states.append("failed")
+            elif i18n_running:
+                translation_states.append("running")
+            else:
+                translation_states.append("pending")
+
+        if not translation_states:
+            translation_state = "done"
+        elif "failed" in translation_states:
+            translation_state = "failed"
+        elif all(state == "done" for state in translation_states):
+            translation_state = "done"
+        else:
+            translation_state = "running"
+
+        if translation_state == "done":
+            ready_cards += 1
+
+        row = _normalize_progress_item(card)
+        row["scan"] = "done"
+        row["curation"] = "done"
+        row["translation"] = translation_state
+        row["stage"] = translation_state
+        post_stages.append(row)
+        if translation_state != "done":
+            pending_items.append(dict(row))
+
+    total_cards = len(post_stages)
+    if translation_langs and any(str(row.get("status")) == "failed" for row in translation_langs):
+        translation_status = "failed"
+    elif total_cards > 0 and ready_cards >= total_cards:
+        translation_status = "ok"
+    elif i18n_running:
+        translation_status = "running"
+    elif total_cards > 0:
+        translation_status = "pending"
+    else:
+        translation_status = "idle"
+
+    percent = round((ready_cards / total_cards) * 100, 1) if total_cards else 0
+    pipeline["translation"] = {
+        "status": translation_status,
+        "percent": percent,
+        "items_done": ready_cards,
+        "items_total": total_cards,
+        "langs": translation_langs,
+        "pending_items": pending_items[:40],
+    }
+    pipeline["post_stages"] = post_stages[:80]
+    pipeline["updated_at"] = _now_iso()
+    pipeline["run_id"] = str(pipeline.get("run_id") or "")
+    pipeline["trigger"] = str(pipeline.get("trigger") or sync_state.get("trigger") or "")
+    return pipeline
 
 
 def _count_recent_cards(cards: list[dict], hours: int) -> int:
@@ -617,17 +898,22 @@ def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
 
 def _sync_state_snapshot() -> dict:
     with SYNC_STATE_LOCK:
-        return dict(SYNC_STATE)
+        return copy.deepcopy(SYNC_STATE)
 
 
 def _start_sync_state(trigger: str = "") -> None:
     with SYNC_STATE_LOCK:
+        run_id = uuid4().hex
         SYNC_STATE["status"] = "running"
         SYNC_STATE["started_at"] = _now_iso()
         SYNC_STATE["finished_at"] = ""
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["trigger"] = str(trigger or "manual")
         SYNC_STATE["duration_ms"] = 0
+        SYNC_STATE["sync_pipeline"] = _blank_sync_pipeline(
+            run_id=run_id,
+            trigger=str(trigger or "manual"),
+        )
 
 
 def _finish_sync_state_ok(started_monotonic: float) -> None:
@@ -639,6 +925,18 @@ def _finish_sync_state_ok(started_monotonic: float) -> None:
         SYNC_STATE["last_success_at"] = now_iso
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["duration_ms"] = duration_ms
+        pipeline = SYNC_STATE.get("sync_pipeline")
+        if isinstance(pipeline, dict):
+            scan = pipeline.get("scan")
+            if isinstance(scan, dict) and str(scan.get("status") or "").strip().lower() == "running":
+                if _safe_int(scan.get("done_sources")) >= _safe_int(scan.get("total_sources")):
+                    scan["status"] = "ok"
+            curation = pipeline.get("curation")
+            if isinstance(curation, dict) and str(curation.get("status") or "").strip().lower() == "running":
+                if _safe_int(curation.get("done_cards")) >= _safe_int(curation.get("total_cards")):
+                    curation["status"] = "ok"
+            pipeline["updated_at"] = now_iso
+            SYNC_STATE["sync_pipeline"] = pipeline
 
 
 def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
@@ -649,6 +947,16 @@ def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> N
         SYNC_STATE["finished_at"] = now_iso
         SYNC_STATE["last_error"] = str(error_message or "unknown_error")
         SYNC_STATE["duration_ms"] = duration_ms
+        pipeline = SYNC_STATE.get("sync_pipeline")
+        if isinstance(pipeline, dict):
+            for key in ("scan", "curation"):
+                row = pipeline.get(key)
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("status") or "").strip().lower() in {"running", "queued"}:
+                    row["status"] = "failed"
+            pipeline["updated_at"] = now_iso
+            SYNC_STATE["sync_pipeline"] = pipeline
 
 
 def _mark_sync_schedule(
@@ -673,8 +981,12 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     started_monotonic = time.monotonic()
     _start_sync_state(trigger=trigger)
     try:
-        result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
-        build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
+        result = sync_accounts(
+            accounts=accounts,
+            window_days=max(1, int(days)),
+            progress_hook=_sync_progress_hook,
+        )
+        queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
         _finish_sync_state_ok(started_monotonic)
         return result
     except Exception as sync_error:
@@ -691,7 +1003,7 @@ def _warm_i18n_bundle_from_feed() -> None:
         return
     if not isinstance(feed, dict):
         return
-    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+    queue_i18n_retranslate(feed, target_langs=["en", "ko", "zh-Hans"], force_full=False)
 
 
 def _start_x_sync_scheduler(
@@ -951,6 +1263,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     i18n_payload["raw_status"] = i18n_raw_status or "idle"
     i18n_payload["effective_status"] = i18n_effective_status
     i18n_payload["alignment"] = i18n_alignment
+    sync_pipeline = _build_sync_pipeline_snapshot(sync_state, feed, i18n_state, i18n_alignment)
 
     return {
         "server_time": _now_iso(),
@@ -1044,6 +1357,7 @@ def _build_admin_status(limit: int = 10) -> dict:
             "langs": news_states,
         },
         "i18n": i18n_payload,
+        "sync_pipeline": sync_pipeline,
         "storage": {
             **STORAGE_STATE,
             "restore": restore_state,
@@ -1264,7 +1578,7 @@ def _run_analyze_job(job_id: str, url: str) -> None:
         tweet = result.get("tweet") if isinstance(result.get("tweet"), dict) else {}
         feed = result.get("feed") if isinstance(result.get("feed"), dict) else {}
         if feed:
-            build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+            queue_i18n_retranslate(feed, target_langs=["en", "ko", "zh-Hans"], force_full=False)
         _update_job(
             job_id,
             status="done",
@@ -1418,6 +1732,48 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         return self._require_admin_access()
 
+    def _frontend_runtime_api_base(self) -> str:
+        explicit = str(FRONTEND_INTEL_API_BASE_ENV or "").strip().rstrip("/")
+        if explicit:
+            return explicit
+        if not FRONTEND_USE_LOCAL_API:
+            return ""
+        host = str(self.headers.get("Host") or "").strip()
+        if not host:
+            return ""
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        scheme = "https" if proto == "https" else "http"
+        return f"{scheme}://{host}".rstrip("/")
+
+    def _serve_html_with_runtime_config(self, path: str) -> bool:
+        request_path = str(path or "/").strip() or "/"
+        if request_path == "/":
+            request_path = "/index.html"
+        if not request_path.lower().endswith(".html"):
+            return False
+        file_path = Path(self.translate_path(request_path))
+        if not file_path.exists() or not file_path.is_file():
+            return False
+        try:
+            html = file_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+        api_base = self._frontend_runtime_api_base()
+        runtime_script = f"<script>window.__INTEL_API_BASE={json.dumps(api_base, ensure_ascii=False)};</script>"
+        if "</head>" in html:
+            html = html.replace("</head>", f"{runtime_script}\n</head>", 1)
+        else:
+            html = f"{runtime_script}\n{html}"
+        raw = html.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self._set_cors_headers()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        return True
+
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._set_cors_headers()
@@ -1463,6 +1819,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/"):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if self._serve_html_with_runtime_config(path):
             return
         super().do_GET()
 
@@ -1602,7 +1960,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if action == "exclude" and reason:
                     feedback = add_classification_feedback(tweet_id, "exclude", reason=reason)
                 result = sync_accounts()
-                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
+                queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
                 self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
                 return
 
@@ -1612,7 +1970,7 @@ class Handler(SimpleHTTPRequestHandler):
                 reason = str(payload.get("reason") or "").strip()
                 feedback = add_classification_feedback(tweet_id, label, reason=reason)
                 result = sync_accounts()
-                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
+                queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
                 self._send_json({"ok": True, "feedback": feedback, "feed": result})
                 return
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 
@@ -7,6 +9,20 @@ globals().update(vars(_bootstrap))
 globals().update(vars(_editorial))
 
 # Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
+
+
+def _is_dns_resolution_error(exc: Exception) -> bool:
+    msg = str(exc)
+    if not msg:
+        return False
+    markers = (
+        "NameResolutionError",
+        "Temporary failure in name resolution",
+        "nodename nor servname provided",
+        "Name or service not known",
+        "getaddrinfo failed",
+    )
+    return any(marker in msg for marker in markers)
 
 def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
     model_name = str(
@@ -35,6 +51,7 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     }
     connect_timeout = 15.0
     read_timeout = 120.0
+    dns_retry_limit = 3
     try:
         connect_timeout = float(os.getenv("MINIMAX_HTTP_CONNECT_TIMEOUT") or connect_timeout)
     except Exception:
@@ -43,16 +60,37 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
         read_timeout = float(os.getenv("MINIMAX_HTTP_READ_TIMEOUT") or read_timeout)
     except Exception:
         read_timeout = 120.0
+    try:
+        dns_retry_limit = int(os.getenv("MINIMAX_DNS_RETRY_LIMIT") or dns_retry_limit)
+    except Exception:
+        dns_retry_limit = 3
     if connect_timeout <= 0:
         connect_timeout = 15.0
     if read_timeout <= 0:
         read_timeout = 120.0
-    resp = requests.post(
-        MINIMAX_URL,
-        headers=headers,
-        json=payload,
-        timeout=(connect_timeout, read_timeout),
-    )
+    if dns_retry_limit < 0:
+        dns_retry_limit = 0
+    resp = None
+    for attempt in range(dns_retry_limit + 1):
+        try:
+            resp = requests.post(
+                MINIMAX_URL,
+                headers=headers,
+                json=payload,
+                timeout=(connect_timeout, read_timeout),
+            )
+            break
+        except requests.exceptions.RequestException as exc:
+            if (not _is_dns_resolution_error(exc)) or attempt >= dns_retry_limit:
+                raise
+            delay_sec = float(2**attempt)
+            print(
+                f"[minimax] dns resolution error; retry in {delay_sec:.1f}s "
+                f"({attempt + 1}/{dns_retry_limit})"
+            )
+            time.sleep(delay_sec)
+    if resp is None:
+        raise RuntimeError("MiniMax request failed before response was created")
     resp.raise_for_status()
     data = resp.json()
     choices = data.get("choices")
@@ -77,14 +115,14 @@ def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_co
         prompt = (
             "你是TCG社群編輯。請先完整讀懂內容，再輸出『非抄寫』重整版本。"
             "輸出必須是 JSON，欄位固定為："
-            "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline),"
+            "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline/trend),"
             "confidence(0~1),tags(最多3),event_facts(可選，僅 event 使用: reward/participation/audience/location/schedule),"
-            "topic_labels(可多選: events/official/sbt/pokemon/alpha/tools/other)。"
+            "topic_labels(可多選: events/official/sbt/pokemon/alpha/tools/collectibles/other)。"
             "限制："
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
             "3) bullets 每條都要是可行動或可追蹤的資訊；"
-            "4) card_type 只能是 event/feature/announcement/market/report/insight；"
+            "4) card_type 只能是 event/feature/announcement/market/report/insight/trend；"
             "5) 必須用語意判斷分類，不可只用關鍵字；"
             "6) 只有含明確活動訊號（時間/地點/報名/參與方式）才可標為 event；"
             "7) 產品進度、版本更新、開放計畫優先標為 feature 或 announcement，不算 event；"
@@ -101,7 +139,8 @@ def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_co
             "18) 不可使用 Markdown code fence（```）；"
             "19) 長度限制：title<=40字、summary<=150字、每條bullet<=34字；"
             "20) 若使用者回饋記憶與原始推斷衝突，以使用者回饋記憶優先；"
-            "21) 整份 JSON 請控制在約 800 字元內。\n\n"
+            "21) 收藏品新聞、拍賣、評級、IP 熱度、產業趨勢且非純價格數據時，優先用 trend；"
+            "22) 整份 JSON 請控制在約 800 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
@@ -142,9 +181,9 @@ def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_co
                 card.summary = summary[:320]
             if bullets:
                 card.bullets = [clean_text(str(x))[:120] for x in bullets if str(x).strip()][:3] or card.bullets
-            if card_type in {"event", "market", "report", "announcement", "feature", "insight"}:
+            if card_type in {"event", "market", "report", "announcement", "feature", "insight", "trend"}:
                 card.card_type = card_type
-            if layout in {"poster", "brief", "data", "timeline"}:
+            if layout in {"poster", "brief", "data", "timeline", "trend"}:
                 card.layout = layout
             if tags:
                 card.tags = [clean_text(str(x))[:16] for x in tags if str(x).strip()][:3]
@@ -247,15 +286,26 @@ def aggregate_digest(
 
 
 def fetch_status_with_twitter_cli(url: str) -> str | None:
+    enabled_raw = str(os.getenv("X_INTEL_ENABLE_TWITTER_CLI") or "").strip().lower()
+    enabled = enabled_raw in {"1", "true", "yes", "on"}
+    if not enabled:
+        return None
     if not shutil_which("twitter"):
         return None
+    timeout_sec = 8.0
+    try:
+        timeout_sec = float(os.getenv("X_INTEL_TWITTER_CLI_TIMEOUT") or timeout_sec)
+    except Exception:
+        timeout_sec = 8.0
+    if timeout_sec <= 0:
+        timeout_sec = 8.0
     try:
         proc = subprocess.run(
             ["twitter", "tweet", url, "--json"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=35,
+            timeout=timeout_sec,
             check=False,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
@@ -485,15 +535,15 @@ def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str
     url = f"https://x.com/{username}/status/{tweet_id}"
     meta = fetch_status_metadata(tweet_id)
 
-    twitter_cli_data = fetch_status_with_twitter_cli(url)
-    if twitter_cli_data:
-        return twitter_cli_data, "twitter-cli", meta
-
     if isinstance(meta, dict):
         owner = str(meta.get("account") or "").strip().lower().lstrip("@")
         wanted = str(username or "").strip().lower().lstrip("@")
         if owner == wanted and str(meta.get("text") or "").strip():
             return build_markdown_from_status_meta(meta, url), "tweet-result", meta
+
+    twitter_cli_data = fetch_status_with_twitter_cli(url)
+    if twitter_cli_data:
+        return twitter_cli_data, "twitter-cli", meta
 
     try:
         return fetch_text(f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}"), "r.jina.ai", meta
@@ -612,6 +662,29 @@ def fetch_discord_channel_messages(channel_id: str, token: str, limit: int = DEF
     return [x for x in data if isinstance(x, dict)]
 
 
+def apply_discord_channel_context(
+    channel_id: str,
+    card_type: str,
+    layout: str,
+    tags: list[str],
+) -> tuple[str, str, list[str], list[str]]:
+    topic_labels: list[str] = []
+    next_type = str(card_type or "insight").strip().lower() or "insight"
+    next_layout = str(layout or "brief").strip().lower() or "brief"
+    next_tags = [clean_text(str(x)) for x in (tags or []) if clean_text(str(x))]
+
+    if is_collectibles_discord_channel(channel_id):
+        topic_labels.append("collectibles")
+        if next_type not in {"event", "market"}:
+            next_type = "trend"
+            next_layout = "trend"
+        for label in ("收藏", "趨勢"):
+            if label not in next_tags:
+                next_tags.insert(0, label)
+
+    return next_type, next_layout, next_tags[:3], normalize_topic_labels(topic_labels)
+
+
 def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) -> StoryCard | None:
     mid = str(item.get("id") or "").strip()
     if not mid:
@@ -634,6 +707,7 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         reply_to_id = str(referenced.get("id") or "").strip()
 
     card_type, layout, tags = classify_story(text)
+    card_type, layout, tags, topic_labels = apply_discord_channel_context(channel_id, card_type, layout, tags)
     shaped = build_editorial_copy(text, card_type, account)
     card = StoryCard(
         id=f"discord-{channel_id}-{mid}",
@@ -651,6 +725,7 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         provider="discord-rest",
         cover_image=_discord_first_image(item),
         metrics={},
+        topic_labels=topic_labels,
         reply_to_id=reply_to_id,
     )
     card.importance = score_card(card)
