@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 from . import bootstrap as _bootstrap
@@ -685,6 +686,25 @@ def apply_discord_channel_context(
     return next_type, next_layout, next_tags[:3], normalize_topic_labels(topic_labels)
 
 
+def is_collectibles_discord_channel(channel_id: str) -> bool:
+    cid = str(channel_id or "").strip()
+    if not cid:
+        return False
+    raw = str(
+        os.getenv("DISCORD_COLLECTIBLES_CHANNEL_IDS")
+        or os.getenv("DISCORD_COLLECTIBLES_CHANNEL_ID")
+        or ""
+    ).strip()
+    if not raw:
+        return False
+    configured = {
+        part.strip()
+        for part in re.split(r"[,\s]+", raw)
+        if part.strip()
+    }
+    return cid in configured
+
+
 def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) -> StoryCard | None:
     mid = str(item.get("id") or "").strip()
     if not mid:
@@ -758,7 +778,11 @@ def collect_discord_cards(
             created_dt = parse_datetime_guess(created_raw)
             if created_dt and created_dt < since_dt:
                 continue
-            card = build_storycard_from_discord_message(item, channel_id=cid)
+            try:
+                card = build_storycard_from_discord_message(item, channel_id=cid)
+            except Exception as exc:
+                errors.append(f"{cid}: build_card_failed {clean_text(str(exc))[:90]}")
+                continue
             if not card:
                 continue
             cards.append(card)
