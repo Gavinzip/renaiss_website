@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -11,7 +12,6 @@ import os
 import re
 import secrets
 import time
-from http.cookies import SimpleCookie
 from datetime import timedelta
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -45,10 +45,8 @@ configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
-SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
-SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -84,8 +82,8 @@ DEFAULT_X_SYNC_WINDOW_DAYS = 30
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
-AUTH_COOKIE_NAME = "intel_admin_session"
-DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
+DEFAULT_TOKEN_TTL_SECONDS = 8 * 60 * 60
+AUTH_TOKEN_PREFIX = "iat1"
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
@@ -132,10 +130,8 @@ AUTH_USERNAME = str(os.getenv("INTEL_ADMIN_USER", "")).strip()
 AUTH_PASSWORD_HASH = str(os.getenv("INTEL_ADMIN_PASS_HASH", "")).strip()
 AUTH_PASSWORD_PLAIN = str(os.getenv("INTEL_ADMIN_PASS", "")).strip()
 AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN))
-SESSION_TTL_SECONDS = max(300, int(os.getenv("INTEL_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL_SECONDS)) or DEFAULT_SESSION_TTL_SECONDS))
-COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
-COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
-COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
+TOKEN_TTL_SECONDS = max(300, int(os.getenv("INTEL_AUTH_TOKEN_TTL_SECONDS", str(DEFAULT_TOKEN_TTL_SECONDS)) or DEFAULT_TOKEN_TTL_SECONDS))
+TOKEN_SECRET_ENV = str(os.getenv("INTEL_AUTH_TOKEN_SECRET", "")).strip()
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("INTEL_ALLOWED_ORIGINS", ""))
 
 TRANSLATE_MAX_ITEMS = 220
@@ -144,6 +140,77 @@ TRANSLATE_MAX_CHARS = 320
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(raw: str) -> bytes:
+    text = str(raw or "").strip()
+    if not text:
+        return b""
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(f"{text}{padding}".encode("utf-8"))
+
+
+def _auth_token_secret() -> str:
+    if TOKEN_SECRET_ENV:
+        return TOKEN_SECRET_ENV
+    seed = f"{AUTH_USERNAME}|{AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN}|renaiss-intel-token-v1"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _create_auth_token(username: str) -> str:
+    now_ts = int(time.time())
+    payload = {
+        "v": 1,
+        "u": str(username or "").strip(),
+        "iat": now_ts,
+        "exp": now_ts + TOKEN_TTL_SECONDS,
+    }
+    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = _b64url_encode(payload_raw)
+    signature = hmac.new(_auth_token_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    return f"{AUTH_TOKEN_PREFIX}.{payload_b64}.{_b64url_encode(signature)}"
+
+
+def _verify_auth_token(token: str) -> str:
+    raw = str(token or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return ""
+    prefix, payload_b64, signature_b64 = parts
+    if prefix != AUTH_TOKEN_PREFIX:
+        return ""
+    try:
+        expected_sig = hmac.new(
+            _auth_token_secret().encode("utf-8"),
+            payload_b64.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        actual_sig = _b64url_decode(signature_b64)
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            return ""
+        payload_raw = _b64url_decode(payload_b64)
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    if int(payload.get("v") or 0) != 1:
+        return ""
+    expires_at = int(payload.get("exp") or 0)
+    if expires_at <= int(time.time()):
+        return ""
+    username = str(payload.get("u") or "").strip()
+    if not username:
+        return ""
+    if AUTH_USERNAME and username != AUTH_USERNAME:
+        return ""
+    return username
 
 
 def _verify_password(raw_password: str) -> bool:
@@ -186,51 +253,6 @@ def _parse_iso_utc(raw: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
-
-
-def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
-    now_dt = _parse_iso_utc(now_iso) if now_iso else datetime.now(timezone.utc)
-    stale = []
-    for sid, data in SESSIONS.items():
-        exp = _parse_iso_utc(str(data.get("expires_at") or ""))
-        if not exp or exp <= now_dt:
-            stale.append(sid)
-    for sid in stale:
-        SESSIONS.pop(sid, None)
-
-
-def _create_session(username: str) -> str:
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(seconds=SESSION_TTL_SECONDS)
-    token = secrets.token_urlsafe(32)
-    with SESSIONS_LOCK:
-        _purge_sessions_unlocked(now.isoformat())
-        SESSIONS[token] = {
-            "username": username,
-            "created_at": now.isoformat(),
-            "expires_at": expires.isoformat(),
-        }
-    return token
-
-
-def _get_session(session_id: str) -> dict | None:
-    sid = str(session_id or "").strip()
-    if not sid:
-        return None
-    with SESSIONS_LOCK:
-        _purge_sessions_unlocked()
-        state = SESSIONS.get(sid)
-        if not isinstance(state, dict):
-            return None
-        return dict(state)
-
-
-def _delete_session(session_id: str) -> None:
-    sid = str(session_id or "").strip()
-    if not sid:
-        return
-    with SESSIONS_LOCK:
-        SESSIONS.pop(sid, None)
 
 
 def _read_jobs_unlocked() -> dict:
@@ -1226,69 +1248,21 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
         self.send_header("Vary", "Origin")
 
-    def _is_secure_cookie(self) -> bool:
-        if COOKIE_SECURE_ENV in {"1", "true", "yes", "y", "on"}:
-            return True
-        if COOKIE_SECURE_ENV in {"0", "false", "no", "n", "off"}:
-            return False
-        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
-        if proto == "https":
-            return True
-        return False
-
-    def _session_cookie_header(self, session_id: str) -> str:
-        parts = [
-            f"{AUTH_COOKIE_NAME}={session_id}",
-            "Path=/",
-            "HttpOnly",
-            f"SameSite={COOKIE_SAMESITE}",
-            f"Max-Age={SESSION_TTL_SECONDS}",
-        ]
-        if COOKIE_DOMAIN:
-            parts.append(f"Domain={COOKIE_DOMAIN}")
-        if self._is_secure_cookie():
-            parts.append("Secure")
-        return "; ".join(parts)
-
-    def _clear_session_cookie_header(self) -> str:
-        parts = [
-            f"{AUTH_COOKIE_NAME}=",
-            "Path=/",
-            "HttpOnly",
-            f"SameSite={COOKIE_SAMESITE}",
-            "Max-Age=0",
-            "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        ]
-        if COOKIE_DOMAIN:
-            parts.append(f"Domain={COOKIE_DOMAIN}")
-        if self._is_secure_cookie():
-            parts.append("Secure")
-        return "; ".join(parts)
-
-    def _session_id_from_cookie(self) -> str:
-        cookie_raw = str(self.headers.get("Cookie") or "").strip()
-        if not cookie_raw:
+    def _auth_token_from_header(self) -> str:
+        value = str(self.headers.get("Authorization") or "").strip()
+        if not value:
             return ""
-        jar = SimpleCookie()
-        try:
-            jar.load(cookie_raw)
-        except Exception:
+        parts = value.split(" ", 1)
+        if len(parts) != 2:
             return ""
-        node = jar.get(AUTH_COOKIE_NAME)
-        if not node:
+        if parts[0].strip().lower() != "bearer":
             return ""
-        return str(node.value or "").strip()
+        return parts[1].strip()
 
     def _current_user(self) -> str:
         if not AUTH_REQUIRED:
             return "admin"
-        session_id = self._session_id_from_cookie()
-        if not session_id:
-            return ""
-        state = _get_session(session_id)
-        if not state:
-            return ""
-        return str(state.get("username") or "").strip()
+        return _verify_auth_token(self._auth_token_from_header())
 
     def _auth_me_payload(self) -> dict:
         if not AUTH_REQUIRED:
@@ -1299,6 +1273,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "authenticated": True,
                 "user": "admin",
                 "mode": "open",
+                "token_type": "Bearer",
+                "token_ttl_seconds": TOKEN_TTL_SECONDS,
             }
         if not AUTH_CONFIGURED:
             return {
@@ -1318,6 +1294,8 @@ class Handler(SimpleHTTPRequestHandler):
             "authenticated": bool(user),
             "user": user,
             "mode": "protected",
+            "token_type": "Bearer",
+            "token_ttl_seconds": TOKEN_TTL_SECONDS,
         }
 
     def _require_admin_access(self) -> bool:
@@ -1447,6 +1425,7 @@ class Handler(SimpleHTTPRequestHandler):
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
             if not AUTH_REQUIRED:
+                token = _create_auth_token("admin")
                 self._send_json(
                     {
                         "ok": True,
@@ -1454,6 +1433,9 @@ class Handler(SimpleHTTPRequestHandler):
                         "authenticated": True,
                         "user": "admin",
                         "mode": "open",
+                        "token_type": "Bearer",
+                        "token_ttl_seconds": TOKEN_TTL_SECONDS,
+                        "token": token,
                     }
                 )
                 return
@@ -1469,7 +1451,7 @@ class Handler(SimpleHTTPRequestHandler):
             if username != AUTH_USERNAME or not _verify_password(password):
                 self._send_json({"ok": False, "error": "帳號或密碼錯誤"}, status=HTTPStatus.UNAUTHORIZED)
                 return
-            sid = _create_session(username)
+            token = _create_auth_token(username)
             self._send_json(
                 {
                     "ok": True,
@@ -1478,14 +1460,14 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": True,
                     "user": username,
                     "mode": "protected",
+                    "token_type": "Bearer",
+                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
+                    "token": token,
                 },
-                extra_headers={"Set-Cookie": self._session_cookie_header(sid)},
             )
             return
 
         if path == "/api/auth/logout":
-            sid = self._session_id_from_cookie()
-            _delete_session(sid)
             self._send_json(
                 {
                     "ok": True,
@@ -1494,8 +1476,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": False,
                     "user": "",
                     "mode": "protected" if AUTH_REQUIRED else "open",
+                    "token_type": "Bearer",
+                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
                 },
-                extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
             )
             return
 
