@@ -47,6 +47,7 @@ POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
+RESTORE_STATE_LOCK = Lock()
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -97,6 +98,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/feedback",
     "/api/intel/job-status",
     "/api/intel/backup",
+    "/api/intel/restore",
     "/api/intel/retranslate",
 }
 
@@ -789,6 +791,73 @@ def _spawn_website_backup(trigger: str = "manual") -> bool:
     return True
 
 
+def _restore_state_snapshot() -> dict:
+    with RESTORE_STATE_LOCK:
+        return dict(RESTORE_STATE if isinstance(RESTORE_STATE, dict) else {})
+
+
+def _run_website_restore(force: bool = True, trigger: str = "manual") -> dict:
+    global RESTORE_STATE
+
+    trigger_text = str(trigger or "manual").strip() or "manual"
+    force_restore = bool(force)
+    with RESTORE_STATE_LOCK:
+        if str(RESTORE_STATE.get("status") or "").strip().lower() == "running":
+            return {
+                "ok": False,
+                "restored": False,
+                "reason": "already_running",
+                "status": "running",
+                "trigger": trigger_text,
+                "force": force_restore,
+            }
+        started_at = _now_iso()
+        RESTORE_STATE = {
+            **dict(RESTORE_STATE if isinstance(RESTORE_STATE, dict) else {}),
+            "ok": True,
+            "restored": False,
+            "reason": "running",
+            "status": "running",
+            "trigger": trigger_text,
+            "manual": True,
+            "force": force_restore,
+            "started_at": started_at,
+            "finished_at": "",
+            "duration_ms": 0,
+            "last_error": "",
+        }
+
+    started = time.monotonic()
+    result = restore_website_data_from_backup(
+        DATA_ROOT,
+        ROOT.parent,
+        manual=True,
+        force_override=force_restore,
+    )
+    now_iso = _now_iso()
+    duration_ms = max(0, int(round((time.monotonic() - started) * 1000)))
+    ok = bool(result.get("ok"))
+    restored = bool(result.get("restored"))
+    error = "" if ok else str(result.get("error") or result.get("reason") or "unknown_error")
+    next_state = {
+        **dict(result if isinstance(result, dict) else {}),
+        "status": "ok" if ok else "failed",
+        "trigger": trigger_text,
+        "manual": True,
+        "force": force_restore,
+        "started_at": started_at,
+        "finished_at": now_iso,
+        "duration_ms": duration_ms,
+        "last_error": error,
+    }
+    if ok and restored:
+        next_state["last_success_at"] = now_iso
+
+    with RESTORE_STATE_LOCK:
+        RESTORE_STATE = next_state
+        return dict(RESTORE_STATE)
+
+
 def _collect_jobs_snapshot(limit: int = 12) -> dict:
     with JOBS_LOCK:
         state = _read_jobs_unlocked()
@@ -846,6 +915,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
+    restore_state = _restore_state_snapshot()
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
@@ -976,7 +1046,7 @@ def _build_admin_status(limit: int = 10) -> dict:
         "i18n": i18n_payload,
         "storage": {
             **STORAGE_STATE,
-            "restore": RESTORE_STATE,
+            "restore": restore_state,
         },
         "backup": {
             **backup_status,
@@ -1407,6 +1477,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/feedback",
             "/api/intel/job-status",
             "/api/intel/backup",
+            "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
@@ -1562,6 +1633,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
                 return
 
+            if path == "/api/intel/restore":
+                restore = _run_website_restore(force=bool(payload.get("force")), trigger=self._current_user() or "manual")
+                self._send_json({"ok": True, "restore": restore})
+                return
+
             if path == "/api/intel/retranslate":
                 lang_raw = str(payload.get("lang") or "").strip().lower()
                 if not lang_raw or lang_raw == "all":
@@ -1675,7 +1751,7 @@ def main() -> int:
         "[ai-intel] API endpoints: "
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
-        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )
     print(

@@ -276,13 +276,20 @@
           }
           if (!window.confirm("確定要從 Git 抓資料並覆蓋目前伺服器 data 嗎？這會直接覆蓋現有檔案。")) return;
           adminRestoreRunBtn.disabled = true;
-          adminRestoreRunBtn.textContent = "還原啟動中...";
+          adminRestoreRunBtn.textContent = "還原中...";
           try {
-            await triggerWebsiteRestore(true);
-            setIntelMessage("已啟動背景還原，請在 AI 監控面板查看進度。", "ok");
+            const restore = await triggerWebsiteRestore(true);
             await refreshIntelAdminStatus();
+            if (restore?.ok === false) {
+              const detail = String(restore?.error || restore?.reason || "unknown_error");
+              setIntelMessage(`還原失敗：${detail}`, "error");
+            } else if (restore?.restored) {
+              setIntelMessage("已從 Git 還原並覆蓋伺服器 data。", "ok");
+            } else {
+              setIntelMessage(`未執行還原：${String(restore?.reason || "無變更")}`, "");
+            }
           } catch (error) {
-            setIntelMessage(`還原啟動失敗：${error.message}`, "error");
+            setIntelMessage(`還原請求失敗：${error.message}`, "error");
           } finally {
             adminRestoreRunBtn.disabled = false;
             adminRestoreRunBtn.textContent = "從 Git 還原覆蓋";
