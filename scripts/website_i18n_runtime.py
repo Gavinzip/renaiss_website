@@ -10,6 +10,7 @@ import multiprocessing as mp
 import os
 import re
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
@@ -22,11 +23,13 @@ FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 TRANSLATION_CACHE_PATH = DATA_ROOT / "i18n_text_cache.json"
 I18N_TRANSLATE_TRACE_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
+I18N_RUNTIME_LOG_PATH = DATA_ROOT / "i18n_runtime_log.jsonl"
 
 TRANSLATION_LOCK = Lock()
 I18N_LOCK = Lock()
 I18N_STATE_LOCK = Lock()
 I18N_TRACE_LOCK = Lock()
+I18N_RUNTIME_LOG_LOCK = Lock()
 TRANSLATION_CACHE: dict[str, str] = {}
 TRANSLATION_CACHE_DIRTY = False
 I18N_BUILD_STATE: dict[str, object] = {
@@ -131,12 +134,13 @@ ENTRY_PATH_SEGMENT_RE = re.compile(r"^([^\[\]]+)(?:\[([^\]]+)\])?$")
 
 def configure_i18n_runtime(data_root: Path, feed_path: Path | None = None) -> None:
     """Point runtime caches at the mounted/active website data directory."""
-    global DATA_ROOT, FEED_PATH, I18N_FEED_PATH, TRANSLATION_CACHE_PATH, I18N_TRANSLATE_TRACE_PATH
+    global DATA_ROOT, FEED_PATH, I18N_FEED_PATH, TRANSLATION_CACHE_PATH, I18N_TRANSLATE_TRACE_PATH, I18N_RUNTIME_LOG_PATH
     DATA_ROOT = Path(data_root)
     FEED_PATH = Path(feed_path) if feed_path else DATA_ROOT / "x_intel_feed.json"
     I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
     TRANSLATION_CACHE_PATH = DATA_ROOT / "i18n_text_cache.json"
     I18N_TRANSLATE_TRACE_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
+    I18N_RUNTIME_LOG_PATH = DATA_ROOT / "i18n_runtime_log.jsonl"
 
 
 def _now_iso() -> str:
@@ -161,6 +165,46 @@ def _append_i18n_translate_trace(payload: dict[str, object]) -> None:
         return
 
 
+def _truncate_log_text(value: object, limit: int = 8000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(truncated)"
+
+
+def _append_i18n_runtime_log(
+    event: str,
+    payload: dict[str, object] | None = None,
+    *,
+    exc: BaseException | None = None,
+) -> None:
+    row: dict[str, object] = {
+        "ts": _now_iso(),
+        "event": str(event or "").strip() or "unknown",
+    }
+    if isinstance(payload, dict):
+        row.update(payload)
+    if exc is not None:
+        row["error_type"] = type(exc).__name__
+        row["error"] = _truncate_log_text(str(exc), limit=1200)
+        try:
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        except Exception:
+            tb = traceback.format_exc()
+        row["traceback"] = _truncate_log_text(tb, limit=12000)
+    try:
+        I18N_RUNTIME_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(row, ensure_ascii=False)
+    except Exception:
+        return
+    try:
+        with I18N_RUNTIME_LOG_LOCK:
+            with I18N_RUNTIME_LOG_PATH.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception:
+        return
+
+
 def _normalize_lang_tag(lang: str | None) -> str:
     tag = str(lang or "zh-Hant").strip()
     normalized = tag.lower().replace("_", "-")
@@ -180,6 +224,25 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except Exception:
         return default
+
+
+def _i18n_progress_digest(progress: object) -> dict[str, dict[str, object]]:
+    out: dict[str, dict[str, object]] = {}
+    if not isinstance(progress, dict):
+        return out
+    for key, row in progress.items():
+        if not isinstance(row, dict):
+            continue
+        tag = _normalize_lang_tag(str(key))
+        out[tag] = {
+            "status": str(row.get("status") or ""),
+            "done": _safe_int(row.get("done"), 0),
+            "total": _safe_int(row.get("total"), 0),
+            "pending_count": _safe_int(row.get("pending_count"), 0),
+            "mode": str(row.get("mode") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+    return out
 
 
 def _read_feed_snapshot() -> dict:
@@ -1435,6 +1498,22 @@ def _translate_chunk_agent(
     }
     req_row.update(meta)
     _append_i18n_translate_trace(req_row)
+    _append_i18n_runtime_log(
+        "translate_chunk_request",
+        {
+            "lang": _normalize_lang_tag(lang),
+            "expected_len": len(texts),
+            "strict": bool(strict),
+            "attempt": int(meta.get("attempt", 1) or 1),
+            "stage": stage,
+            "chunk_index": meta.get("chunk_index"),
+            "chunk_total": meta.get("chunk_total"),
+            "chunk_size": meta.get("chunk_size"),
+            "card_id": meta.get("card_id"),
+            "chunk_card_ids": meta.get("chunk_card_ids"),
+            "chunk_entry_keys": meta.get("chunk_entry_keys"),
+        },
+    )
     try:
         raw = _minimax_chat_with_watchdog(prompt, api_key)
         parsed = _parse_json_array(raw)
@@ -1444,6 +1523,23 @@ def _translate_chunk_agent(
     except Exception as exc:
         status = "failed"
         error = str(exc)[:260]
+        _append_i18n_runtime_log(
+            "translate_chunk_exception",
+            {
+                "lang": _normalize_lang_tag(lang),
+                "expected_len": len(texts),
+                "strict": bool(strict),
+                "attempt": int(meta.get("attempt", 1) or 1),
+                "stage": stage,
+                "chunk_index": meta.get("chunk_index"),
+                "chunk_total": meta.get("chunk_total"),
+                "chunk_size": meta.get("chunk_size"),
+                "card_id": meta.get("card_id"),
+                "chunk_card_ids": meta.get("chunk_card_ids"),
+                "chunk_entry_keys": meta.get("chunk_entry_keys"),
+            },
+            exc=exc,
+        )
         raise
     finally:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -1463,6 +1559,28 @@ def _translate_chunk_agent(
             row["error"] = error
         row.update(meta)
         _append_i18n_translate_trace(row)
+        _append_i18n_runtime_log(
+            "translate_chunk_result",
+            {
+                "lang": _normalize_lang_tag(lang),
+                "expected_len": len(texts),
+                "strict": bool(strict),
+                "attempt": int(meta.get("attempt", 1) or 1),
+                "stage": stage,
+                "status": status,
+                "elapsed_ms": elapsed_ms,
+                "parsed_len": len(parsed),
+                "raw_len": len(raw),
+                "raw_prefix": str(raw or "")[:280],
+                "error": error,
+                "chunk_index": meta.get("chunk_index"),
+                "chunk_total": meta.get("chunk_total"),
+                "chunk_size": meta.get("chunk_size"),
+                "card_id": meta.get("card_id"),
+                "chunk_card_ids": meta.get("chunk_card_ids"),
+                "chunk_entry_keys": meta.get("chunk_entry_keys"),
+            },
+        )
 
 
 def _translate_feed_text_map(
@@ -2358,6 +2476,14 @@ def _build_i18n_feed_bundle_async(
         target_tags.append(tag)
     if not target_tags:
         target_tags = list(I18N_TARGET_LANGS)
+    _append_i18n_runtime_log(
+        "i18n_async_enqueue",
+        {
+            "source_generated_at": src_generated,
+            "force": bool(force),
+            "target_langs": list(target_tags),
+        },
+    )
 
     with I18N_STATE_LOCK:
         status = str(I18N_BUILD_STATE.get("status") or "idle").strip().lower()
@@ -2388,6 +2514,15 @@ def _build_i18n_feed_bundle_async(
                     }
             I18N_BUILD_STATE["target_langs"] = merged_targets
             if worker_active:
+                _append_i18n_runtime_log(
+                    "i18n_async_merged_existing_worker",
+                    {
+                        "source_generated_at": src_generated,
+                        "target_langs": list(merged_targets),
+                        "status": status,
+                        "worker_active": True,
+                    },
+                )
                 return
             target_tags = list(merged_targets) if merged_targets else list(target_tags)
         I18N_BUILD_STATE.update(
@@ -2401,10 +2536,27 @@ def _build_i18n_feed_bundle_async(
                 "worker_active": True,
             }
         )
+        _append_i18n_runtime_log(
+            "i18n_worker_mark_running",
+            {
+                "source_generated_at": src_generated,
+                "target_langs": list(target_tags),
+                "force": bool(force),
+                "state_status": str(I18N_BUILD_STATE.get("status") or ""),
+            },
+        )
 
     def _worker() -> None:
         current_targets = list(target_tags)
         built_once = False
+        _append_i18n_runtime_log(
+            "i18n_worker_start",
+            {
+                "source_generated_at": src_generated,
+                "target_langs": list(current_targets),
+                "force": bool(force),
+            },
+        )
         try:
             # Briefly wait so near-simultaneous /retranslate calls can be merged
             # into the same build round and translated in parallel.
@@ -2412,6 +2564,13 @@ def _build_i18n_feed_bundle_async(
             while current_targets:
                 with I18N_STATE_LOCK:
                     if str(I18N_BUILD_STATE.get("source_generated_at") or "").strip() != src_generated:
+                        _append_i18n_runtime_log(
+                            "i18n_worker_source_changed_stop",
+                            {
+                                "source_generated_at": src_generated,
+                                "state_source_generated_at": str(I18N_BUILD_STATE.get("source_generated_at") or ""),
+                            },
+                        )
                         return
                     requested = [
                         str(x)
@@ -2443,6 +2602,16 @@ def _build_i18n_feed_bundle_async(
                                 "last_error": first_err,
                                 "source_generated_at": src_generated,
                             }
+                        )
+                        _append_i18n_runtime_log(
+                            "i18n_worker_failed_row",
+                            {
+                                "source_generated_at": src_generated,
+                                "first_failed_lang": first,
+                                "error": first_err,
+                                "requested": list(requested),
+                                "progress": _i18n_progress_digest(progress),
+                            },
                         )
                         return
 
@@ -2479,9 +2648,45 @@ def _build_i18n_feed_bundle_async(
                                 "langs": sorted(requested),
                             }
                         )
+                        _append_i18n_runtime_log(
+                            "i18n_worker_done",
+                            {
+                                "source_generated_at": src_generated,
+                                "requested": list(requested),
+                                "progress": _i18n_progress_digest(progress),
+                            },
+                        )
                         return
+                _append_i18n_runtime_log(
+                    "i18n_worker_round_plan",
+                    {
+                        "source_generated_at": src_generated,
+                        "current_targets": list(current_targets),
+                        "built_once": bool(built_once),
+                    },
+                )
 
-                _build_i18n_feed_bundle(feed, force=force, target_langs=current_targets)
+                try:
+                    _build_i18n_feed_bundle(feed, force=force, target_langs=current_targets)
+                except Exception as round_exc:
+                    _append_i18n_runtime_log(
+                        "i18n_worker_round_exception",
+                        {
+                            "source_generated_at": src_generated,
+                            "current_targets": list(current_targets),
+                            "built_once": bool(built_once),
+                        },
+                        exc=round_exc,
+                    )
+                    raise
+                _append_i18n_runtime_log(
+                    "i18n_worker_round_done",
+                    {
+                        "source_generated_at": src_generated,
+                        "current_targets": list(current_targets),
+                        "built_once": bool(built_once),
+                    },
+                )
                 built_once = True
         except Exception as exc:
             with I18N_STATE_LOCK:
@@ -2493,9 +2698,28 @@ def _build_i18n_feed_bundle_async(
                         "source_generated_at": src_generated,
                     }
                 )
+            _append_i18n_runtime_log(
+                "i18n_worker_exception",
+                {
+                    "source_generated_at": src_generated,
+                    "current_targets": list(current_targets),
+                    "built_once": bool(built_once),
+                },
+                exc=exc,
+            )
         finally:
             with I18N_STATE_LOCK:
                 I18N_BUILD_STATE["worker_active"] = False
+                final_status = str(I18N_BUILD_STATE.get("status") or "")
+                last_error = str(I18N_BUILD_STATE.get("last_error") or "")
+            _append_i18n_runtime_log(
+                "i18n_worker_exit",
+                {
+                    "source_generated_at": src_generated,
+                    "final_status": final_status,
+                    "last_error": last_error,
+                },
+            )
 
     Thread(target=_worker, daemon=True).start()
 
