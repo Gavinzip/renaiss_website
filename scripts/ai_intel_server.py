@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import copy
 import hashlib
 import hmac
 import json
@@ -35,9 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 # Ensure project/website .env is loaded before storage/auth/env constants are resolved.
 load_environment()
 DATA_ROOT = get_website_data_dir(ROOT)
+RESTORE_STATE = restore_website_data_from_backup(DATA_ROOT, ROOT.parent)
 STORAGE_STATE = setup_website_storage(ROOT)
 
 FEED_PATH = DATA_ROOT / "x_intel_feed.json"
+I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
@@ -48,10 +48,8 @@ POKEMON_NEWS_STATE_LOCK = Lock()
 SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
-RESTORE_STATE_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
-    "run_id": "",
     "status": "idle",
     "started_at": "",
     "finished_at": "",
@@ -64,7 +62,6 @@ SYNC_STATE: dict[str, object] = {
     "schedule_window_days": 30,
     "next_run_at": "",
     "last_scheduled_at": "",
-    "pipeline": {},
 }
 BACKUP_STATE: dict[str, object] = {
     "status": "idle",
@@ -78,32 +75,17 @@ BACKUP_STATE: dict[str, object] = {
     "skipped": False,
     "reason": "",
 }
-RESTORE_STATE: dict[str, object] = {
-    "ok": True,
-    "restored": False,
-    "reason": "manual_only",
-    "status": "idle",
-    "started_at": "",
-    "finished_at": "",
-    "last_success_at": "",
-    "last_error": "",
-    "trigger": "",
-    "duration_ms": 0,
-    "force": False,
-    "branch": "",
-    "subdir": "",
-}
 MAX_JOB_ITEMS = 120
 POKEMON_NEWS_CACHE_MINUTES = 50
 DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
 DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
 DEFAULT_X_SYNC_INTERVAL_HOURS = 0.5
 DEFAULT_X_SYNC_WINDOW_DAYS = 30
+I18N_BASE_LANG = "zh-Hant"
+I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
 AUTH_COOKIE_NAME = "intel_admin_session"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
-DEFAULT_TOKEN_TTL_SECONDS = DEFAULT_SESSION_TTL_SECONDS
-AUTH_TOKEN_PREFIX = "iat1"
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
@@ -117,300 +99,17 @@ PROTECTED_POST_PATHS = {
     "/api/intel/feedback",
     "/api/intel/job-status",
     "/api/intel/backup",
-    "/api/intel/restore",
     "/api/intel/retranslate",
 }
-I18N_CARD_ENTRY_RE = re.compile(r"^cards\[([^\]]+)\]")
-
-
-def _new_sync_pipeline_state(run_id: str = "") -> dict[str, object]:
-    return {
-        "run_id": str(run_id or ""),
-        "updated_at": "",
-        "scan": {
-            "status": "idle",
-            "started_at": "",
-            "finished_at": "",
-            "total_sources": 0,
-            "done_sources": 0,
-            "found_cards": 0,
-            "latest_source": "",
-            "latest_source_cards": 0,
-            "done_source_names": [],
-            "pending_source_names": [],
-            "new_cards": 0,
-            "new_items": [],
-        },
-        "curation": {
-            "status": "idle",
-            "started_at": "",
-            "finished_at": "",
-            "total_cards": 0,
-            "done_cards": 0,
-            "current_item": {},
-            "done_items": [],
-            "pending_items": [],
-        },
-        "translation": {
-            "status": "idle",
-            "started_at": "",
-            "finished_at": "",
-            "source_generated_at": "",
-            "target_langs": [],
-            "percent": 0.0,
-            "items_total": 0,
-            "items_done": 0,
-            "items_pending": 0,
-            "pending_items": [],
-            "langs": [],
-            "last_error": "",
-        },
-    }
-
-
-def _normalize_sync_source_names(rows: object, limit: int = 20) -> list[str]:
-    if not isinstance(rows, list):
-        return []
-    out: list[str] = []
-    for item in rows:
-        text = str(item or "").strip()
-        if not text:
-            continue
-        out.append(text)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
-
-
-def _normalize_sync_card_item(item: object) -> dict[str, str]:
-    if not isinstance(item, dict):
-        return {}
-    row = {
-        "id": str(item.get("id") or "").strip(),
-        "url": str(item.get("url") or "").strip(),
-        "title": str(item.get("title") or "").strip(),
-        "account": str(item.get("account") or "").strip(),
-        "published_at": str(item.get("published_at") or "").strip(),
-    }
-    if not any(row.values()):
-        return {}
-    return row
-
-
-def _normalize_sync_card_items(rows: object, limit: int = 24) -> list[dict[str, str]]:
-    if not isinstance(rows, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in rows:
-        normalized = _normalize_sync_card_item(item)
-        if not normalized:
-            continue
-        out.append(normalized)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
-
-
-def _card_identity_key(card: object, index: int = 0) -> str:
-    if not isinstance(card, dict):
-        return f"row:{index}"
-    for key in ("id", "url", "_card_key"):
-        value = str(card.get(key) or "").strip()
-        if value:
-            return value
-    account = str(card.get("account") or "").strip().lower()
-    published = str(card.get("published_at") or "").strip()
-    title = str(card.get("title") or "").strip()
-    return f"{account}|{published}|{title}|{index}"
-
-
-def _ensure_sync_pipeline_unlocked() -> dict[str, object]:
-    run_id = str(SYNC_STATE.get("run_id") or "").strip()
-    pipeline = SYNC_STATE.get("pipeline")
-    if not isinstance(pipeline, dict):
-        pipeline = _new_sync_pipeline_state(run_id)
-        SYNC_STATE["pipeline"] = pipeline
-    if str(pipeline.get("run_id") or "") != run_id:
-        pipeline = _new_sync_pipeline_state(run_id)
-        SYNC_STATE["pipeline"] = pipeline
-    if not isinstance(pipeline.get("scan"), dict):
-        pipeline["scan"] = _new_sync_pipeline_state(run_id)["scan"]
-    if not isinstance(pipeline.get("curation"), dict):
-        pipeline["curation"] = _new_sync_pipeline_state(run_id)["curation"]
-    if not isinstance(pipeline.get("translation"), dict):
-        pipeline["translation"] = _new_sync_pipeline_state(run_id)["translation"]
-    return pipeline
-
-
-def _sync_pipeline_apply_event(event_payload: dict[str, object] | None) -> None:
-    if not isinstance(event_payload, dict):
-        return
-    event = str(event_payload.get("event") or "").strip().lower()
-    if not event:
-        return
-    now_iso = _now_iso()
-    with SYNC_STATE_LOCK:
-        pipeline = _ensure_sync_pipeline_unlocked()
-        pipeline["updated_at"] = now_iso
-        scan = pipeline.get("scan")
-        curation = pipeline.get("curation")
-        if not isinstance(scan, dict) or not isinstance(curation, dict):
-            return
-
-        if event == "scan_start":
-            scan.update(
-                {
-                    "status": "running",
-                    "started_at": now_iso,
-                    "finished_at": "",
-                    "total_sources": _safe_int(event_payload.get("total_sources"), 0),
-                    "done_sources": _safe_int(event_payload.get("done_sources"), 0),
-                    "found_cards": _safe_int(event_payload.get("found_cards"), 0),
-                    "latest_source": str(event_payload.get("latest_source") or ""),
-                    "latest_source_cards": _safe_int(event_payload.get("latest_source_cards"), 0),
-                    "done_source_names": _normalize_sync_source_names(event_payload.get("done_source_names")),
-                    "pending_source_names": _normalize_sync_source_names(event_payload.get("pending_source_names")),
-                }
-            )
-            return
-
-        if event in {"scan_progress", "scan_done"}:
-            scan["status"] = "ok" if event == "scan_done" else "running"
-            if not str(scan.get("started_at") or "").strip():
-                scan["started_at"] = now_iso
-            if event == "scan_done":
-                scan["finished_at"] = now_iso
-            scan["total_sources"] = _safe_int(event_payload.get("total_sources"), _safe_int(scan.get("total_sources"), 0))
-            scan["done_sources"] = _safe_int(event_payload.get("done_sources"), _safe_int(scan.get("done_sources"), 0))
-            scan["found_cards"] = _safe_int(event_payload.get("found_cards"), _safe_int(scan.get("found_cards"), 0))
-            scan["latest_source"] = str(event_payload.get("latest_source") or scan.get("latest_source") or "")
-            scan["latest_source_cards"] = _safe_int(event_payload.get("latest_source_cards"), _safe_int(scan.get("latest_source_cards"), 0))
-            scan["done_source_names"] = _normalize_sync_source_names(
-                event_payload.get("done_source_names"),
-                limit=40,
-            ) or _normalize_sync_source_names(scan.get("done_source_names"), limit=40)
-            scan["pending_source_names"] = _normalize_sync_source_names(
-                event_payload.get("pending_source_names"),
-                limit=40,
-            ) or _normalize_sync_source_names(scan.get("pending_source_names"), limit=40)
-            return
-
-        if event == "curation_start":
-            curation.update(
-                {
-                    "status": "running",
-                    "started_at": now_iso,
-                    "finished_at": "",
-                    "total_cards": _safe_int(event_payload.get("total_cards"), 0),
-                    "done_cards": _safe_int(event_payload.get("done_cards"), 0),
-                    "current_item": _normalize_sync_card_item(event_payload.get("current_item")) or {},
-                    "done_items": _normalize_sync_card_items(event_payload.get("done_items"), limit=40),
-                    "pending_items": _normalize_sync_card_items(event_payload.get("pending_items"), limit=40),
-                }
-            )
-            return
-
-        if event in {"curation_progress", "curation_done"}:
-            curation["status"] = "ok" if event == "curation_done" else "running"
-            if not str(curation.get("started_at") or "").strip():
-                curation["started_at"] = now_iso
-            if event == "curation_done":
-                curation["finished_at"] = now_iso
-            curation["total_cards"] = _safe_int(event_payload.get("total_cards"), _safe_int(curation.get("total_cards"), 0))
-            curation["done_cards"] = _safe_int(event_payload.get("done_cards"), _safe_int(curation.get("done_cards"), 0))
-            curation["current_item"] = _normalize_sync_card_item(event_payload.get("current_item")) or {}
-            curation["done_items"] = _normalize_sync_card_items(event_payload.get("done_items"), limit=40)
-            curation["pending_items"] = _normalize_sync_card_items(event_payload.get("pending_items"), limit=40)
-            return
-
-
-def _collect_new_cards_since_feed(previous_feed: dict[str, object], current_feed: dict[str, object], limit: int = 24) -> list[dict[str, str]]:
-    prev_cards = previous_feed.get("cards") if isinstance(previous_feed, dict) else []
-    now_cards = current_feed.get("cards") if isinstance(current_feed, dict) else []
-    prev_rows = prev_cards if isinstance(prev_cards, list) else []
-    now_rows = now_cards if isinstance(now_cards, list) else []
-    prev_keys: set[str] = set()
-    for idx, row in enumerate(prev_rows):
-        prev_keys.add(_card_identity_key(row, idx))
-    out: list[dict[str, str]] = []
-    seen_keys: set[str] = set()
-    for idx, row in enumerate(now_rows):
-        key = _card_identity_key(row, idx)
-        if key in prev_keys or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        normalized = _normalize_sync_card_item(row)
-        if not normalized:
-            continue
-        out.append(normalized)
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
-
-
-def _sync_pipeline_mark_new_cards(previous_feed: dict[str, object], current_feed: dict[str, object]) -> None:
-    new_items = _collect_new_cards_since_feed(previous_feed, current_feed, limit=40)
-    with SYNC_STATE_LOCK:
-        pipeline = _ensure_sync_pipeline_unlocked()
-        scan = pipeline.get("scan")
-        if not isinstance(scan, dict):
-            return
-        scan["new_cards"] = len(new_items)
-        scan["new_items"] = new_items
-
-
-def _sync_pipeline_mark_translation_queued(feed: dict[str, object], target_langs: list[str]) -> None:
-    now_iso = _now_iso()
-    cards = feed.get("cards") if isinstance(feed.get("cards"), list) else []
-    total_cards = len(cards) if isinstance(cards, list) else 0
-    with SYNC_STATE_LOCK:
-        pipeline = _ensure_sync_pipeline_unlocked()
-        pipeline["updated_at"] = now_iso
-        translation = pipeline.get("translation")
-        if not isinstance(translation, dict):
-            return
-        translation.update(
-            {
-                "status": "queued",
-                "started_at": now_iso,
-                "finished_at": "",
-                "source_generated_at": str(feed.get("generated_at") or ""),
-                "target_langs": [str(x) for x in target_langs if str(x).strip()],
-                "items_total": total_cards,
-                "items_done": 0,
-                "items_pending": total_cards,
-                "percent": 0.0,
-                "pending_items": [],
-                "langs": [],
-                "last_error": "",
-            }
-        )
-
-
-def _sync_pipeline_mark_failed(error_message: str) -> None:
-    now_iso = _now_iso()
-    with SYNC_STATE_LOCK:
-        pipeline = _ensure_sync_pipeline_unlocked()
-        pipeline["updated_at"] = now_iso
-        scan = pipeline.get("scan")
-        curation = pipeline.get("curation")
-        translation = pipeline.get("translation")
-        if isinstance(scan, dict) and str(scan.get("status") or "").strip().lower() in {"running", "idle"}:
-            scan["status"] = "failed"
-            scan["finished_at"] = now_iso
-        if isinstance(curation, dict) and str(curation.get("status") or "").strip().lower() in {"running", "idle"}:
-            curation["status"] = "failed"
-            curation["finished_at"] = now_iso
-        if isinstance(translation, dict):
-            translation["status"] = "failed"
-            translation["finished_at"] = now_iso
-            translation["last_error"] = str(error_message or "unknown_error")
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "")).strip().lower()
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "y", "on"}
+
+
+I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 
 
 def _normalize_samesite(raw: str | None) -> str:
@@ -434,8 +133,6 @@ AUTH_PASSWORD_HASH = str(os.getenv("INTEL_ADMIN_PASS_HASH", "")).strip()
 AUTH_PASSWORD_PLAIN = str(os.getenv("INTEL_ADMIN_PASS", "")).strip()
 AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN))
 SESSION_TTL_SECONDS = max(300, int(os.getenv("INTEL_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL_SECONDS)) or DEFAULT_SESSION_TTL_SECONDS))
-TOKEN_TTL_SECONDS = max(300, int(os.getenv("INTEL_AUTH_TOKEN_TTL_SECONDS", str(DEFAULT_TOKEN_TTL_SECONDS)) or DEFAULT_TOKEN_TTL_SECONDS))
-TOKEN_SECRET_ENV = str(os.getenv("INTEL_AUTH_TOKEN_SECRET", "")).strip()
 COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
 COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
 COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
@@ -447,78 +144,6 @@ TRANSLATE_MAX_CHARS = 320
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-
-
-def _b64url_decode(raw: str) -> bytes:
-    text = str(raw or "").strip()
-    if not text:
-        return b""
-    padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(f"{text}{padding}".encode("utf-8"))
-
-
-def _auth_token_secret() -> str:
-    if TOKEN_SECRET_ENV:
-        return TOKEN_SECRET_ENV
-    # Keep token verification stable across restarts without requiring extra env.
-    seed = f"{AUTH_USERNAME}|{AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN}|renaiss-intel-token-v1"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-
-def _create_auth_token(username: str) -> str:
-    now_ts = int(time.time())
-    payload = {
-        "v": 1,
-        "u": str(username or "").strip(),
-        "iat": now_ts,
-        "exp": now_ts + TOKEN_TTL_SECONDS,
-    }
-    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    payload_b64 = _b64url_encode(payload_raw)
-    signature = hmac.new(_auth_token_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
-    return f"{AUTH_TOKEN_PREFIX}.{payload_b64}.{_b64url_encode(signature)}"
-
-
-def _verify_auth_token(token: str) -> str:
-    raw = str(token or "").strip()
-    if not raw:
-        return ""
-    parts = raw.split(".")
-    if len(parts) != 3:
-        return ""
-    prefix, payload_b64, signature_b64 = parts
-    if prefix != AUTH_TOKEN_PREFIX:
-        return ""
-    try:
-        expected_sig = hmac.new(
-            _auth_token_secret().encode("utf-8"),
-            payload_b64.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-        actual_sig = _b64url_decode(signature_b64)
-        if not hmac.compare_digest(expected_sig, actual_sig):
-            return ""
-        payload_raw = _b64url_decode(payload_b64)
-        payload = json.loads(payload_raw.decode("utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    if int(payload.get("v") or 0) != 1:
-        return ""
-    expires_at = int(payload.get("exp") or 0)
-    if expires_at <= int(time.time()):
-        return ""
-    username = str(payload.get("u") or "").strip()
-    if not username:
-        return ""
-    if AUTH_USERNAME and username != AUTH_USERNAME:
-        return ""
-    return username
 
 
 def _verify_password(raw_password: str) -> bool:
@@ -739,29 +364,246 @@ def _latest_card_time(cards: list[dict]) -> str:
     return latest.isoformat() if latest else ""
 
 
+def _read_i18n_bundle_snapshot() -> dict:
+    if not I18N_FEED_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(I18N_FEED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _card_lookup_key(card: dict, index: int) -> str:
+    if not isinstance(card, dict):
+        return f"idx:{index}"
+    for key in ("id", "url", "_card_key"):
+        value = str(card.get(key) or "").strip()
+        if value:
+            return value
+    account = str(card.get("account") or "").strip().lower()
+    published = str(card.get("published_at") or "").strip()
+    title = str(card.get("title") or "").strip()
+    return f"{account}|{published}|{title}|{index}"
+
+
+def _card_title(card: dict) -> str:
+    if not isinstance(card, dict):
+        return ""
+    title = str(card.get("title") or "").strip()
+    if title:
+        return title
+    summary = str(card.get("summary") or "").strip()
+    if summary:
+        return summary[:120]
+    return str(card.get("id") or card.get("url") or "").strip()
+
+
+def _build_card_index(cards: list[dict] | object) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    if not isinstance(cards, list):
+        return out
+    for idx, row in enumerate(cards):
+        if not isinstance(row, dict):
+            continue
+        key = _card_lookup_key(row, idx)
+        if key and key not in out:
+            out[key] = row
+    return out
+
+
+def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
+    cards_raw = feed.get("cards")
+    base_cards = cards_raw if isinstance(cards_raw, list) else []
+    base_index = _build_card_index(base_cards)
+    base_keys = list(base_index.keys())
+    base_set = set(base_keys)
+
+    bundle = _read_i18n_bundle_snapshot()
+    feed_generated_at = str(feed.get("generated_at") or "").strip()
+    bundle_source_generated_at = str(bundle.get("source_generated_at") or "").strip()
+    source_in_sync = bool(feed_generated_at and bundle_source_generated_at and feed_generated_at == bundle_source_generated_at)
+    bundle_langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
+    bundle_qa = bundle.get("qa") if isinstance(bundle.get("qa"), dict) else {}
+    bundle_card_progress_root = bundle.get("card_progress") if isinstance(bundle.get("card_progress"), dict) else {}
+    bundle_card_progress_langs = (
+        bundle_card_progress_root.get("langs")
+        if isinstance(bundle_card_progress_root.get("langs"), dict)
+        else {}
+    )
+    progress_map = i18n_state.get("lang_progress") if isinstance(i18n_state.get("lang_progress"), dict) else {}
+    i18n_global_status = str(i18n_state.get("status") or "").strip().lower()
+    i18n_target_langs = {
+        str(x).strip()
+        for x in (i18n_state.get("target_langs") or [])
+        if str(x).strip()
+    } if isinstance(i18n_state.get("target_langs"), list) else set()
+
+    lang_rows: dict[str, dict] = {}
+    ready_langs: list[str] = []
+    pending_langs: list[str] = []
+    misaligned_langs: list[str] = []
+    failed_langs: list[str] = []
+
+    for lang in I18N_MONITOR_LANGS:
+        if lang == I18N_BASE_LANG:
+            lang_index = dict(base_index)
+            lang_keys = list(base_keys)
+            missing_keys = []
+            extra_keys = []
+        else:
+            lang_node = bundle_langs.get(lang) if isinstance(bundle_langs.get(lang), dict) else {}
+            lang_cards = lang_node.get("cards") if isinstance(lang_node, dict) else []
+            lang_index = _build_card_index(lang_cards)
+            lang_keys = list(lang_index.keys())
+            lang_set = set(lang_keys)
+            missing_keys = [key for key in base_keys if key not in lang_set]
+            extra_keys = [key for key in lang_keys if key not in base_set]
+        missing_titles = [_card_title(base_index[key]) for key in missing_keys[:8]]
+        extra_titles = [_card_title(lang_index[key]) for key in extra_keys[:8]]
+
+        progress = progress_map.get(lang) if isinstance(progress_map.get(lang), dict) else {}
+        qa_row = bundle_qa.get(lang) if isinstance(bundle_qa.get(lang), dict) else {}
+        card_progress_row = (
+            bundle_card_progress_langs.get(lang)
+            if isinstance(bundle_card_progress_langs.get(lang), dict)
+            else {}
+        )
+        card_summary = (
+            card_progress_row.get("summary")
+            if isinstance(card_progress_row, dict) and isinstance(card_progress_row.get("summary"), dict)
+            else {}
+        )
+        card_rows = (
+            card_progress_row.get("cards")
+            if isinstance(card_progress_row, dict) and isinstance(card_progress_row.get("cards"), list)
+            else []
+        )
+        card_status_rows = [row for row in card_rows if isinstance(row, dict)]
+        pending_card_ids = [str(row.get("id") or "") for row in card_status_rows if str(row.get("status") or "") == "pending" and str(row.get("id") or "").strip()]
+        partial_card_ids = [str(row.get("id") or "") for row in card_status_rows if str(row.get("status") or "") == "partial" and str(row.get("id") or "").strip()]
+        failed_card_ids = [str(row.get("id") or "") for row in card_status_rows if str(row.get("status") or "") in {"failed", "partial-failed"} and str(row.get("id") or "").strip()]
+        text_done = _safe_int(progress.get("done"), _safe_int(qa_row.get("translated"), 0))
+        text_total = _safe_int(progress.get("total"), _safe_int(qa_row.get("total"), 0))
+        text_pending = _safe_int(progress.get("pending_count"), _safe_int(qa_row.get("pending_count"), max(0, text_total - text_done)))
+        card_total = _safe_int(card_summary.get("total_cards"), len(base_keys if lang != I18N_BASE_LANG else base_keys))
+        card_translated = _safe_int(
+            card_summary.get("ready_cards"),
+            _safe_int(card_summary.get("translated_cards"), text_done),
+        )
+        card_partial = _safe_int(card_summary.get("partial_cards"), 0)
+        card_pending = _safe_int(card_summary.get("pending_cards"), text_pending)
+        card_failed = _safe_int(card_summary.get("failed_cards"), 0)
+        card_missing = _safe_int(card_summary.get("missing_cards"), len(missing_keys))
+        card_extra = _safe_int(card_summary.get("extra_cards"), len(extra_keys))
+        build_status = str(progress.get("status") or "").strip().lower()
+        build_mode = str(progress.get("mode") or qa_row.get("mode") or "").strip()
+        build_error = str(progress.get("error") or qa_row.get("error") or "").strip()
+        running_build = (
+            build_status in {"running", "queued"}
+            or (
+                i18n_global_status in {"running", "queued"}
+                and lang != I18N_BASE_LANG
+                and lang in i18n_target_langs
+            )
+        )
+        if running_build and card_total <= 0 and text_total > 0:
+            # Fallback only when card-level summary is unavailable.
+            card_total = len(base_keys)
+            card_translated = 0
+            card_pending = max(0, card_total - card_translated)
+        done = len(base_keys) if lang == I18N_BASE_LANG else min(card_total, max(0, card_translated))
+        total = len(base_keys) if lang == I18N_BASE_LANG else max(card_total, done)
+        pending_count = 0 if lang == I18N_BASE_LANG else max(0, card_pending)
+        cache_hits = _safe_int(progress.get("cached_hits"), _safe_int(qa_row.get("cached_hits"), 0))
+        is_aligned = not missing_keys and not extra_keys
+
+        if lang == I18N_BASE_LANG:
+            state = "base_ready"
+        elif build_status == "failed" or build_error:
+            state = "failed"
+        elif card_failed > 0:
+            state = "failed"
+        elif running_build:
+            state = "aligned_pending"
+        elif not is_aligned:
+            state = "stale_misaligned"
+        elif build_status in {"running", "queued"} or pending_count > 0 or card_partial > 0:
+            state = "aligned_pending"
+        else:
+            state = "aligned_ready"
+
+        if state == "failed":
+            failed_langs.append(lang)
+        elif state == "stale_misaligned":
+            misaligned_langs.append(lang)
+        elif state == "aligned_pending":
+            pending_langs.append(lang)
+        elif state in {"aligned_ready", "base_ready"}:
+            ready_langs.append(lang)
+
+        lang_rows[lang] = {
+            "lang": lang,
+            "state": state,
+            "is_aligned": is_aligned,
+            "base_count": len(base_keys),
+            "lang_count": len(lang_keys),
+            "missing_count": len(missing_keys),
+            "extra_count": len(extra_keys),
+            "missing_ids": missing_keys[:20],
+            "extra_ids": extra_keys[:20],
+            "missing_titles": missing_titles,
+            "extra_titles": extra_titles,
+            "done": done,
+            "total": total,
+            "pending_count": pending_count,
+            "cache_hits": cache_hits,
+            "text_done": text_done,
+            "text_total": text_total,
+            "text_pending_count": text_pending,
+            "card_total": card_total,
+            "card_translated": card_translated,
+            "card_partial": card_partial,
+            "card_pending": card_pending,
+            "card_failed": card_failed,
+            "card_missing": card_missing,
+            "card_extra": card_extra,
+            "card_pending_ids": pending_card_ids[:20],
+            "card_partial_ids": partial_card_ids[:20],
+            "card_failed_ids": failed_card_ids[:20],
+            "build_status": build_status or "pending",
+            "build_mode": build_mode,
+            "build_error": build_error,
+            "updated_at": str(progress.get("updated_at") or ""),
+        }
+
+    return {
+        "base_lang": I18N_BASE_LANG,
+        "base_count": len(base_keys),
+        "feed_generated_at": feed_generated_at,
+        "bundle_source_generated_at": bundle_source_generated_at,
+        "source_in_sync": source_in_sync,
+        "langs": lang_rows,
+        "ready_langs": ready_langs,
+        "pending_langs": pending_langs,
+        "misaligned_langs": misaligned_langs,
+        "failed_langs": failed_langs,
+    }
+
+
 def _sync_state_snapshot() -> dict:
     with SYNC_STATE_LOCK:
-        return copy.deepcopy(SYNC_STATE)
+        return dict(SYNC_STATE)
 
 
 def _start_sync_state(trigger: str = "") -> None:
-    started_iso = _now_iso()
-    run_id = uuid4().hex
     with SYNC_STATE_LOCK:
-        SYNC_STATE["run_id"] = run_id
         SYNC_STATE["status"] = "running"
-        SYNC_STATE["started_at"] = started_iso
+        SYNC_STATE["started_at"] = _now_iso()
         SYNC_STATE["finished_at"] = ""
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["trigger"] = str(trigger or "manual")
         SYNC_STATE["duration_ms"] = 0
-        pipeline = _new_sync_pipeline_state(run_id)
-        pipeline["updated_at"] = started_iso
-        scan = pipeline.get("scan")
-        if isinstance(scan, dict):
-            scan["status"] = "running"
-            scan["started_at"] = started_iso
-        SYNC_STATE["pipeline"] = pipeline
 
 
 def _finish_sync_state_ok(started_monotonic: float) -> None:
@@ -773,16 +615,6 @@ def _finish_sync_state_ok(started_monotonic: float) -> None:
         SYNC_STATE["last_success_at"] = now_iso
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["duration_ms"] = duration_ms
-        pipeline = _ensure_sync_pipeline_unlocked()
-        pipeline["updated_at"] = now_iso
-        scan = pipeline.get("scan")
-        curation = pipeline.get("curation")
-        if isinstance(scan, dict) and str(scan.get("status") or "").strip().lower() == "running":
-            scan["status"] = "ok"
-            scan["finished_at"] = now_iso
-        if isinstance(curation, dict) and str(curation.get("status") or "").strip().lower() == "running":
-            curation["status"] = "ok"
-            curation["finished_at"] = now_iso
 
 
 def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
@@ -793,7 +625,6 @@ def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> N
         SYNC_STATE["finished_at"] = now_iso
         SYNC_STATE["last_error"] = str(error_message or "unknown_error")
         SYNC_STATE["duration_ms"] = duration_ms
-    _sync_pipeline_mark_failed(error_message)
 
 
 def _mark_sync_schedule(
@@ -816,22 +647,10 @@ def _mark_sync_schedule(
 
 def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict:
     started_monotonic = time.monotonic()
-    previous_feed = _read_feed_snapshot()
     _start_sync_state(trigger=trigger)
-    target_langs = ["en", "ko", "zh-Hans"]
-
-    def _progress_hook(payload: dict[str, object]) -> None:
-        _sync_pipeline_apply_event(payload)
-
     try:
-        result = sync_accounts(
-            accounts=accounts,
-            window_days=max(1, int(days)),
-            progress_hook=_progress_hook,
-        )
-        _sync_pipeline_mark_new_cards(previous_feed, result)
-        _sync_pipeline_mark_translation_queued(result, target_langs=target_langs)
-        build_i18n_feed_bundle_async(result, force=False, target_langs=target_langs)
+        result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
+        build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
         return result
     except Exception as sync_error:
@@ -948,66 +767,6 @@ def _spawn_website_backup(trigger: str = "manual") -> bool:
     return True
 
 
-def _restore_state_snapshot() -> dict:
-    with RESTORE_STATE_LOCK:
-        return dict(RESTORE_STATE)
-
-
-def _start_restore_state(trigger: str = "", force: bool = False) -> float:
-    with RESTORE_STATE_LOCK:
-        RESTORE_STATE["status"] = "running"
-        RESTORE_STATE["started_at"] = _now_iso()
-        RESTORE_STATE["finished_at"] = ""
-        RESTORE_STATE["last_error"] = ""
-        RESTORE_STATE["trigger"] = str(trigger or "manual")
-        RESTORE_STATE["duration_ms"] = 0
-        RESTORE_STATE["force"] = bool(force)
-    return time.monotonic()
-
-
-def _finish_restore_state(result: dict, started_monotonic: float) -> None:
-    now_iso = _now_iso()
-    duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
-    ok = bool(result.get("ok"))
-    restored = bool(result.get("restored"))
-    status = "ok" if ok else "failed"
-    with RESTORE_STATE_LOCK:
-        RESTORE_STATE.update(
-            {
-                "ok": ok,
-                "restored": restored,
-                "reason": str(result.get("reason") or ("restored" if restored else ("ok" if ok else "restore_failed"))),
-                "status": status,
-                "finished_at": now_iso,
-                "duration_ms": duration_ms,
-                "branch": str(result.get("branch") or RESTORE_STATE.get("branch") or ""),
-                "subdir": str(result.get("subdir") or RESTORE_STATE.get("subdir") or ""),
-                "last_error": "" if ok else str(result.get("error") or result.get("reason") or "unknown_error"),
-            }
-        )
-        if ok:
-            RESTORE_STATE["last_success_at"] = now_iso
-
-
-def _spawn_website_restore(trigger: str = "manual", force: bool = True) -> bool:
-    with RESTORE_STATE_LOCK:
-        if str(RESTORE_STATE.get("status") or "").strip().lower() == "running":
-            return False
-
-    def _worker() -> None:
-        started = _start_restore_state(trigger=trigger, force=force)
-        result = restore_website_data_from_backup(
-            DATA_ROOT,
-            ROOT.parent,
-            manual=True,
-            force_override=bool(force),
-        )
-        _finish_restore_state(result, started)
-
-    Thread(target=_worker, daemon=True).start()
-    return True
-
-
 def _collect_jobs_snapshot(limit: int = 12) -> dict:
     with JOBS_LOCK:
         state = _read_jobs_unlocked()
@@ -1052,344 +811,6 @@ def _collect_news_state_snapshot() -> list[dict]:
     return rows
 
 
-def _card_lookup_key_for_i18n(card: dict, index: int) -> str:
-    for key in ("id", "url", "_card_key"):
-        value = str(card.get(key) or "").strip()
-        if value:
-            return value
-    account = str(card.get("account") or "").strip().lower()
-    published = str(card.get("published_at") or "").strip()
-    title = str(card.get("title") or "").strip()
-    return f"{account}|{published}|{title}|{index}"
-
-
-def _build_i18n_card_lookup(cards: list[dict]) -> tuple[dict[str, dict[str, str]], list[str]]:
-    lookup: dict[str, dict[str, str]] = {}
-    ordered_keys: list[str] = []
-    for idx, card in enumerate(cards):
-        if not isinstance(card, dict):
-            continue
-        key = _card_lookup_key_for_i18n(card, idx)
-        row = _normalize_sync_card_item(card)
-        if not row:
-            continue
-        if key not in lookup:
-            lookup[key] = row
-            ordered_keys.append(key)
-    return lookup, ordered_keys
-
-
-def _compute_i18n_card_pending_by_lang(
-    feed: dict[str, object],
-    cards: list[dict],
-    target_langs: list[str],
-) -> dict[str, list[dict[str, str]]]:
-    card_lookup, ordered_keys = _build_i18n_card_lookup(cards)
-    out: dict[str, list[dict[str, str]]] = {}
-    if not card_lookup or not ordered_keys or not isinstance(feed, dict):
-        return out
-    for tag in target_langs:
-        if tag == "zh-Hant":
-            continue
-        try:
-            localized = localized_feed_from_bundle(feed, tag)
-        except Exception:
-            localized = {}
-        localized_cards = localized.get("cards") if isinstance(localized, dict) else []
-        ready_keys: set[str] = set()
-        if isinstance(localized_cards, list):
-            for idx, raw in enumerate(localized_cards):
-                if not isinstance(raw, dict):
-                    continue
-                key = _card_lookup_key_for_i18n(raw, idx)
-                if key in card_lookup:
-                    ready_keys.add(key)
-        pending_rows: list[dict[str, str]] = []
-        for key in ordered_keys:
-            if key in ready_keys:
-                continue
-            row = card_lookup.get(key)
-            if row:
-                pending_rows.append(row)
-        out[tag] = pending_rows
-    return out
-
-
-def _sync_pipeline_translation_status(sync_state: dict, i18n_state: dict, feed: dict[str, object], cards: list[dict]) -> dict[str, object]:
-    defaults = _new_sync_pipeline_state(str(sync_state.get("run_id") or "")).get("translation")
-    base_pipeline = sync_state.get("pipeline")
-    base_translation = base_pipeline.get("translation") if isinstance(base_pipeline, dict) else {}
-    out = copy.deepcopy(base_translation if isinstance(base_translation, dict) else defaults)
-    if not isinstance(out, dict):
-        out = copy.deepcopy(defaults if isinstance(defaults, dict) else {})
-
-    target_langs_raw = out.get("target_langs")
-    if not isinstance(target_langs_raw, list):
-        target_langs_raw = i18n_state.get("target_langs")
-    target_langs = [str(x) for x in (target_langs_raw or []) if str(x).strip() and str(x) != "zh-Hant"]
-    if not target_langs:
-        target_langs = ["en", "ko", "zh-Hans"]
-
-    card_lookup, _ = _build_i18n_card_lookup(cards)
-    card_pending_by_lang = _compute_i18n_card_pending_by_lang(feed, cards, target_langs)
-
-    lang_progress = i18n_state.get("lang_progress")
-    progress_map = lang_progress if isinstance(lang_progress, dict) else {}
-    pending_items: list[dict[str, str]] = []
-    pending_seen: set[str] = set()
-    lang_rows: list[dict[str, object]] = []
-    ratio_sum = 0.0
-    ratio_count = 0
-
-    for tag in target_langs:
-        row = progress_map.get(tag)
-        row = row if isinstance(row, dict) else {}
-        status = str(row.get("status") or "pending").strip().lower()
-        total = _safe_int(row.get("total"), 0)
-        done = min(max(0, _safe_int(row.get("done"), 0)), total if total > 0 else _safe_int(row.get("done"), 0))
-        percent_raw = row.get("percent")
-        try:
-            percent = float(percent_raw)
-        except Exception:
-            percent = round((done / total) * 100, 1) if total > 0 else (100.0 if status == "ok" else 0.0)
-        sample_pending = row.get("sample_pending")
-        sample_rows = sample_pending if isinstance(sample_pending, list) else []
-        pending_keys: list[str] = []
-        for entry in sample_rows:
-            match = I18N_CARD_ENTRY_RE.match(str(entry or "").strip())
-            if not match:
-                continue
-            pending_keys.append(str(match.group(1) or "").strip())
-        lang_pending_items: list[dict[str, str]] = []
-        seen_lang_keys: set[str] = set()
-        for key in pending_keys:
-            if not key or key in seen_lang_keys:
-                continue
-            seen_lang_keys.add(key)
-            card_item = card_lookup.get(key)
-            if not card_item:
-                continue
-            lang_pending_items.append(card_item)
-            item_key = f"{card_item.get('id')}|{card_item.get('title')}|{card_item.get('published_at')}"
-            if item_key not in pending_seen:
-                pending_seen.add(item_key)
-                pending_items.append(card_item)
-        has_card_pending_items = tag in card_pending_by_lang and isinstance(card_pending_by_lang.get(tag), list)
-        card_pending_items = card_pending_by_lang.get(tag) if has_card_pending_items else []
-        if card_pending_items:
-            lang_pending_items = [dict(item) for item in card_pending_items[:10]]
-            for card_item in card_pending_items:
-                item_key = f"{card_item.get('id')}|{card_item.get('title')}|{card_item.get('published_at')}"
-                if item_key not in pending_seen:
-                    pending_seen.add(item_key)
-                    pending_items.append(dict(card_item))
-        if has_card_pending_items:
-            card_pending_count = len(card_pending_items)
-            progress_total = _safe_int(row.get("total"), len(cards))
-            progress_done = min(max(0, _safe_int(row.get("done"), 0)), progress_total if progress_total > 0 else _safe_int(row.get("done"), 0))
-            progress_pending_hint = max(0, len(cards) - progress_done) if len(cards) > 0 and progress_total > 0 else max(0, progress_total - progress_done)
-            # When language feed is still building (not yet published),
-            # localized_feed may still show all cards as pending.
-            # Prefer in-flight runtime progress to avoid showing a frozen 0/N.
-            if status in {"running", "queued"} and progress_done > 0:
-                card_pending_count = min(card_pending_count, progress_pending_hint)
-        else:
-            card_pending_count = _safe_int(row.get("pending_count"), max(0, total - done))
-        if len(cards) > 0:
-            card_pending_count = max(0, min(len(cards), card_pending_count))
-        card_done = max(0, len(cards) - card_pending_count) if len(cards) > 0 else 0
-        card_percent = round((card_done / len(cards)) * 100, 1) if len(cards) > 0 else max(0.0, min(100.0, percent))
-        lang_rows.append(
-            {
-                "lang": tag,
-                "status": status or "pending",
-                "total": len(cards) if len(cards) > 0 else total,
-                "done": card_done if len(cards) > 0 else done,
-                "remaining": card_pending_count,
-                "percent": max(0.0, min(100.0, card_percent)),
-                "pending_count": card_pending_count,
-                "pending_items": lang_pending_items[:10],
-            }
-        )
-        if len(cards) > 0:
-            ratio_sum += min(1.0, max(0.0, card_done / len(cards)))
-            ratio_count += 1
-        elif total > 0:
-            ratio_sum += min(1.0, max(0.0, done / total))
-            ratio_count += 1
-        elif status == "ok":
-            ratio_sum += 1.0
-            ratio_count += 1
-
-    i18n_status = str(i18n_state.get("status") or out.get("status") or "idle").strip().lower()
-    overall_percent = round((ratio_sum / ratio_count) * 100, 1) if ratio_count > 0 else (100.0 if i18n_status == "ok" else 0.0)
-    total_cards = len(cards)
-    estimated_done = min(total_cards, max(0, int(round(total_cards * (overall_percent / 100.0))))) if total_cards > 0 else 0
-    items_pending = max(0, total_cards - estimated_done)
-    if pending_items:
-        items_pending = max(items_pending, len(pending_items))
-
-    out.update(
-        {
-            "status": i18n_status or "idle",
-            "source_generated_at": str(i18n_state.get("source_generated_at") or out.get("source_generated_at") or ""),
-            "target_langs": target_langs,
-            "percent": overall_percent,
-            "items_total": total_cards,
-            "items_done": estimated_done,
-            "items_pending": items_pending,
-            "pending_items": pending_items[:20],
-            "langs": lang_rows,
-            "last_error": str(i18n_state.get("last_error") or out.get("last_error") or ""),
-            "finished_at": str(i18n_state.get("finished_at") or out.get("finished_at") or ""),
-        }
-    )
-    if i18n_status in {"ok", "failed"} and not str(out.get("finished_at") or "").strip():
-        out["finished_at"] = _now_iso()
-    return out
-
-
-def _sync_pipeline_item_key(item: dict[str, str], index: int = 0) -> str:
-    iid = str(item.get("id") or "").strip()
-    if iid:
-        return f"id:{iid}"
-    url = str(item.get("url") or "").strip()
-    if url:
-        return f"url:{url}"
-    title = str(item.get("title") or "").strip()
-    published = str(item.get("published_at") or "").strip()
-    account = str(item.get("account") or "").strip()
-    return f"title:{title}|{published}|{account}|{index}"
-
-
-def _build_sync_pipeline_post_stages(pipeline: dict[str, object], cards: list[dict] | None = None) -> list[dict[str, object]]:
-    scan = pipeline.get("scan") if isinstance(pipeline.get("scan"), dict) else {}
-    curation = pipeline.get("curation") if isinstance(pipeline.get("curation"), dict) else {}
-    translation = pipeline.get("translation") if isinstance(pipeline.get("translation"), dict) else {}
-    scan_status = str(scan.get("status") or "idle").strip().lower()
-    curation_status = str(curation.get("status") or "idle").strip().lower()
-    translation_status = str(translation.get("status") or "idle").strip().lower()
-
-    by_key: dict[str, dict[str, object]] = {}
-    ordered_keys: list[str] = []
-
-    def _ensure(item: object, fallback_index: int = 0) -> tuple[str, dict[str, object]] | tuple[str, None]:
-        row = _normalize_sync_card_item(item)
-        if not row:
-            return "", None
-        key = _sync_pipeline_item_key(row, fallback_index)
-        current = by_key.get(key)
-        if not isinstance(current, dict):
-            current = {
-                "id": row.get("id") or "",
-                "url": row.get("url") or "",
-                "title": row.get("title") or "",
-                "account": row.get("account") or "",
-                "published_at": row.get("published_at") or "",
-                "scan": "pending",
-                "curation": "pending",
-                "translation": "pending",
-                "stage": "待處理",
-            }
-            by_key[key] = current
-            ordered_keys.append(key)
-        else:
-            if not str(current.get("url") or "").strip():
-                current["url"] = row.get("url") or ""
-        return key, current
-
-    scan_items = _normalize_sync_card_items(scan.get("new_items"), limit=80)
-    curation_done = _normalize_sync_card_items(curation.get("done_items"), limit=80)
-    curation_pending = _normalize_sync_card_items(curation.get("pending_items"), limit=80)
-    translation_pending = _normalize_sync_card_items(translation.get("pending_items"), limit=80)
-    feed_items = _normalize_sync_card_items(cards if isinstance(cards, list) else [], limit=500)
-
-    for idx, item in enumerate(feed_items):
-        _, current = _ensure(item, idx)
-        if not current:
-            continue
-        current["scan"] = "done"
-        current["curation"] = "done"
-
-    for idx, item in enumerate(scan_items):
-        _, current = _ensure(item, idx)
-        if not current:
-            continue
-        current["scan"] = "done"
-    for idx, item in enumerate(curation_done):
-        _, current = _ensure(item, idx)
-        if not current:
-            continue
-        current["scan"] = "done"
-        current["curation"] = "done"
-    for idx, item in enumerate(curation_pending):
-        _, current = _ensure(item, idx)
-        if not current:
-            continue
-        current["scan"] = "done"
-        current["curation"] = "running"
-    for idx, item in enumerate(translation_pending):
-        _, current = _ensure(item, idx)
-        if not current:
-            continue
-        current["scan"] = "done"
-        if str(current.get("curation") or "") != "running":
-            current["curation"] = "done"
-        current["translation"] = "running"
-
-    rows: list[dict[str, object]] = []
-    for key in ordered_keys:
-        row = by_key.get(key)
-        if not isinstance(row, dict):
-            continue
-        curation_stage = str(row.get("curation") or "pending")
-        translation_stage = str(row.get("translation") or "pending")
-        if translation_status == "ok" and curation_stage == "done":
-            translation_stage = "done"
-        elif translation_status == "failed" and curation_stage == "done":
-            translation_stage = "failed"
-        elif translation_stage != "running" and curation_stage == "done" and translation_status in {"running", "queued", "pending"}:
-            translation_stage = "pending"
-
-        if curation_stage == "running":
-            stage_label = "整理中"
-        elif curation_stage == "pending":
-            stage_label = "等待整理"
-        elif translation_stage == "running":
-            stage_label = "翻譯中"
-        elif translation_stage == "failed":
-            stage_label = "翻譯失敗"
-        elif translation_stage == "done":
-            stage_label = "完成"
-        elif scan_status == "running":
-            stage_label = "掃描中"
-        else:
-            stage_label = "待處理"
-
-        row["translation"] = translation_stage
-        row["stage"] = stage_label
-        rows.append(row)
-
-    rows.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
-    return rows[:120]
-
-
-def _build_sync_pipeline_status(sync_state: dict, i18n_state: dict, feed: dict[str, object], cards: list[dict]) -> dict[str, object]:
-    run_id = str(sync_state.get("run_id") or "").strip()
-    defaults = _new_sync_pipeline_state(run_id)
-    raw_pipeline = sync_state.get("pipeline")
-    pipeline = copy.deepcopy(raw_pipeline) if isinstance(raw_pipeline, dict) else copy.deepcopy(defaults)
-    if not isinstance(pipeline, dict):
-        pipeline = copy.deepcopy(defaults)
-    pipeline["run_id"] = run_id
-    for section in ("scan", "curation", "translation"):
-        if not isinstance(pipeline.get(section), dict):
-            pipeline[section] = copy.deepcopy(defaults.get(section))
-    pipeline["translation"] = _sync_pipeline_translation_status(sync_state, i18n_state, feed, cards)
-    pipeline["post_stages"] = _build_sync_pipeline_post_stages(pipeline, cards)
-    return pipeline
-
-
 def _build_admin_status(limit: int = 10) -> dict:
     feed = _read_feed_snapshot()
     cards_raw = feed.get("cards")
@@ -1399,10 +820,10 @@ def _build_admin_status(limit: int = 10) -> dict:
     jobs = _collect_jobs_snapshot(limit=limit)
     news_states = _collect_news_state_snapshot()
     i18n_state = i18n_state_snapshot()
+    i18n_alignment = _compute_i18n_alignment(feed, i18n_state)
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
-    restore_state = _restore_state_snapshot()
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
@@ -1416,7 +837,28 @@ def _build_admin_status(limit: int = 10) -> dict:
     queued_jobs = _safe_int(jobs.get("counts", {}).get("queued"))
     sync_running = str(sync_state.get("status") or "").strip().lower() == "running"
     pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
-    sync_pipeline = _build_sync_pipeline_status(sync_state, i18n_state, feed, card_rows)
+    i18n_raw_status = str(i18n_state.get("status") or "idle").strip().lower()
+    lang_rows = i18n_alignment.get("langs") if isinstance(i18n_alignment.get("langs"), dict) else {}
+    fully_ready = True
+    for tag in ("zh-Hans", "en", "ko"):
+        row = lang_rows.get(tag) if isinstance(lang_rows.get(tag), dict) else {}
+        if str(row.get("state") or "") != "aligned_ready":
+            fully_ready = False
+            break
+
+    if i18n_alignment.get("failed_langs"):
+        i18n_effective_status = "failed"
+    elif i18n_alignment.get("misaligned_langs") or i18n_alignment.get("pending_langs"):
+        i18n_effective_status = "running"
+    elif fully_ready:
+        i18n_effective_status = "ok"
+    else:
+        i18n_effective_status = i18n_raw_status or "idle"
+
+    i18n_payload = dict(i18n_state) if isinstance(i18n_state, dict) else {}
+    i18n_payload["raw_status"] = i18n_raw_status or "idle"
+    i18n_payload["effective_status"] = i18n_effective_status
+    i18n_payload["alignment"] = i18n_alignment
 
     return {
         "server_time": _now_iso(),
@@ -1482,7 +924,7 @@ def _build_admin_status(limit: int = 10) -> dict:
             },
             {
                 "name": "i18n_feed_agent",
-                "status": str(i18n_state.get("status") or "idle"),
+                "status": str(i18n_effective_status or i18n_state.get("status") or "idle"),
                 "detail": f"langs={','.join([str(x) for x in (i18n_state.get('langs') or [])]) or '--'} source={str(i18n_state.get('source_generated_at') or '--')}",
             },
             {
@@ -1494,15 +936,6 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "name": "website_backup_agent",
                 "status": str(backup_state.get("status") or ("enabled" if backup_status.get("enabled") else "disabled")),
                 "detail": f"provider={backup_status.get('provider')} subdir={backup_status.get('subdir')} repo={'set' if backup_status.get('has_repo') else 'unset'} changed={backup_state.get('changed')}",
-            },
-            {
-                "name": "website_restore_agent",
-                "status": str(restore_state.get("status") or "idle"),
-                "detail": (
-                    f"restored={bool(restore_state.get('restored'))} "
-                    f"reason={str(restore_state.get('reason') or '--')} "
-                    f"branch={str(restore_state.get('branch') or backup_status.get('branch') or '--')}"
-                ),
             },
         ],
         "monitors": {
@@ -1518,11 +951,10 @@ def _build_admin_status(limit: int = 10) -> dict:
         "news": {
             "langs": news_states,
         },
-        "sync_pipeline": sync_pipeline,
-        "i18n": i18n_state,
+        "i18n": i18n_payload,
         "storage": {
             **STORAGE_STATE,
-            "restore": restore_state,
+            "restore": RESTORE_STATE,
         },
         "backup": {
             **backup_status,
@@ -1847,23 +1279,9 @@ class Handler(SimpleHTTPRequestHandler):
             return ""
         return str(node.value or "").strip()
 
-    def _auth_token_from_header(self) -> str:
-        value = str(self.headers.get("Authorization") or "").strip()
-        if not value:
-            return ""
-        parts = value.split(" ", 1)
-        if len(parts) != 2:
-            return ""
-        if parts[0].strip().lower() != "bearer":
-            return ""
-        return parts[1].strip()
-
     def _current_user(self) -> str:
         if not AUTH_REQUIRED:
             return "admin"
-        token_user = _verify_auth_token(self._auth_token_from_header())
-        if token_user:
-            return token_user
         session_id = self._session_id_from_cookie()
         if not session_id:
             return ""
@@ -1881,8 +1299,6 @@ class Handler(SimpleHTTPRequestHandler):
                 "authenticated": True,
                 "user": "admin",
                 "mode": "open",
-                "token_type": "Bearer",
-                "token_ttl_seconds": TOKEN_TTL_SECONDS,
             }
         if not AUTH_CONFIGURED:
             return {
@@ -1902,8 +1318,6 @@ class Handler(SimpleHTTPRequestHandler):
             "authenticated": bool(user),
             "user": user,
             "mode": "protected",
-            "token_type": "Bearer",
-            "token_ttl_seconds": TOKEN_TTL_SECONDS,
         }
 
     def _require_admin_access(self) -> bool:
@@ -2015,7 +1429,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/feedback",
             "/api/intel/job-status",
             "/api/intel/backup",
-            "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
@@ -2034,7 +1447,6 @@ class Handler(SimpleHTTPRequestHandler):
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
             if not AUTH_REQUIRED:
-                token = _create_auth_token("admin")
                 self._send_json(
                     {
                         "ok": True,
@@ -2042,9 +1454,6 @@ class Handler(SimpleHTTPRequestHandler):
                         "authenticated": True,
                         "user": "admin",
                         "mode": "open",
-                        "token_type": "Bearer",
-                        "token_ttl_seconds": TOKEN_TTL_SECONDS,
-                        "token": token,
                     }
                 )
                 return
@@ -2061,7 +1470,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "帳號或密碼錯誤"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             sid = _create_session(username)
-            token = _create_auth_token(username)
             self._send_json(
                 {
                     "ok": True,
@@ -2070,9 +1478,6 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": True,
                     "user": username,
                     "mode": "protected",
-                    "token_type": "Bearer",
-                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
-                    "token": token,
                 },
                 extra_headers={"Set-Cookie": self._session_cookie_header(sid)},
             )
@@ -2089,8 +1494,6 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": False,
                     "user": "",
                     "mode": "protected" if AUTH_REQUIRED else "open",
-                    "token_type": "Bearer",
-                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
                 },
                 extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
             )
@@ -2176,23 +1579,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
                 return
 
-            if path == "/api/intel/restore":
-                force = bool(payload.get("force", True))
-                started = _spawn_website_restore(trigger=self._current_user() or "manual", force=force)
-                self._send_json({"ok": True, "started": started, "restore": _restore_state_snapshot()})
-                return
-
             if path == "/api/intel/retranslate":
                 lang_raw = str(payload.get("lang") or "").strip().lower()
                 if not lang_raw or lang_raw == "all":
                     target_langs = ["en", "ko", "zh-Hans"]
                 else:
                     target_langs = [x.strip() for x in lang_raw.split(",") if x.strip()]
+                mode_raw = str(payload.get("mode") or "").strip().lower()
+                force_full = bool(payload.get("force")) or mode_raw in {"full", "reset", "rebuild"}
                 feed = _read_feed_snapshot()
                 if not isinstance(feed, dict) or not isinstance(feed.get("cards"), list):
                     self._send_json({"ok": False, "error": "feed not ready"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                     return
-                result = queue_i18n_retranslate(feed, target_langs=target_langs)
+                result = queue_i18n_retranslate(feed, target_langs=target_langs, force_full=force_full)
                 self._send_json({"ok": True, "retranslate": result, "i18n": i18n_state_snapshot()})
                 return
 
@@ -2269,7 +1668,8 @@ def main() -> int:
             window_days=max(1, int(args.sync_window_days)),
             run_on_startup=bool(args.sync_run_on_startup),
         )
-    _warm_i18n_bundle_from_feed()
+    if I18N_WARM_ON_STARTUP:
+        _warm_i18n_bundle_from_feed()
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")
@@ -2292,7 +1692,7 @@ def main() -> int:
         "[ai-intel] API endpoints: "
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
-        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )
     print(
@@ -2301,6 +1701,7 @@ def main() -> int:
         f"user={'set' if AUTH_USERNAME else 'unset'}, "
         f"allowed_origins={sorted(ALLOWED_ORIGINS)}"
     )
+    print(f"[ai-intel] i18n warm on startup: {bool(I18N_WARM_ON_STARTUP)}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
