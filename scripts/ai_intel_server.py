@@ -2103,8 +2103,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": f"failed to build admin status: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         if path == "/api/intel/runtime-log":
-            if not self._require_admin_access():
-                return
             try:
                 query = urlparse(self.path).query
                 params = parse_qs(query, keep_blank_values=False)
