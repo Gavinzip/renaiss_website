@@ -2015,9 +2015,6 @@
       });
       Object.keys(buckets).forEach((key) => {
         buckets[key] = sortCardsByTimeDesc(buckets[key]);
-        if (key === "alpha") {
-          buckets[key] = dedupeAlphaCardsPreferOfficial(buckets[key]);
-        }
       });
       return buckets;
     }

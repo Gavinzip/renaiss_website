@@ -613,6 +613,122 @@ def _card_quality_score(card: StoryCard) -> float:
     return round(score, 3)
 
 
+def _dedupe_detail_features(card: StoryCard) -> list[str]:
+    facts = normalize_event_facts(card.event_facts)
+    flags: list[str] = []
+    if card.cover_image:
+        flags.append("圖片")
+    if card.timeline_date:
+        flags.append("時間")
+    if facts.get("location"):
+        flags.append("地點")
+    if facts.get("schedule"):
+        flags.append("時程")
+    if facts.get("participation"):
+        flags.append("參與方式")
+    if facts.get("reward"):
+        flags.append("獎勵")
+    if clean_text(card.summary or ""):
+        flags.append("摘要")
+    if any(clean_text(str(x or "")) for x in (card.bullets or [])):
+        flags.append("重點條列")
+    return flags
+
+
+def _dedupe_detail_score(card: StoryCard) -> int:
+    return len(_dedupe_detail_features(card))
+
+
+def _is_future_alpha_card(card: StoryCard) -> bool:
+    labels = normalize_topic_labels(card.topic_labels)
+    timeline_dt = _parse_iso_safe(str(card.timeline_date or ""))
+    if timeline_dt:
+        now_date = datetime.now(timezone.utc).date()
+        if timeline_dt.date() >= now_date:
+            return True
+    blob = clean_text(" ".join(
+        [
+            str(card.title or ""),
+            str(card.summary or ""),
+            str(card.raw_text or ""),
+            " ".join(str(x) for x in normalize_event_facts(card.event_facts).values()),
+        ]
+    ))
+    if blob:
+        future_re = re.compile(
+            r"(即將|將於|預計|预计|soon|upcoming|on the way|targeted|next round|next phase|coming soon|launch(?:ing)? soon|release(?:ing)? soon)",
+            re.I,
+        )
+        live_re = re.compile(
+            r"(now live|is now live|already live|you can now|已上線|已开放|已開放|已發布|現已可用)",
+            re.I,
+        )
+        if future_re.search(blob) and not (live_re.search(blob) and not future_re.search(blob)):
+            return True
+    return "alpha" in labels
+
+
+def _is_official_update_card(card: StoryCard) -> bool:
+    labels = normalize_topic_labels(card.topic_labels)
+    account = str(card.account or "").strip().lower().lstrip("@")
+    return account.startswith("renaiss") or "official" in labels
+
+
+def _is_dedupe_protected_card(card: StoryCard) -> bool:
+    return _is_official_update_card(card) or _is_future_alpha_card(card)
+
+
+def _build_rank_cutoff_drop_record(
+    loser: StoryCard,
+    *,
+    kept_cards: list[StoryCard],
+    reason_code: str,
+    max_cards: int,
+) -> dict[str, Any]:
+    if not kept_cards:
+        return _dedupe_drop_record(
+            loser,
+            reason_code=reason_code,
+            reason=f"排序名額淘汰（上限 {int(max_cards)}）：未進入本輪保留清單。",
+        )
+    loser_blob = f"{str(loser.title or '')} {str(loser.summary or '')} {str(loser.raw_text or '')}"
+    best_winner: StoryCard = min(
+        kept_cards,
+        key=lambda c: (
+            float(_card_quality_score(c)),
+            int(_dedupe_detail_score(c)),
+            _parse_iso_safe(str(c.published_at or "")) or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+    )
+    winner_blob = f"{str(best_winner.title or '')} {str(best_winner.summary or '')} {str(best_winner.raw_text or '')}"
+    best_sim = max(
+        similarity_ratio(str(loser.title or ""), str(best_winner.title or "")),
+        similarity_ratio(loser_blob, winner_blob),
+    )
+    winner_detail = _dedupe_detail_features(best_winner)
+    loser_detail = _dedupe_detail_features(loser)
+    winner_detail_txt = "、".join(winner_detail) if winner_detail else "無"
+    loser_detail_txt = "、".join(loser_detail) if loser_detail else "無"
+    winner_q = float(_card_quality_score(best_winner))
+    loser_q = float(_card_quality_score(loser))
+    winner_d = int(_dedupe_detail_score(best_winner))
+    loser_d = int(_dedupe_detail_score(loser))
+    extra_note = ""
+    if loser_q > winner_q or loser_d > winner_d:
+        extra_note = "（此輪另含手動保留/置頂與全局排序權重，因此高分卡仍可能落選）"
+    reason = (
+        f"排序名額淘汰（上限 {int(max_cards)}）：未超過本輪入選門檻卡（sim={best_sim:.2f}）。"
+        f"門檻卡完整度={winner_d}（{winner_detail_txt}），本貼文完整度={loser_d}（{loser_detail_txt}）；"
+        f"門檻卡品質分={winner_q:.2f}，本貼文品質分={loser_q:.2f}。{extra_note}"
+    )
+    return _dedupe_drop_record(
+        loser,
+        reason_code=reason_code,
+        reason=reason,
+        winner=best_winner,
+    )
+
+
 def _is_discord_source_card(card: StoryCard) -> bool:
     provider = str(card.provider or "").strip().lower()
     url = str(card.url or "").strip().lower()
@@ -663,6 +779,9 @@ def drop_discord_event_duplicates_preferring_x(
     removed = 0
     for card in cards:
         if card.card_type != "event" or not _is_discord_source_card(card):
+            kept.append(card)
+            continue
+        if _is_dedupe_protected_card(card):
             kept.append(card)
             continue
         if card.id in force_ids or card.manual_pick:
@@ -724,6 +843,9 @@ def drop_redundant_cards_local(
         if card.id in force_ids or card.manual_pick:
             passthrough.append(card)
             continue
+        if _is_dedupe_protected_card(card):
+            passthrough.append(card)
+            continue
         sig = _dedupe_signature(card)
         if not sig:
             passthrough.append(card)
@@ -775,6 +897,7 @@ def apply_minimax_global_dedupe(
     if not cards:
         return cards, 0
     force_ids = set(force_include_ids or set())
+    protected_ids = {str(c.id or "").strip() for c in cards if str(c.id or "").strip() and _is_dedupe_protected_card(c)}
     payload_rows: list[dict[str, Any]] = []
     for c in cards:
         facts = normalize_event_facts(c.event_facts)
@@ -803,7 +926,7 @@ def apply_minimax_global_dedupe(
         "3) 不要刪掉跨主題卡片；"
         "4) 不可捏造。"
         "輸出 JSON：{\"drop_ids\":[...],\"notes\":[...]}。\n\n"
-        f"force_keep_ids: {sorted(force_ids)}\n"
+        f"force_keep_ids: {sorted(force_ids | protected_ids)}\n"
         f"cards: {json.dumps(payload_rows, ensure_ascii=False)}"
     )
     try:
@@ -814,7 +937,7 @@ def apply_minimax_global_dedupe(
             return cards, 0
         known = {c.id for c in cards}
         drop_ids = {str(x).strip() for x in drop_ids_raw if str(x).strip() in known}
-        drop_ids = {x for x in drop_ids if x not in force_ids}
+        drop_ids = {x for x in drop_ids if x not in force_ids and x not in protected_ids}
         if not drop_ids:
             return cards, 0
         out = [c for c in cards if c.id not in drop_ids]
@@ -1598,6 +1721,12 @@ def sync_accounts(
             )
             continue
         source_cards.append(c)
+    protected_ids = {
+        str(card.id or "").strip()
+        for card in source_cards
+        if str(card.id or "").strip() and _is_dedupe_protected_card(card)
+    }
+    force_ids |= protected_ids
     existing_payload = read_json(data_dir() / "x_intel_feed.json", {})
     existing_rows_raw = existing_payload.get("cards") if isinstance(existing_payload, dict) else []
     existing_rows = [row for row in existing_rows_raw if isinstance(row, dict)]
@@ -1642,19 +1771,23 @@ def sync_accounts(
     pre_curate_cards = list(source_cards)
     curated_cards, removed_count = curate_cards(
         source_cards,
-        max_cards=DEFAULT_CURATED_MAX_CARDS,
+        max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
         force_include_ids=force_ids,
     )
     curated_id_set = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
+    curation_drop_logs: list[dict[str, Any]] = []
     for card in pre_curate_cards:
         cid = str(card.id or "").strip()
         if cid and cid not in curated_id_set:
-            _upsert_lifecycle(
-                _card_progress_item(card),
-                stage="dedupe_dropped",
-                reason_code="curation_rank_cutoff",
-                reason="因排序與上牆名額限制淘汰。",
+            curation_drop_logs.append(
+                _build_rank_cutoff_drop_record(
+                    card,
+                    kept_cards=curated_cards,
+                    reason_code="curation_rank_cutoff",
+                    max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
+                )
             )
+    _apply_dropped_logs(curation_drop_logs)
     _emit_lifecycle_progress()
 
     reused_done_items: list[dict[str, Any]] = []
@@ -1757,19 +1890,23 @@ def sync_accounts(
         pre_final_curate = list(curated_cards)
         curated_cards, removed_count = curate_cards(
             curated_cards,
-            max_cards=DEFAULT_CURATED_MAX_CARDS,
+            max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
             force_include_ids=force_ids,
         )
         final_curated_ids = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
+        final_curation_drop_logs: list[dict[str, Any]] = []
         for card in pre_final_curate:
             cid = str(card.id or "").strip()
             if cid and cid not in final_curated_ids:
-                _upsert_lifecycle(
-                    _card_progress_item(card),
-                    stage="dedupe_dropped",
-                    reason_code="final_curation_rank_cutoff",
-                    reason="因最終排序與上牆名額限制淘汰。",
+                final_curation_drop_logs.append(
+                    _build_rank_cutoff_drop_record(
+                        card,
+                        kept_cards=curated_cards,
+                        reason_code="final_curation_rank_cutoff",
+                        max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
+                    )
                 )
+        _apply_dropped_logs(final_curation_drop_logs)
     else:
         apply_editorial_fallback(curated_cards)
         curated_cards, local_deduped = drop_redundant_cards_local(

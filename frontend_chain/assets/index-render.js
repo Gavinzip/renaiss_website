@@ -427,19 +427,16 @@
         saveUiLang(next);
         updateLangSwitcherUi();
         applyUiLanguage().catch(() => {});
-        const cached = readCachedIntelFeed(next, false);
-        if (cached) {
-          renderIntelFeed(cached);
-          scheduleLangFeedRefresh(cached);
-        } else {
-          setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
-        }
+        setLangBuildStatus(`${langDisplayName(next)} loading`, "working");
         refreshIntelFeedForCurrentLang()
           .then(() => {
             setLangBuildStatus("");
             applyUiLanguage().catch(() => {});
           })
-          .catch((error) => setIntelMessage(`Language feed refresh failed: ${String(error?.message || error)}`, "error"));
+          .catch((error) => {
+            setLangBuildStatus("");
+            setIntelMessage(`Language feed refresh failed: ${String(error?.message || error)}`, "error");
+          });
         refreshPokemonNews(false).catch(() => {});
       });
     }
@@ -1349,7 +1346,7 @@
       if (canUseApi) {
         try {
           const controller = new AbortController();
-          const timeout = window.setTimeout(() => controller.abort(), 4500);
+          const timeout = window.setTimeout(() => controller.abort(), 12000);
           const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}`), {
             cache: "no-store",
             credentials: "include",
@@ -1374,22 +1371,6 @@
 
     async function refreshIntelFeedForCurrentLang() {
       const payload = await fetchIntelFeed(currentUiLang);
-      const requestLang = normalizeUiLang(currentUiLang);
-      const mode = String(payload?._i18n?.mode || "");
-      const cached = readCachedIntelFeed(requestLang, false);
-      if (
-        requestLang !== "zh-Hant"
-        && (mode === "building" || mode === "building-stale")
-        && cached
-        && typeof cached === "object"
-        && Array.isArray(cached.cards)
-        && cached.cards.length
-      ) {
-        const merged = { ...cached, _i18n: payload?._i18n || cached?._i18n, lang: requestLang };
-        renderIntelFeed(merged);
-        scheduleLangFeedRefresh(payload);
-        return merged;
-      }
       renderIntelFeed(payload);
       scheduleLangFeedRefresh(payload);
       return payload;
@@ -1990,11 +1971,6 @@
     }
 
     async function renderIntelOnLoad() {
-      const cached = readCachedIntelFeed(currentUiLang, false);
-      if (cached) {
-        renderIntelFeed(cached);
-        scheduleLangFeedRefresh(cached);
-      }
       try {
         await refreshIntelFeedForCurrentLang();
         prefetchIntelFeeds();
