@@ -692,19 +692,32 @@ def _build_rank_cutoff_drop_record(
             reason=f"排序名額淘汰（上限 {int(max_cards)}）：未進入本輪保留清單。",
         )
     loser_blob = f"{str(loser.title or '')} {str(loser.summary or '')} {str(loser.raw_text or '')}"
-    best_winner: StoryCard = min(
-        kept_cards,
-        key=lambda c: (
-            float(_card_quality_score(c)),
-            int(_dedupe_detail_score(c)),
-            _parse_iso_safe(str(c.published_at or "")) or datetime.min.replace(tzinfo=timezone.utc),
-        ),
-    )
-    winner_blob = f"{str(best_winner.title or '')} {str(best_winner.summary or '')} {str(best_winner.raw_text or '')}"
-    best_sim = max(
-        similarity_ratio(str(loser.title or ""), str(best_winner.title or "")),
-        similarity_ratio(loser_blob, winner_blob),
-    )
+    best_winner: StoryCard | None = None
+    best_sim = -1.0
+    best_rank = (-1.0, -1, -1.0, datetime.min.replace(tzinfo=timezone.utc))
+    for winner in kept_cards:
+        winner_blob = f"{str(winner.title or '')} {str(winner.summary or '')} {str(winner.raw_text or '')}"
+        sim = max(
+            similarity_ratio(str(loser.title or ""), str(winner.title or "")),
+            similarity_ratio(loser_blob, winner_blob),
+        )
+        rank = (
+            float(sim),
+            int(_dedupe_detail_score(winner)),
+            float(_card_quality_score(winner)),
+            _parse_iso_safe(str(winner.published_at or "")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        if rank > best_rank:
+            best_rank = rank
+            best_winner = winner
+            best_sim = sim
+    if best_winner is None:
+        floor = min((_card_quality_score(x) for x in kept_cards), default=0.0)
+        reason = (
+            f"排序名額淘汰（上限 {int(max_cards)}）：入選下限品質分 {floor:.2f}，"
+            f"本貼文品質分 {float(_card_quality_score(loser)):.2f}。"
+        )
+        return _dedupe_drop_record(loser, reason_code=reason_code, reason=reason)
     winner_detail = _dedupe_detail_features(best_winner)
     loser_detail = _dedupe_detail_features(loser)
     winner_detail_txt = "、".join(winner_detail) if winner_detail else "無"
@@ -713,13 +726,10 @@ def _build_rank_cutoff_drop_record(
     loser_q = float(_card_quality_score(loser))
     winner_d = int(_dedupe_detail_score(best_winner))
     loser_d = int(_dedupe_detail_score(loser))
-    extra_note = ""
-    if loser_q > winner_q or loser_d > winner_d:
-        extra_note = "（此輪另含手動保留/置頂與全局排序權重，因此高分卡仍可能落選）"
     reason = (
-        f"排序名額淘汰（上限 {int(max_cards)}）：未超過本輪入選門檻卡（sim={best_sim:.2f}）。"
-        f"門檻卡完整度={winner_d}（{winner_detail_txt}），本貼文完整度={loser_d}（{loser_detail_txt}）；"
-        f"門檻卡品質分={winner_q:.2f}，本貼文品質分={loser_q:.2f}。{extra_note}"
+        f"排序名額淘汰（上限 {int(max_cards)}）：與保留貼文高度相近（sim={best_sim:.2f}）。"
+        f"保留方完整度 {winner_d} > 淘汰方 {loser_d}（保留：{winner_detail_txt}；淘汰：{loser_detail_txt}），"
+        f"品質分 {winner_q:.2f} > {loser_q:.2f}。"
     )
     return _dedupe_drop_record(
         loser,
@@ -1006,10 +1016,15 @@ def make_section_items(cards: list[StoryCard], limit: int = 4) -> list[dict[str,
 
 
 def build_intel_sections(cards: list[StoryCard]) -> dict[str, list[dict[str, Any]]]:
-    official = [c for c in cards if c.account.lower() == "renaissxyz"]
-    community = [c for c in cards if c.account.lower() != "renaissxyz"]
+    official = [c for c in cards if c.account.lower().startswith("renaiss")]
+    community = [c for c in cards if not c.account.lower().startswith("renaiss")]
     official.sort(key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance), reverse=True)
     community.sort(key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance), reverse=True)
+    official_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    official_recent = [
+        c for c in official
+        if (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc)) >= official_cutoff
+    ]
 
     def event_key(card: StoryCard) -> tuple[int, datetime]:
         t = _parse_iso_safe(card.timeline_date)
@@ -1024,7 +1039,8 @@ def build_intel_sections(cards: list[StoryCard]) -> dict[str, list[dict[str, Any
 
     sections = {
         "official_updates": make_section_items(
-            [c for c in official if c.card_type in {"announcement", "report", "market", "feature", "event"}], 5
+            official_recent,
+            len(official_recent),
         ),
         "upcoming_events": make_section_items(events, 5),
         "upcoming_features": make_section_items(features, 5),
@@ -1605,12 +1621,19 @@ def sync_accounts(
     discord_stats: dict[str, int] = {}
     discord_errors: list[str] = []
     if discord_cfg.get("enabled"):
-        discord_cards, discord_stats, discord_errors = collect_discord_cards(
-            channel_ids=[str(x) for x in discord_cfg.get("channel_ids", []) if str(x).strip()],
-            token=str(discord_cfg.get("token") or ""),
-            since_dt=since_dt,
-            limit_per_channel=int(discord_cfg.get("limit") or DEFAULT_DISCORD_MONITOR_LIMIT),
-        )
+        try:
+            discord_cards, discord_stats, discord_errors = collect_discord_cards(
+                channel_ids=[str(x) for x in discord_cfg.get("channel_ids", []) if str(x).strip()],
+                token=str(discord_cfg.get("token") or ""),
+                since_dt=since_dt,
+                limit_per_channel=int(discord_cfg.get("limit") or DEFAULT_DISCORD_MONITOR_LIMIT),
+            )
+        except Exception as discord_error:
+            err_msg = clean_text(str(discord_error))[:220]
+            discord_errors = [err_msg] if err_msg else ["discord collect failed"]
+            account_source_errors.append(f"discord: {discord_errors[0]}")
+            discord_cards = []
+            discord_stats = {}
         for cid, count in discord_stats.items():
             account_stats[f"discord:{cid}"] = int(count)
         scanned_cards += len(discord_cards)
@@ -1741,6 +1764,7 @@ def sync_accounts(
             existing_story_cards.append(restored)
     source_ids = {str(card.id or "").strip() for card in source_cards if str(card.id or "").strip()}
     carried_forward_cards = 0
+    preserved_discord_ids: set[str] = set()
     for old_card in existing_story_cards:
         old_id = str(old_card.id or "").strip()
         if not old_id or old_id in source_ids:
@@ -1750,6 +1774,10 @@ def sync_accounts(
             source_cards.append(old_card)
             source_ids.add(old_id)
             carried_forward_cards += 1
+            if discord_errors and _is_discord_source_card(old_card):
+                preserved_discord_ids.add(old_id)
+    if preserved_discord_ids:
+        force_ids |= preserved_discord_ids
 
     for card in source_cards:
         _upsert_lifecycle(_card_progress_item(card), stage="scanned")

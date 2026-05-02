@@ -600,6 +600,10 @@ def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str
 
 def resolve_discord_monitor_config() -> dict[str, Any]:
     token = str(os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or "").strip()
+    if token.lower().startswith("bot "):
+        token = token[4:].strip()
+    if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
+        token = token[1:-1].strip()
     raw_channels = str(
         os.getenv("DISCORD_MONITOR_CHANNEL_IDS")
         or os.getenv("DISCORD_MONITOR_CHANNEL_ID")

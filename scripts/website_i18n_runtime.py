@@ -9,6 +9,7 @@ import json
 import multiprocessing as mp
 import os
 import re
+import sys
 import time
 import traceback
 from datetime import datetime, timezone
@@ -78,12 +79,14 @@ I18N_FEED_LIST_KEYS = {
     "takeaways",
     "bullets",
     "detail_lines",
+    "tags",
+    "key_terms",
 }
 I18N_MAX_TARGET_TEXTS = int(os.getenv("I18N_MAX_TARGET_TEXTS", "0") or "0")
 I18N_MAX_LIST_ITEMS_PER_FIELD = int(os.getenv("I18N_MAX_LIST_ITEMS_PER_FIELD", "0") or "0")
 I18N_FEED_CHUNK_SIZE = max(3, int(os.getenv("I18N_FEED_CHUNK_SIZE", "12") or "12"))
 I18N_FEED_FALLBACK_MODE = str(os.getenv("I18N_FEED_FALLBACK_MODE", "base") or "base").strip().lower()
-I18N_MINIMAX_HARD_TIMEOUT_SEC = float(os.getenv("I18N_MINIMAX_HARD_TIMEOUT_SEC", "150") or "150")
+I18N_MINIMAX_HARD_TIMEOUT_SEC = float(os.getenv("I18N_MINIMAX_HARD_TIMEOUT_SEC", "300") or "300")
 I18N_SKIP_KEYS = {
     "id",
     "url",
@@ -764,7 +767,7 @@ def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str) -> 
         "4) 只輸出 JSON 字串陣列。\n\n"
         f"source={json.dumps(texts, ensure_ascii=False)}"
     )
-    raw = minimax_chat(prompt, api_key)
+    raw = _minimax_chat_with_watchdog(prompt, api_key)
     parsed = _parse_json_array(raw)
     if len(parsed) != len(texts):
         return list(texts)
@@ -1438,8 +1441,13 @@ def _minimax_chat_worker(queue: object, prompt: str, api_key: str) -> None:
 def _minimax_chat_with_watchdog(prompt: str, api_key: str) -> str:
     timeout_sec = float(I18N_MINIMAX_HARD_TIMEOUT_SEC or 0.0)
     if timeout_sec <= 0:
-        return minimax_chat(prompt, api_key)
-    ctx = mp.get_context("spawn")
+        timeout_sec = 300.0
+    start_methods = mp.get_all_start_methods()
+    if sys.platform == "darwin":
+        ctx_name = "spawn"
+    else:
+        ctx_name = "fork" if "fork" in start_methods else "spawn"
+    ctx = mp.get_context(ctx_name)
     q = ctx.Queue(maxsize=1)
     proc = ctx.Process(target=_minimax_chat_worker, args=(q, prompt, api_key), daemon=True)
     proc.start()
@@ -1455,6 +1463,21 @@ def _minimax_chat_with_watchdog(prompt: str, api_key: str) -> str:
     if bool(row.get("ok")):
         return str(row.get("content") or "")
     raise RuntimeError(str(row.get("error") or "MiniMax worker failed"))
+
+
+def _is_timeout_like_error(exc: Exception | str) -> bool:
+    text = str(exc or "").lower()
+    if not text:
+        return False
+    markers = (
+        "timeout",
+        "timed out",
+        "hard-timeout",
+        "readtimeout",
+        "connecttimeout",
+        "deadline exceeded",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _translate_chunk_agent(
@@ -1801,17 +1824,34 @@ def _translate_feed_text_map(
             )
         except Exception as chunk_error:
             chunk_errors.append(str(chunk_error)[:220])
+            timeout_like = _is_timeout_like_error(chunk_error)
             _append_i18n_translate_trace(
                 {
-                    "stage": "translate_chunk_retry_split",
+                    "stage": "translate_chunk_skip_timeout" if timeout_like else "translate_chunk_retry_split",
                     "lang": tag,
                     "chunk_index": chunk_index,
                     "chunk_total": chunk_total,
                     "chunk_size": len(chunk),
                     "error": str(chunk_error)[:220],
-                    "status": "retry",
+                    "status": "skip" if timeout_like else "retry",
                 }
             )
+            if timeout_like:
+                for source in chunk:
+                    single_keys = entry_keys_by_source.get(source, [])
+                    for entry_key in single_keys:
+                        state = entry_states.get(entry_key)
+                        if isinstance(state, dict):
+                            state["failed"] = True
+                done_count = sum(1 for state in entry_states.values() if bool(state.get("translated")))
+                _set_i18n_lang_progress(
+                    tag,
+                    total=len(normalized_entries),
+                    done=done_count,
+                    status="running",
+                    mode="live",
+                )
+                continue
             for source in chunk:
                 single_keys = entry_keys_by_source.get(source, [])
                 single_card_ids: list[str] = []
@@ -2726,6 +2766,29 @@ def _build_i18n_feed_bundle_async(
 
 def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str, object]:
     tag = _normalize_lang_tag(lang)
+    src_generated = str(feed.get("generated_at") or "").strip()
+    if tag != "zh-Hant" and src_generated:
+        with I18N_STATE_LOCK:
+            active_status = str(I18N_BUILD_STATE.get("status") or "").strip().lower()
+            active_source = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
+        if not (active_status == "running" and active_source == src_generated):
+            try:
+                targets = [x for x in ["en", "ko", "zh-Hans"] if x in I18N_TARGET_LANGS]
+                if tag in targets:
+                    targets = [tag] + [x for x in targets if x != tag]
+                _append_i18n_runtime_log(
+                    "i18n_auto_enqueue_from_feed_request",
+                    {
+                        "request_lang": tag,
+                        "source_generated_at": src_generated,
+                        "active_status": active_status,
+                        "active_source_generated_at": active_source,
+                        "target_langs": targets,
+                    },
+                )
+                _queue_i18n_retranslate(feed, target_langs=targets, force_full=False)
+            except Exception:
+                pass
     if tag == "zh-Hant":
         out = copy.deepcopy(feed)
         if isinstance(out, dict):
@@ -2754,7 +2817,6 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         return out
 
     bundle = _load_i18n_feed_bundle()
-    src_generated = str(feed.get("generated_at") or "").strip()
     bundle_generated = str(bundle.get("source_generated_at") or "").strip() if isinstance(bundle, dict) else ""
     bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION if isinstance(bundle, dict) else False
     if not bundle or not bundle_version_ok:
@@ -2839,6 +2901,8 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             continue
         base_key_set.add(key)
         base_key_rows.append((key, raw))
+    base_key_map: dict[str, dict[str, object]] = {key: raw for key, raw in base_key_rows}
+    fallback_mode = _resolve_card_fallback_mode(tag)
 
     annotated_cards: list[dict[str, object]] = []
     visible_cards: list[dict[str, object]] = []
@@ -2860,6 +2924,8 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         status_row = card_progress_map.get(card_key) if card_key else {}
         i18n_status, is_ready = _compose_card_i18n_status(card_key, status_row, default_ready_when_missing=True)
         has_target_text = True if tag == "zh-Hant" else _card_has_target_text(row, tag)
+        using_base_fallback = False
+        visible_row = row
         if has_target_text and tag != "zh-Hant":
             is_ready = True
             if str(i18n_status.get("status") or "").strip().lower() not in {"translated", "ready"}:
@@ -2868,7 +2934,11 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             is_ready = False
             if str(i18n_status.get("status") or "").strip().lower() in {"translated", "partial", "ready"}:
                 i18n_status["status"] = "pending"
+            if fallback_mode == "base" and card_key and isinstance(base_key_map.get(card_key), dict):
+                visible_row = copy.deepcopy(base_key_map[card_key])
+                using_base_fallback = True
         i18n_status["is_ready"] = is_ready
+        i18n_status["using_base_fallback"] = using_base_fallback
         if card_key:
             seen_base_keys.add(card_key)
         if i18n_status["status"] == "translated":
@@ -2881,7 +2951,10 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             card_pending += 1
         row["_i18n_status"] = i18n_status
         annotated_cards.append(row)
-        if is_ready:
+        if using_base_fallback:
+            visible_row["_i18n_status"] = i18n_status
+            visible_cards.append(visible_row)
+        elif is_ready:
             visible_cards.append(row)
 
     missing_base_keys = [k for k, _ in base_key_rows if k not in seen_base_keys]
@@ -2893,6 +2966,7 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         status_row = card_progress_map.get(missing_key)
         i18n_status, is_ready = _compose_card_i18n_status(missing_key, status_row, default_ready_when_missing=False)
         has_target_text = True if tag == "zh-Hant" else _card_has_target_text(row, tag)
+        using_base_fallback = False
         if has_target_text and tag != "zh-Hant":
             is_ready = True
             if str(i18n_status.get("status") or "").strip().lower() not in {"translated", "ready"}:
@@ -2901,7 +2975,10 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             is_ready = False
             if str(i18n_status.get("status") or "").strip().lower() in {"translated", "partial", "ready"}:
                 i18n_status["status"] = "pending"
+            if fallback_mode == "base":
+                using_base_fallback = True
         i18n_status["is_ready"] = is_ready
+        i18n_status["using_base_fallback"] = using_base_fallback
         if i18n_status["status"] == "translated":
             card_translated += 1
         elif is_ready:
@@ -2912,12 +2989,12 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             card_pending += 1
         row["_i18n_status"] = i18n_status
         annotated_cards.append(row)
-        if is_ready:
+        if using_base_fallback or is_ready:
             visible_cards.append(row)
 
     card_total = len(annotated_cards)
-    card_ready = len(visible_cards)
-    card_hidden = max(0, card_total - card_ready)
+    card_ready = card_translated + card_partial
+    card_hidden = max(0, card_total - len(visible_cards))
     card_missing = len(missing_base_keys)
     card_extra = len(extra_keys)
     fallback_cards = max(0, card_total - card_translated)
