@@ -1453,8 +1453,14 @@ def sync_accounts(
     )
     account_cards = []
     account_stats = {}
+    account_source_errors: list[str] = []
     for username in target_accounts:
-        cards = collect_account_cards(username, since_dt=since_dt, max_posts=max_posts_per_account)
+        cards: list[StoryCard] = []
+        try:
+            cards = collect_account_cards(username, since_dt=since_dt, max_posts=max_posts_per_account)
+        except Exception as account_error:
+            account_source_errors.append(f"@{str(username).lstrip('@')}: {clean_text(str(account_error))[:160]}")
+            cards = []
         account_cards.extend(cards)
         account_stats[username] = len(cards)
         scanned_cards += len(cards)
@@ -1894,6 +1900,8 @@ def sync_accounts(
     payload["post_lifecycle"] = lifecycle_snapshot[:180]
     payload["dedupe_decisions"] = [row for row in lifecycle_snapshot if str(row.get("stage") or "") == "dedupe_dropped"][:180]
     payload["source_stats"] = account_stats
+    if account_source_errors:
+        payload["source_errors"] = account_source_errors[:12]
     quality: dict[str, str] = {}
     for username in target_accounts:
         providers = {c.provider for c in merged_cards if c.account.lower() == username.lower() and c.provider}

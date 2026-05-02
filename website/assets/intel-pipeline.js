@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const DEFAULT_INTEL_API_BASE = "https://gavinx.zeabur.app";
+  const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
   const INTEL_API_BASE = (() => {
     const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
     const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");

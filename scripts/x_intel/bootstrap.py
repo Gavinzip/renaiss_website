@@ -37,8 +37,9 @@ DEFAULT_CURATED_MAX_CARDS = 24
 MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
-ALLOWED_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight"}
-ALLOWED_TOPIC_LABELS = {"events", "official", "sbt", "pokemon", "alpha", "tools", "other"}
+COLLECTIBLES_DISCORD_CHANNEL_IDS = {"1480867987270402149"}
+ALLOWED_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight", "trend"}
+ALLOWED_TOPIC_LABELS = {"events", "official", "sbt", "pokemon", "alpha", "tools", "collectibles", "other"}
 ALLOWED_FEEDBACK_LABELS = ALLOWED_CARD_TYPES | ALLOWED_TOPIC_LABELS | {"exclude"}
 JINA_HOST = "r.jina.ai"
 JINA_MIN_INTERVAL_SECONDS = 6.0
@@ -48,6 +49,8 @@ JINA_RATE_LOCK = Lock()
 JINA_LAST_REQUEST_AT = 0.0
 
 STATUS_RE = re.compile(r"https?://x\.com/([A-Za-z0-9_]+)/status/(\d+)", re.I)
+DISCORD_CARD_ID_RE = re.compile(r"^discord-(\d+)-\d+$", re.I)
+DISCORD_MESSAGE_URL_RE = re.compile(r"discord\.com/channels/[^/\s]+/(\d+)/\d+", re.I)
 TITLE_RE = re.compile(r"^Title:\s*(.+?)\s*/\s*X\s*$", re.M | re.S)
 PUBLISHED_RE = re.compile(r"^Published Time:\s*(.+)$", re.M)
 MARKDOWN_RE = re.compile(r"Markdown Content:\s*(.*)$", re.S)
@@ -89,6 +92,12 @@ ANNOUNCE_SIGNAL_RE = re.compile(
 )
 REPORT_SIGNAL_RE = re.compile(
     r"分析|report|投研|guide|教程|教學|教学|指南|策略|总结|總結|整理|懶人包|懒人包",
+    re.I,
+)
+COLLECTIBLES_SIGNAL_RE = re.compile(
+    r"collectibles?|collectible\s+market|trading\s*cards?|card\s*hobby|graded\s*cards?|grading|psa|bgs|cgc|"
+    r"auction|拍賣|拍卖|收藏品|收藏市場|收藏市场|收藏趨勢|收藏趋势|卡牌市場|卡牌市场|二級市場|二级市场|"
+    r"寶可夢卡|宝可梦卡|pokemon\s+cards?|one\s*piece\s+cards?|sports\s+cards?",
     re.I,
 )
 REWARD_SIGNAL_RE = re.compile(
@@ -209,6 +218,23 @@ def data_dir() -> Path:
     return path
 
 
+def is_collectibles_discord_channel(channel_id: str) -> bool:
+    return str(channel_id or "").strip() in COLLECTIBLES_DISCORD_CHANNEL_IDS
+
+
+def is_collectibles_source_id(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    card_match = DISCORD_CARD_ID_RE.match(raw)
+    if card_match and is_collectibles_discord_channel(card_match.group(1)):
+        return True
+    url_match = DISCORD_MESSAGE_URL_RE.search(raw)
+    if url_match and is_collectibles_discord_channel(url_match.group(1)):
+        return True
+    return False
+
+
 def load_environment() -> None:
     load_dotenv(project_root() / ".env")
     load_dotenv(website_root() / ".env")
@@ -232,13 +258,6 @@ def resolve_minimax_key() -> str:
     ]
     for name in candidates:
         value = str(os.getenv(name) or "").strip()
-        if value and (
-            (value.startswith('"') and value.endswith('"'))
-            or (value.startswith("'") and value.endswith("'"))
-        ):
-            value = value[1:-1].strip()
-        if value.lower().startswith("bearer "):
-            value = value.split(" ", 1)[1].strip()
         if value:
             return value
     return ""
@@ -521,6 +540,15 @@ def fetch_text(url: str, timeout: int = 45) -> str:
 
 
 def fetch_profile_page(username: str) -> str:
+    profile_timeout = 25
+    try:
+        profile_timeout = int(float(os.getenv("X_INTEL_PROFILE_FETCH_TIMEOUT_SEC") or profile_timeout))
+    except Exception:
+        profile_timeout = 25
+    if profile_timeout < 8:
+        profile_timeout = 8
+    if profile_timeout > 90:
+        profile_timeout = 90
     variants = [
         f"https://r.jina.ai/http://x.com/{username}",
         f"https://r.jina.ai/http://x.com/{username}?mx=1",
@@ -528,7 +556,7 @@ def fetch_profile_page(username: str) -> str:
     combined: list[str] = []
     for url in variants:
         try:
-            combined.append(fetch_text(url))
+            combined.append(fetch_text(url, timeout=profile_timeout))
         except Exception:
             continue
     return "\n\n".join(combined)
@@ -793,6 +821,7 @@ def choose_template_id(card_type: str) -> str:
     mapping = {
         "event": "event_poster",
         "market": "market_signal",
+        "trend": "collectibles_trend",
         "announcement": "announcement_timeline",
         "feature": "announcement_timeline",
         "report": "community_brief",
@@ -1132,6 +1161,7 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
     has_announce = bool(ANNOUNCE_SIGNAL_RE.search(plain))
     has_market = bool(MARKET_SIGNAL_RE.search(plain))
     has_report = bool(REPORT_SIGNAL_RE.search(plain))
+    has_collectibles = bool(COLLECTIBLES_SIGNAL_RE.search(plain))
     has_numbers = bool(re.search(r"\d", plain))
     has_sbt_feature = bool(
         re.search(
@@ -1168,6 +1198,10 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
     if has_market and has_numbers:
         return "market", "data", ["市場", "數據"]
 
+    # 收藏品新聞/產業動態用獨立趨勢卡，避免混進純市場數字或泛社群觀點。
+    if has_collectibles and not has_feature and not has_announce:
+        return "trend", "trend", ["收藏", "趨勢"]
+
     # 功能進度與公告分流：產品/版本/開放屬 feature，制度公告屬 announcement。
     if has_feature and not has_guide:
         return "feature", "timeline", ["功能", "即將開放"]
@@ -1188,6 +1222,7 @@ def default_style_for_type(card_type: str) -> tuple[str, list[str]]:
         "event": ("poster", ["活動", "參與"]),
         "feature": ("timeline", ["功能", "即將開放"]),
         "market": ("data", ["市場", "數據"]),
+        "trend": ("trend", ["收藏", "趨勢"]),
         "report": ("brief", ["分析", "內容"]),
         "announcement": ("timeline", ["更新", "公告"]),
         "insight": ("brief", ["觀點"]),
@@ -1204,6 +1239,7 @@ def score_card(card: StoryCard) -> float:
         "feature": 4.2,
         "announcement": 3.8,
         "market": 3.4,
+        "trend": 3.2,
         "report": 3.0,
         "insight": 1.5,
     }
@@ -1260,6 +1296,7 @@ def _headline_prefix(card_type: str) -> str:
     mapping = {
         "event": "活動重點",
         "market": "市場訊號",
+        "trend": "收藏趨勢",
         "announcement": "官方公告",
         "feature": "功能進度",
         "report": "重點分析",
@@ -1605,4 +1642,3 @@ def build_event_facts(text: str) -> dict[str, str]:
             "schedule": schedule,
         }
     )
-

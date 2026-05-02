@@ -1,7 +1,31 @@
 (function () {
   "use strict";
 
-  const INTEL_API_BASE = "https://renaiss.zeabur.app";
+  const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
+  const INTEL_API_BASE = (() => {
+    const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
+    const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
+    const fromData = normalize(document.body?.dataset?.intelApiBase || "");
+    const search = new URLSearchParams(window.location.search || "");
+    const fromQuery = normalize(search.get("intel_api_base") || "");
+    let fromStorage = "";
+    try {
+      fromStorage = normalize(localStorage.getItem("intel_api_base") || "");
+    } catch (_error) {
+      fromStorage = "";
+    }
+    const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
+    const fromHost = localHost ? normalize(window.location.origin || "") : "";
+    const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
+    return (
+      fromQuery
+      || fromWindow
+      || fromData
+      || fromHost
+      || safeStorage
+      || DEFAULT_INTEL_API_BASE
+    );
+  })();
   const INTEL_AUTH_TOKEN_KEY = "intel_admin_bearer_token_v1";
   const pollState = {
     timer: null,
@@ -88,9 +112,9 @@
 
   function chipClass(status) {
     const s = String(status || "").toLowerCase();
-    if (s === "done" || s === "ok") return "ok";
-    if (s === "running") return "run";
-    if (s === "failed") return "err";
+    if (["done", "ok", "ready"].includes(s)) return "ok";
+    if (["running", "analyzing", "translating"].includes(s)) return "run";
+    if (["failed", "dedupe_dropped"].includes(s)) return "err";
     return "warn";
   }
 
@@ -103,6 +127,12 @@
       queued: "排隊中",
       done: "完成",
       ok: "完成",
+      scanned: "已掃描",
+      analyzing: "分析中",
+      dedupe_dropped: "去重淘汰",
+      selected: "已保留",
+      translating: "翻譯中",
+      ready: "可上線",
       failed: "失敗",
       idle: "待命",
     };
@@ -110,12 +140,30 @@
     return `<span class="chip ${chipClass(lower)}">${escapeHtml(label)}</span>`;
   }
 
+  function renderDropReason(item) {
+    const row = item && typeof item === "object" ? item : {};
+    const stage = String(row.stage || "").trim().toLowerCase();
+    if (stage !== "dedupe_dropped") return "--";
+    const reason = String(row.reason || "").trim();
+    const winnerUrl = String(row.winner_url || "").trim();
+    const winnerId = String(row.winner_post_id || "").trim();
+    const winnerTitle = String(row.winner_title || "").trim();
+    const winnerLabel = winnerTitle || winnerId || winnerUrl || "勝出貼文";
+    const winnerHtml = winnerUrl
+      ? `<a class="link" href="${escapeHtml(winnerUrl)}" target="_blank" rel="noreferrer">${escapeHtml(winnerLabel)}</a>`
+      : (winnerLabel ? escapeHtml(winnerLabel) : "");
+    if (reason && winnerHtml) return `${escapeHtml(reason)}<br><span style="color:#6282a4;">保留：${winnerHtml}</span>`;
+    if (reason) return escapeHtml(reason);
+    if (winnerHtml) return `<span style="color:#6282a4;">保留：${winnerHtml}</span>`;
+    return "--";
+  }
+
   function renderPostStages(rows) {
     const body = document.getElementById("tracker-post-stage-body");
     if (!body) return;
     const items = Array.isArray(rows) ? rows : [];
     if (!items.length) {
-      body.innerHTML = "<tr><td colspan=\"5\">目前沒有可追蹤的貼文狀態。</td></tr>";
+      body.innerHTML = "<tr><td colspan=\"6\">目前沒有可追蹤的貼文狀態。</td></tr>";
       return;
     }
     body.innerHTML = items.map((item) => {
@@ -124,7 +172,8 @@
       const curation = statusChip(item?.curation);
       const translation = statusChip(item?.translation);
       const stage = statusChip(item?.stage, "待處理");
-      return `<tr><td>${titleHtml}</td><td>${scan}</td><td>${curation}</td><td>${translation}</td><td>${stage}</td></tr>`;
+      const reason = renderDropReason(item);
+      return `<tr><td>${titleHtml}</td><td>${scan}</td><td>${curation}</td><td>${translation}</td><td>${stage}</td><td>${reason}</td></tr>`;
     }).join("");
   }
 

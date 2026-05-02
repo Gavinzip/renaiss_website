@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 
 from . import bootstrap as _bootstrap
@@ -24,6 +23,28 @@ def _is_dns_resolution_error(exc: Exception) -> bool:
         "getaddrinfo failed",
     )
     return any(marker in msg for marker in markers)
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return max(minimum, min(maximum, int(default)))
+    try:
+        value = int(float(raw))
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return max(minimum, min(maximum, float(default)))
+    try:
+        value = float(raw)
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
 
 def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
     model_name = str(
@@ -111,8 +132,14 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     raise RuntimeError(f"MiniMax response missing content; model={model_name}")
 
 
-def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_context: str = "") -> None:
-    for card in cards:
+def apply_minimax_story_refine(
+    cards: list[StoryCard],
+    api_key: str,
+    feedback_context: str = "",
+    progress_cb: Any = None,
+) -> None:
+    total_cards = len(cards)
+    for idx, card in enumerate(cards, start=1):
         prompt = (
             "你是TCG社群編輯。請先完整讀懂內容，再輸出『非抄寫』重整版本。"
             "輸出必須是 JSON，欄位固定為："
@@ -214,7 +241,13 @@ def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_co
             enrich_card_metadata(card)
             normalize_card_semantics(card, preserve_type=True)
         except Exception:
-            continue
+            pass
+        finally:
+            if callable(progress_cb):
+                try:
+                    progress_cb(idx, total_cards, card)
+                except Exception:
+                    pass
 
 
 def parse_json_block(text: str) -> dict[str, Any] | None:
@@ -546,8 +579,21 @@ def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str
     if twitter_cli_data:
         return twitter_cli_data, "twitter-cli", meta
 
+    status_timeout = _env_int(
+        "X_INTEL_STATUS_FETCH_TIMEOUT_SEC",
+        default=28,
+        minimum=8,
+        maximum=90,
+    )
     try:
-        return fetch_text(f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}"), "r.jina.ai", meta
+        return (
+            fetch_text(
+                f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}",
+                timeout=status_timeout,
+            ),
+            "r.jina.ai",
+            meta,
+        )
     except Exception:
         return None, "none", meta
 
@@ -663,6 +709,28 @@ def fetch_discord_channel_messages(channel_id: str, token: str, limit: int = DEF
     return [x for x in data if isinstance(x, dict)]
 
 
+def is_collectibles_discord_channel(channel_id: str) -> bool:
+    import os
+
+    cid = str(channel_id or "").strip()
+    if not cid:
+        return False
+    raw = (
+        os.getenv("DISCORD_COLLECTIBLES_CHANNEL_IDS")
+        or os.getenv("DISCORD_COLLECTIBLES_CHANNEL_ID")
+        or ""
+    )
+    if not raw:
+        return False
+    allow = {
+        part.strip()
+        for token in raw.split(",")
+        for part in token.split()
+        if part.strip()
+    }
+    return cid in allow
+
+
 def apply_discord_channel_context(
     channel_id: str,
     card_type: str,
@@ -684,25 +752,6 @@ def apply_discord_channel_context(
                 next_tags.insert(0, label)
 
     return next_type, next_layout, next_tags[:3], normalize_topic_labels(topic_labels)
-
-
-def is_collectibles_discord_channel(channel_id: str) -> bool:
-    cid = str(channel_id or "").strip()
-    if not cid:
-        return False
-    raw = str(
-        os.getenv("DISCORD_COLLECTIBLES_CHANNEL_IDS")
-        or os.getenv("DISCORD_COLLECTIBLES_CHANNEL_ID")
-        or ""
-    ).strip()
-    if not raw:
-        return False
-    configured = {
-        part.strip()
-        for part in re.split(r"[,\s]+", raw)
-        if part.strip()
-    }
-    return cid in configured
 
 
 def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) -> StoryCard | None:
@@ -781,7 +830,12 @@ def collect_discord_cards(
             try:
                 card = build_storycard_from_discord_message(item, channel_id=cid)
             except Exception as exc:
-                errors.append(f"{cid}: build_card_failed {clean_text(str(exc))[:90]}")
+                message_id = str(item.get("id") or "").strip()
+                err = clean_text(str(exc))[:120] or "build_card_failed"
+                if message_id:
+                    errors.append(f"{cid}:{message_id}: {err}")
+                else:
+                    errors.append(f"{cid}: {err}")
                 continue
             if not card:
                 continue
@@ -798,6 +852,17 @@ def collect_discord_cards(
 
 
 def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DEFAULT_MAX_POSTS_PER_ACCOUNT) -> list[StoryCard]:
+    account_fetch_budget_sec = _env_float(
+        "X_INTEL_ACCOUNT_FETCH_BUDGET_SEC",
+        default=210.0,
+        minimum=60.0,
+        maximum=1200.0,
+    )
+    account_started_at = time.monotonic()
+
+    def _budget_exhausted() -> bool:
+        return (time.monotonic() - account_started_at) >= account_fetch_budget_sec
+
     cached_payload = read_json(data_dir() / "x_intel_feed.json", {})
     cached_cards_raw = cached_payload.get("cards") if isinstance(cached_payload, dict) else []
     cached_cards: list[StoryCard] = []
@@ -858,12 +923,14 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
 
     ids: list[str] = []
     for _ in range(3):
+        if _budget_exhausted():
+            break
         profile_text = fetch_profile_page(username)
         ids = extract_status_ids(profile_text, username)
         if ids:
             break
 
-    if len(ids) < max_posts:
+    if len(ids) < max_posts and not _budget_exhausted():
         rss_ids = fetch_account_status_ids_from_nitter_rss(
             username,
             limit=max(max_posts * 10, 60),
@@ -912,6 +979,8 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
     max_fetch_rounds = max(max_posts * 8, 48)
     max_collected = max(max_posts * 3, 24)
     while queue and len(processed) < max_fetch_rounds:
+        if _budget_exhausted():
+            break
         tweet_id = queue.pop(0)
         if tweet_id in processed:
             continue
