@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import time
+from collections import deque
 from datetime import timedelta
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -42,6 +43,12 @@ I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
+PIPELINE_RUNTIME_LOG_PATH = DATA_ROOT / "intel_runtime_log.jsonl"
+RUNTIME_LOG_PATHS: dict[str, Path] = {
+    "pipeline": PIPELINE_RUNTIME_LOG_PATH,
+    "i18n_runtime": DATA_ROOT / "i18n_runtime_log.jsonl",
+    "i18n_trace": DATA_ROOT / "i18n_translate_trace.jsonl",
+}
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
@@ -362,6 +369,93 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(default)
 
 
+def _safe_limit(value: object, default: int = 200, min_value: int = 1, max_value: int = 1000) -> int:
+    raw = _safe_int(value, default)
+    return max(min_value, min(max_value, raw))
+
+
+def _append_pipeline_runtime_log(event: str, **payload: object) -> None:
+    row: dict[str, object] = {
+        "ts": _now_iso(),
+        "event": str(event or "").strip() or "unknown",
+    }
+    for key, value in payload.items():
+        if value is None:
+            continue
+        row[str(key)] = value
+    try:
+        PIPELINE_RUNTIME_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with PIPELINE_RUNTIME_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        return
+
+
+def _read_jsonl_tail(path: Path, limit: int = 200, keyword: str = "") -> list[dict]:
+    if not path.exists() or not path.is_file():
+        return []
+    safe_limit = _safe_limit(limit, default=200, min_value=1, max_value=2000)
+    keyword_norm = str(keyword or "").strip().lower()
+    rows: deque[dict] = deque(maxlen=safe_limit)
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                if keyword_norm and keyword_norm not in text.lower():
+                    continue
+                try:
+                    obj = json.loads(text)
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                    else:
+                        rows.append({"raw": obj})
+                except Exception:
+                    rows.append({"raw": text})
+    except Exception:
+        return []
+    return list(rows)
+
+
+def _read_runtime_logs(kind: str, limit: int = 200, keyword: str = "") -> dict[str, object]:
+    tag = str(kind or "i18n_runtime").strip()
+    safe_limit = _safe_limit(limit, default=200, min_value=1, max_value=1000)
+    if tag == "all":
+        merged: list[dict] = []
+        for source_name, source_path in RUNTIME_LOG_PATHS.items():
+            for row in _read_jsonl_tail(source_path, limit=safe_limit, keyword=keyword):
+                item = dict(row)
+                item.setdefault("_source", source_name)
+                merged.append(item)
+        merged.sort(key=lambda x: str(x.get("ts") or x.get("updated_at") or ""))
+        merged = merged[-safe_limit:]
+        return {
+            "kind": "all",
+            "limit": safe_limit,
+            "rows": merged,
+            "sources": list(RUNTIME_LOG_PATHS.keys()),
+        }
+
+    target = RUNTIME_LOG_PATHS.get(tag)
+    if target is None:
+        return {
+            "kind": tag,
+            "limit": safe_limit,
+            "rows": [],
+            "error": f"unknown kind: {tag}",
+            "allowed_kinds": list(RUNTIME_LOG_PATHS.keys()) + ["all"],
+        }
+    rows = _read_jsonl_tail(target, limit=safe_limit, keyword=keyword)
+    return {
+        "kind": tag,
+        "limit": safe_limit,
+        "path": str(target),
+        "exists": target.exists(),
+        "rows": rows,
+    }
+
+
 def _normalize_progress_item(row: object) -> dict[str, str]:
     data = row if isinstance(row, dict) else {}
     return {
@@ -438,6 +532,30 @@ def _sync_progress_hook(payload: dict[str, object]) -> None:
     event = str(payload.get("event") or "").strip().lower()
     if not event:
         return
+    log_payload: dict[str, object] = {"event_name": event}
+    if event.startswith("scan"):
+        log_payload.update(
+            {
+                "done_sources": _safe_int(payload.get("done_sources"), 0),
+                "total_sources": _safe_int(payload.get("total_sources"), 0),
+                "found_cards": _safe_int(payload.get("found_cards"), 0),
+                "latest_source": str(payload.get("latest_source") or ""),
+            }
+        )
+    elif event.startswith("curation"):
+        current = payload.get("current_item")
+        current_item = current if isinstance(current, dict) else {}
+        log_payload.update(
+            {
+                "done_cards": _safe_int(payload.get("done_cards"), 0),
+                "total_cards": _safe_int(payload.get("total_cards"), 0),
+                "current_card_id": str(current_item.get("id") or ""),
+                "current_title": str(current_item.get("title") or ""),
+            }
+        )
+    elif event == "lifecycle_update":
+        rows = payload.get("rows")
+        log_payload["rows_count"] = len(rows) if isinstance(rows, list) else 0
     with SYNC_STATE_LOCK:
         pipeline = SYNC_STATE.get("sync_pipeline")
         if not isinstance(pipeline, dict):
@@ -485,6 +603,7 @@ def _sync_progress_hook(payload: dict[str, object]) -> None:
 
         pipeline["updated_at"] = _now_iso()
         SYNC_STATE["sync_pipeline"] = pipeline
+    _append_pipeline_runtime_log("sync_progress", **log_payload)
 
 
 def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict, i18n_alignment: dict) -> dict:
@@ -1050,11 +1169,20 @@ def _start_sync_state(trigger: str = "") -> None:
             run_id=run_id,
             trigger=str(trigger or "manual"),
         )
+    _append_pipeline_runtime_log(
+        "sync_start",
+        run_id=run_id,
+        trigger=str(trigger or "manual"),
+    )
 
 
 def _finish_sync_state_ok(started_monotonic: float) -> None:
     now_iso = _now_iso()
     duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
+    scan_done_sources = 0
+    scan_total_sources = 0
+    curation_done_cards = 0
+    curation_total_cards = 0
     with SYNC_STATE_LOCK:
         SYNC_STATE["status"] = "ok"
         SYNC_STATE["finished_at"] = now_iso
@@ -1071,8 +1199,22 @@ def _finish_sync_state_ok(started_monotonic: float) -> None:
             if isinstance(curation, dict) and str(curation.get("status") or "").strip().lower() == "running":
                 if _safe_int(curation.get("done_cards")) >= _safe_int(curation.get("total_cards")):
                     curation["status"] = "ok"
+            if isinstance(scan, dict):
+                scan_done_sources = _safe_int(scan.get("done_sources"), 0)
+                scan_total_sources = _safe_int(scan.get("total_sources"), 0)
+            if isinstance(curation, dict):
+                curation_done_cards = _safe_int(curation.get("done_cards"), 0)
+                curation_total_cards = _safe_int(curation.get("total_cards"), 0)
             pipeline["updated_at"] = now_iso
             SYNC_STATE["sync_pipeline"] = pipeline
+    _append_pipeline_runtime_log(
+        "sync_finish_ok",
+        duration_ms=duration_ms,
+        scan_done_sources=scan_done_sources,
+        scan_total_sources=scan_total_sources,
+        curation_done_cards=curation_done_cards,
+        curation_total_cards=curation_total_cards,
+    )
 
 
 def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
@@ -1093,6 +1235,11 @@ def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> N
                     row["status"] = "failed"
             pipeline["updated_at"] = now_iso
             SYNC_STATE["sync_pipeline"] = pipeline
+    _append_pipeline_runtime_log(
+        "sync_finish_failed",
+        duration_ms=duration_ms,
+        error=str(error_message or "unknown_error"),
+    )
 
 
 def _mark_sync_schedule(
@@ -1122,10 +1269,23 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
             window_days=max(1, int(days)),
             progress_hook=_sync_progress_hook,
         )
-        queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+        cards = result.get("cards")
+        _append_pipeline_runtime_log(
+            "sync_accounts_done",
+            trigger=trigger,
+            generated_at=str(result.get("generated_at") or ""),
+            cards_count=len(cards) if isinstance(cards, list) else 0,
+        )
+        retranslate = queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+        _append_pipeline_runtime_log(
+            "i18n_retranslate_queued",
+            trigger=trigger,
+            retranslate=retranslate,
+        )
         _finish_sync_state_ok(started_monotonic)
         return result
     except Exception as sync_error:
+        _append_pipeline_runtime_log("sync_exception", trigger=trigger, error=str(sync_error))
         _finish_sync_state_failed(started_monotonic, str(sync_error))
         raise
 
@@ -1175,14 +1335,24 @@ def _start_x_sync_scheduler(
             )
             with SYNC_STATE_LOCK:
                 is_running = str(SYNC_STATE.get("status") or "").strip().lower() == "running"
+            _append_pipeline_runtime_log(
+                "scheduled_sync_tick",
+                scheduled_at=scheduled_at,
+                next_run_at=next_run,
+                interval_hours=safe_interval_hours,
+                window_days=safe_window_days,
+                skipped=bool(is_running),
+            )
             if is_running:
                 with SYNC_STATE_LOCK:
                     SYNC_STATE["last_error"] = "scheduled sync skipped: another sync is running"
+                _append_pipeline_runtime_log("scheduled_sync_skipped", reason="another sync is running")
                 delay = interval_seconds
                 continue
             try:
                 _run_intel_sync(accounts=None, days=safe_window_days, trigger="scheduled")
             except Exception:
+                _append_pipeline_runtime_log("scheduled_sync_error", error="sync loop exception")
                 pass
             delay = interval_seconds
 
@@ -1932,6 +2102,20 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to build admin status: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if path == "/api/intel/runtime-log":
+            if not self._require_admin_access():
+                return
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                kind = str((params.get("kind") or ["i18n_runtime"])[0] or "i18n_runtime")
+                limit = _safe_limit((params.get("limit") or ["200"])[0], default=200, min_value=1, max_value=1000)
+                keyword = str((params.get("q") or params.get("keyword") or [""])[0] or "").strip()
+                payload = _read_runtime_logs(kind=kind, limit=limit, keyword=keyword)
+                self._send_json({"ok": True, "runtime_log": payload})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to read runtime log: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
@@ -2083,6 +2267,7 @@ class Handler(SimpleHTTPRequestHandler):
                     accounts = None
                 days = int(payload.get("days", 30) or 30)
                 trigger = self._current_user() or "manual"
+                _append_pipeline_runtime_log("api_sync_request", trigger=trigger, days=max(1, days), accounts=accounts or [])
                 result = _run_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
                 self._send_json({"ok": True, "feed": result})
                 return
@@ -2145,6 +2330,13 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "feed not ready"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                     return
                 result = queue_i18n_retranslate(feed, target_langs=target_langs, force_full=force_full)
+                _append_pipeline_runtime_log(
+                    "api_retranslate_request",
+                    by=self._current_user() or "manual",
+                    target_langs=target_langs,
+                    force_full=force_full,
+                    retranslate=result,
+                )
                 self._send_json({"ok": True, "retranslate": result, "i18n": i18n_state_snapshot()})
                 return
 
@@ -2243,7 +2435,7 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
+        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/intel/runtime-log, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
