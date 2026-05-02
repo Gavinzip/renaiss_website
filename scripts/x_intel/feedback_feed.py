@@ -627,9 +627,32 @@ def _is_x_source_card(card: StoryCard) -> bool:
     return provider in {"twitter-cli", "tweet-result", "r.jina.ai"}
 
 
+def _dedupe_drop_record(
+    loser: StoryCard,
+    *,
+    reason_code: str,
+    reason: str,
+    winner: StoryCard | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": str(loser.id or ""),
+        "url": str(loser.url or ""),
+        "title": str(loser.title or ""),
+        "account": str(loser.account or ""),
+        "published_at": str(loser.published_at or ""),
+        "stage": "dedupe_dropped",
+        "reason_code": str(reason_code or "").strip(),
+        "reason": str(reason or "").strip(),
+        "winner_post_id": str(winner.id or "") if winner else "",
+        "winner_url": str(winner.url or "") if winner else "",
+        "winner_title": str(winner.title or "") if winner else "",
+    }
+
+
 def drop_discord_event_duplicates_preferring_x(
     cards: list[StoryCard],
     force_include_ids: set[str] | None = None,
+    dropped_logs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[StoryCard], int]:
     force_ids = set(force_include_ids or set())
     x_event_cards = [c for c in cards if c.card_type == "event" and _is_x_source_card(c)]
@@ -649,7 +672,8 @@ def drop_discord_event_duplicates_preferring_x(
         card_date = _event_date_hint(card)
         topic_self = dedupe_key(infer_topic_phrase(card.raw_text or card.title, card.card_type) or card.title)
         blob_self = f"{card.title} {card.summary}"
-        duplicate = False
+        duplicate_winner: StoryCard | None = None
+        duplicate_reason = ""
 
         for x_card in x_event_cards:
             if x_card.id == card.id:
@@ -663,18 +687,34 @@ def drop_discord_event_duplicates_preferring_x(
                 similarity_ratio(card.raw_text or card.title, x_card.raw_text or x_card.title),
             )
             if (same_date and (topic_overlap or text_sim >= 0.40)) or text_sim >= 0.74:
-                duplicate = True
+                duplicate_winner = x_card
+                duplicate_reason = (
+                    f"Discord 活動貼文與 X 貼文高度重複（sim={text_sim:.2f}, same_date={'yes' if same_date else 'no'}）"
+                )
                 break
 
-        if duplicate:
+        if duplicate_winner is not None:
             removed += 1
+            if isinstance(dropped_logs, list):
+                dropped_logs.append(
+                    _dedupe_drop_record(
+                        card,
+                        reason_code="discord_event_prefers_x",
+                        reason=duplicate_reason or "Discord 活動貼文被 X 來源同事件貼文取代。",
+                        winner=duplicate_winner,
+                    )
+                )
             continue
         kept.append(card)
 
     return kept, removed
 
 
-def drop_redundant_cards_local(cards: list[StoryCard], force_include_ids: set[str] | None = None) -> tuple[list[StoryCard], int]:
+def drop_redundant_cards_local(
+    cards: list[StoryCard],
+    force_include_ids: set[str] | None = None,
+    dropped_logs: list[dict[str, Any]] | None = None,
+) -> tuple[list[StoryCard], int]:
     force_ids = set(force_include_ids or set())
     picked_by_sig: dict[str, StoryCard] = {}
     passthrough: list[StoryCard] = []
@@ -695,9 +735,27 @@ def drop_redundant_cards_local(cards: list[StoryCard], force_include_ids: set[st
         prev_score = _card_quality_score(prev)
         now_score = _card_quality_score(card)
         if now_score > prev_score:
+            if isinstance(dropped_logs, list):
+                dropped_logs.append(
+                    _dedupe_drop_record(
+                        prev,
+                        reason_code="local_signature_dedupe",
+                        reason=f"本地去重：同簽名比對後保留品質分較高卡片（winner_score={now_score:.2f}, loser_score={prev_score:.2f}）。",
+                        winner=card,
+                    )
+                )
             picked_by_sig[sig] = card
             removed += 1
         else:
+            if isinstance(dropped_logs, list):
+                dropped_logs.append(
+                    _dedupe_drop_record(
+                        card,
+                        reason_code="local_signature_dedupe",
+                        reason=f"本地去重：同簽名比對後保留品質分較高卡片（winner_score={prev_score:.2f}, loser_score={now_score:.2f}）。",
+                        winner=prev,
+                    )
+                )
             removed += 1
 
     result = passthrough + list(picked_by_sig.values())
@@ -712,6 +770,7 @@ def apply_minimax_global_dedupe(
     cards: list[StoryCard],
     api_key: str,
     force_include_ids: set[str] | None = None,
+    dropped_logs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[StoryCard], int]:
     if not cards:
         return cards, 0
@@ -761,6 +820,24 @@ def apply_minimax_global_dedupe(
         out = [c for c in cards if c.id not in drop_ids]
         if len(out) < max(5, len(cards) // 2):
             return cards, 0
+        if isinstance(dropped_logs, list):
+            kept_by_sig: dict[str, StoryCard] = {}
+            for c in out:
+                sig = _dedupe_signature(c)
+                if sig and sig not in kept_by_sig:
+                    kept_by_sig[sig] = c
+            for c in cards:
+                if c.id not in drop_ids:
+                    continue
+                winner = kept_by_sig.get(_dedupe_signature(c))
+                dropped_logs.append(
+                    _dedupe_drop_record(
+                        c,
+                        reason_code="ai_global_dedupe",
+                        reason="AI 全局去重判定為重複更新。",
+                        winner=winner,
+                    )
+                )
         return out, len(drop_ids)
     except Exception:
         return cards, 0
@@ -1163,6 +1240,90 @@ def _card_progress_item(card: StoryCard) -> dict[str, Any]:
     }
 
 
+def _story_card_from_saved_row(row: dict[str, Any], fallback: StoryCard | None = None) -> StoryCard | None:
+    if not isinstance(row, dict):
+        return None
+    card_id = str(row.get("id") or "").strip()
+    if not card_id:
+        return None
+    try:
+        card = StoryCard(
+            id=card_id,
+            account=str(row.get("account") or (fallback.account if fallback else "")).strip(),
+            url=str(row.get("url") or (fallback.url if fallback else "")).strip(),
+            title=str(row.get("title") or (fallback.title if fallback else "")).strip(),
+            summary=str(row.get("summary") or (fallback.summary if fallback else "")).strip(),
+            bullets=[
+                str(x).strip()
+                for x in (row.get("bullets") if isinstance(row.get("bullets"), list) else (fallback.bullets if fallback else []))
+                if str(x).strip()
+            ][:3],
+            published_at=str(row.get("published_at") or (fallback.published_at if fallback else "")).strip(),
+            confidence=float(row.get("confidence") or (fallback.confidence if fallback else 0.55)),
+            card_type=str(row.get("card_type") or (fallback.card_type if fallback else "insight")).strip(),
+            layout=str(row.get("layout") or (fallback.layout if fallback else "brief")).strip(),
+            tags=[
+                str(x).strip()
+                for x in (row.get("tags") if isinstance(row.get("tags"), list) else (fallback.tags if fallback else []))
+                if str(x).strip()
+            ][:3],
+            raw_text=str(row.get("raw_text") or (fallback.raw_text if fallback else "")).strip(),
+            provider=str(row.get("provider") or (fallback.provider if fallback else "r.jina.ai")).strip() or "r.jina.ai",
+            cover_image=str(row.get("cover_image") or (fallback.cover_image if fallback else "")).strip(),
+            metrics=row.get("metrics") if isinstance(row.get("metrics"), dict) else (fallback.metrics if fallback else {}),
+            importance=float(row.get("importance") or (fallback.importance if fallback else 0.0)),
+            template_id=str(row.get("template_id") or (fallback.template_id if fallback else "community_brief")).strip() or "community_brief",
+            glance=str(row.get("glance") or (fallback.glance if fallback else "")).strip(),
+            timeline_date=str(row.get("timeline_date") or (fallback.timeline_date if fallback else "")).strip(),
+            urgency=str(row.get("urgency") or (fallback.urgency if fallback else "normal")).strip() or "normal",
+            manual_pick=bool(row.get("manual_pick") if row.get("manual_pick") is not None else (fallback.manual_pick if fallback else False)),
+            manual_pin=bool(row.get("manual_pin") if row.get("manual_pin") is not None else (fallback.manual_pin if fallback else False)),
+            manual_bottom=bool(row.get("manual_bottom") if row.get("manual_bottom") is not None else (fallback.manual_bottom if fallback else False)),
+            event_facts=normalize_event_facts(row.get("event_facts")),
+            topic_labels=normalize_topic_labels(row.get("topic_labels")),
+            detail_summary=str(row.get("detail_summary") or (fallback.detail_summary if fallback else "")).strip(),
+            detail_lines=normalize_detail_lines(row.get("detail_lines"), limit=6),
+            reply_to_id=str(row.get("reply_to_id") or (fallback.reply_to_id if fallback else "")).strip(),
+        )
+    except Exception:
+        return None
+    if not card.summary and fallback:
+        card.summary = fallback.summary
+    if (not card.bullets) and fallback:
+        card.bullets = list(fallback.bullets or [])
+    if not card.raw_text and fallback:
+        card.raw_text = fallback.raw_text
+    return card
+
+
+def _story_card_source_identity(card: StoryCard) -> tuple[str, str, str, str]:
+    return (
+        str(card.account or "").strip().lower(),
+        str(card.url or "").strip(),
+        str(card.published_at or "").strip(),
+        clean_text(str(card.raw_text or "")).strip(),
+    )
+
+
+def _saved_card_source_identity(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("account") or "").strip().lower(),
+        str(row.get("url") or "").strip(),
+        str(row.get("published_at") or "").strip(),
+        clean_text(str(row.get("raw_text") or "")).strip(),
+    )
+
+
+def _is_saved_card_reusable(row: dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    summary = clean_text(str(row.get("summary") or "")).strip()
+    bullets = [clean_text(str(x)).strip() for x in (row.get("bullets") or []) if clean_text(str(x)).strip()]
+    card_type = str(row.get("card_type") or "").strip().lower()
+    layout = str(row.get("layout") or "").strip().lower()
+    return bool(summary and bullets and card_type and layout)
+
+
 def sync_accounts(
     accounts: list[str] | None = None,
     window_days: int = DEFAULT_WINDOW_DAYS,
@@ -1175,6 +1336,101 @@ def sync_accounts(
 
     target_accounts = accounts or DEFAULT_ACCOUNTS
     since_dt = datetime.now(timezone.utc) - timedelta(days=window_days)
+    lifecycle_rows: dict[str, dict[str, Any]] = {}
+    lifecycle_order: list[str] = []
+
+    def _lifecycle_key(row: dict[str, Any]) -> str:
+        card_id = str(row.get("id") or "").strip()
+        if card_id:
+            return f"id:{card_id}"
+        card_url = str(row.get("url") or "").strip()
+        if card_url:
+            return f"url:{card_url}"
+        fallback = f"{str(row.get('account') or '').strip().lower()}|{str(row.get('published_at') or '').strip()}|{str(row.get('title') or '').strip()}"
+        return fallback
+
+    def _upsert_lifecycle(row: dict[str, Any], *, stage: str, reason_code: str = "", reason: str = "", winner_post_id: str = "", winner_url: str = "", winner_title: str = "") -> None:
+        key = _lifecycle_key(row)
+        if not key:
+            return
+        current = lifecycle_rows.get(key, {})
+        merged = {
+            "id": str(row.get("id") or current.get("id") or ""),
+            "url": str(row.get("url") or current.get("url") or ""),
+            "title": str(row.get("title") or current.get("title") or ""),
+            "account": str(row.get("account") or current.get("account") or ""),
+            "published_at": str(row.get("published_at") or current.get("published_at") or ""),
+            "scan": str(current.get("scan") or "pending"),
+            "curation": str(current.get("curation") or "pending"),
+            "translation": str(current.get("translation") or "pending"),
+            "stage": str(current.get("stage") or ""),
+            "reason_code": str(current.get("reason_code") or ""),
+            "reason": str(current.get("reason") or ""),
+            "winner_post_id": str(current.get("winner_post_id") or ""),
+            "winner_url": str(current.get("winner_url") or ""),
+            "winner_title": str(current.get("winner_title") or ""),
+        }
+        stage_norm = str(stage or "").strip().lower()
+        if stage_norm == "scanned":
+            merged["scan"] = "done"
+            merged["curation"] = "pending"
+            merged["translation"] = "pending"
+        elif stage_norm == "analyzing":
+            merged["scan"] = "done"
+            merged["curation"] = "running"
+            merged["translation"] = "pending"
+        elif stage_norm == "dedupe_dropped":
+            merged["scan"] = "done"
+            merged["curation"] = "done"
+            merged["translation"] = "idle"
+        elif stage_norm == "selected":
+            merged["scan"] = "done"
+            merged["curation"] = "done"
+            merged["translation"] = "pending"
+        elif stage_norm == "failed":
+            merged["scan"] = "done"
+            merged["curation"] = "failed"
+            merged["translation"] = "failed"
+        merged["stage"] = stage_norm
+        if reason_code:
+            merged["reason_code"] = str(reason_code).strip()
+        if reason:
+            merged["reason"] = str(reason).strip()
+        if winner_post_id or winner_url or winner_title:
+            merged["winner_post_id"] = str(winner_post_id or "").strip()
+            merged["winner_url"] = str(winner_url or "").strip()
+            merged["winner_title"] = str(winner_title or "").strip()
+        if stage_norm in {"selected", "scanned", "analyzing"}:
+            merged["reason_code"] = ""
+            merged["reason"] = ""
+            merged["winner_post_id"] = ""
+            merged["winner_url"] = ""
+            merged["winner_title"] = ""
+        lifecycle_rows[key] = merged
+        if key not in lifecycle_order:
+            lifecycle_order.append(key)
+
+    def _apply_dropped_logs(rows: list[dict[str, Any]]) -> None:
+        for dropped in rows:
+            if not isinstance(dropped, dict):
+                continue
+            _upsert_lifecycle(
+                dropped,
+                stage="dedupe_dropped",
+                reason_code=str(dropped.get("reason_code") or "").strip(),
+                reason=str(dropped.get("reason") or "").strip(),
+                winner_post_id=str(dropped.get("winner_post_id") or "").strip(),
+                winner_url=str(dropped.get("winner_url") or "").strip(),
+                winner_title=str(dropped.get("winner_title") or "").strip(),
+            )
+
+    def _emit_lifecycle_progress() -> None:
+        rows = [lifecycle_rows.get(key, {}) for key in lifecycle_order if isinstance(lifecycle_rows.get(key), dict)]
+        _emit_sync_progress(
+            progress_hook,
+            "lifecycle_update",
+            rows=rows[:180],
+        )
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
@@ -1319,61 +1575,210 @@ def sync_accounts(
             c.manual_pick = True
         if c.id in feedback_excluded_ids and c.id not in force_ids:
             removed_by_feedback += 1
+            _upsert_lifecycle(
+                _card_progress_item(c),
+                stage="dedupe_dropped",
+                reason_code="feedback_exclude",
+                reason="因管理員回饋規則淘汰。",
+            )
             continue
         if c.id in exclude_ids and c.id not in force_ids:
             removed_by_selection += 1
+            _upsert_lifecycle(
+                _card_progress_item(c),
+                stage="dedupe_dropped",
+                reason_code="manual_exclude",
+                reason="因手動排除規則淘汰。",
+            )
             continue
         source_cards.append(c)
+    existing_payload = read_json(data_dir() / "x_intel_feed.json", {})
+    existing_rows_raw = existing_payload.get("cards") if isinstance(existing_payload, dict) else []
+    existing_rows = [row for row in existing_rows_raw if isinstance(row, dict)]
+    existing_map: dict[str, dict[str, Any]] = {}
+    existing_story_cards: list[StoryCard] = []
+    for row in existing_rows:
+        card_id = str(row.get("id") or "").strip()
+        if card_id and card_id not in existing_map:
+            existing_map[card_id] = row
+        restored = _story_card_from_saved_row(row)
+        if restored:
+            existing_story_cards.append(restored)
+    source_ids = {str(card.id or "").strip() for card in source_cards if str(card.id or "").strip()}
+    carried_forward_cards = 0
+    for old_card in existing_story_cards:
+        old_id = str(old_card.id or "").strip()
+        if not old_id or old_id in source_ids:
+            continue
+        dt = _parse_iso_safe(old_card.published_at)
+        if dt and dt >= since_dt:
+            source_cards.append(old_card)
+            source_ids.add(old_id)
+            carried_forward_cards += 1
 
+    for card in source_cards:
+        _upsert_lifecycle(_card_progress_item(card), stage="scanned")
+    _emit_lifecycle_progress()
+    for card in source_cards:
+        _upsert_lifecycle(_card_progress_item(card), stage="analyzing")
+    _emit_lifecycle_progress()
+
+    dedupe_drop_logs: list[dict[str, Any]] = []
     source_cards, removed_by_source_pref = drop_discord_event_duplicates_preferring_x(
         source_cards,
         force_include_ids=force_ids,
+        dropped_logs=dedupe_drop_logs,
     )
+    _apply_dropped_logs(dedupe_drop_logs)
+    dedupe_drop_logs = []
+    _emit_lifecycle_progress()
 
+    pre_curate_cards = list(source_cards)
     curated_cards, removed_count = curate_cards(
         source_cards,
         max_cards=DEFAULT_CURATED_MAX_CARDS,
         force_include_ids=force_ids,
     )
+    curated_id_set = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
+    for card in pre_curate_cards:
+        cid = str(card.id or "").strip()
+        if cid and cid not in curated_id_set:
+            _upsert_lifecycle(
+                _card_progress_item(card),
+                stage="dedupe_dropped",
+                reason_code="curation_rank_cutoff",
+                reason="因排序與上牆名額限制淘汰。",
+            )
+    _emit_lifecycle_progress()
+
+    reused_done_items: list[dict[str, Any]] = []
+    cards_to_refine: list[StoryCard] = []
+    resolved_cards: list[StoryCard] = []
+    for card in curated_cards:
+        restored: StoryCard | None = None
+        prev = existing_map.get(str(card.id or "").strip())
+        if isinstance(prev, dict):
+            if _saved_card_source_identity(prev) == _story_card_source_identity(card) and _is_saved_card_reusable(prev):
+                restored = _story_card_from_saved_row(prev, fallback=card)
+        if restored:
+            restored.manual_pick = card.manual_pick or restored.manual_pick
+            restored.manual_pin = card.manual_pin
+            restored.manual_bottom = card.manual_bottom
+            resolved_cards.append(restored)
+            reused_done_items.append(_card_progress_item(restored))
+        else:
+            resolved_cards.append(card)
+            cards_to_refine.append(card)
+    curated_cards = resolved_cards
+    curation_total = len(curated_cards)
+    reused_count = len(reused_done_items)
     _emit_sync_progress(
         progress_hook,
         "curation_start",
-        total_cards=len(curated_cards),
-        done_cards=0,
+        total_cards=curation_total,
+        done_cards=reused_count,
         current_item={},
-        done_items=[],
-        pending_items=[_card_progress_item(card) for card in curated_cards],
+        done_items=list(reused_done_items),
+        pending_items=[_card_progress_item(card) for card in cards_to_refine],
+        phase="incremental_reuse",
     )
     feedback_context = feedback_training_text()
     ai_deduped = 0
     local_deduped = 0
     if api_key and curated_cards:
-        apply_minimax_story_refine(curated_cards, api_key, feedback_context=feedback_context)
+        def _refine_progress(done_count: int, total_count: int, card: StoryCard) -> None:
+            total_cards = max(0, int(curation_total or len(curated_cards)))
+            done_from_refine = max(0, min(int(total_count or len(cards_to_refine)), int(done_count or 0)))
+            done_cards = max(0, min(total_cards, reused_count + done_from_refine))
+            done_rows = list(reused_done_items) + [_card_progress_item(x) for x in cards_to_refine[:done_from_refine]]
+            pending_rows = [_card_progress_item(x) for x in cards_to_refine[done_from_refine:]]
+            _emit_sync_progress(
+                progress_hook,
+                "curation_progress",
+                total_cards=total_cards,
+                done_cards=done_cards,
+                current_item=_card_progress_item(card),
+                done_items=done_rows,
+                pending_items=pending_rows,
+                phase="ai_refine",
+            )
+
+        if cards_to_refine:
+            apply_minimax_story_refine(
+                cards_to_refine,
+                api_key,
+                feedback_context=feedback_context,
+                progress_cb=_refine_progress,
+            )
+        _emit_sync_progress(
+            progress_hook,
+            "curation_progress",
+            total_cards=curation_total,
+            done_cards=curation_total,
+            current_item={"id": "", "url": "", "title": "[AI] 語意正規化中", "account": "", "published_at": ""},
+            done_items=[_card_progress_item(card) for card in curated_cards[:curation_total]],
+            pending_items=[],
+            phase="normalize",
+        )
         normalize_cards_semantics(curated_cards, preserve_type=True)
         apply_feedback_overrides(curated_cards)
         normalize_cards_semantics(curated_cards, preserve_type=True)
-        curated_cards, ai_deduped = apply_minimax_global_dedupe(curated_cards, api_key, force_include_ids=force_ids)
-        curated_cards, local_deduped = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
+        _emit_sync_progress(
+            progress_hook,
+            "curation_progress",
+            total_cards=curation_total,
+            done_cards=curation_total,
+            current_item={"id": "", "url": "", "title": "[AI] 全局去重中", "account": "", "published_at": ""},
+            done_items=[_card_progress_item(card) for card in curated_cards[:curation_total]],
+            pending_items=[],
+            phase="global_dedupe",
+        )
+        curated_cards, ai_deduped = apply_minimax_global_dedupe(
+            curated_cards,
+            api_key,
+            force_include_ids=force_ids,
+            dropped_logs=dedupe_drop_logs,
+        )
+        _apply_dropped_logs(dedupe_drop_logs)
+        dedupe_drop_logs = []
+        curated_cards, local_deduped = drop_redundant_cards_local(
+            curated_cards,
+            force_include_ids=force_ids,
+            dropped_logs=dedupe_drop_logs,
+        )
+        _apply_dropped_logs(dedupe_drop_logs)
+        dedupe_drop_logs = []
+        pre_final_curate = list(curated_cards)
         curated_cards, removed_count = curate_cards(
             curated_cards,
             max_cards=DEFAULT_CURATED_MAX_CARDS,
             force_include_ids=force_ids,
         )
+        final_curated_ids = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
+        for card in pre_final_curate:
+            cid = str(card.id or "").strip()
+            if cid and cid not in final_curated_ids:
+                _upsert_lifecycle(
+                    _card_progress_item(card),
+                    stage="dedupe_dropped",
+                    reason_code="final_curation_rank_cutoff",
+                    reason="因最終排序與上牆名額限制淘汰。",
+                )
     else:
         apply_editorial_fallback(curated_cards)
-        curated_cards, local_deduped = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
+        curated_cards, local_deduped = drop_redundant_cards_local(
+            curated_cards,
+            force_include_ids=force_ids,
+            dropped_logs=dedupe_drop_logs,
+        )
+        _apply_dropped_logs(dedupe_drop_logs)
+        dedupe_drop_logs = []
+    _emit_lifecycle_progress()
     curation_total = len(curated_cards)
-    _emit_sync_progress(
-        progress_hook,
-        "curation_start",
-        total_cards=curation_total,
-        done_cards=0,
-        current_item={},
-        done_items=[],
-        pending_items=[_card_progress_item(card) for card in curated_cards],
-    )
+    finalize_progress = not bool(api_key)
     curation_done_items: list[dict[str, Any]] = []
-    for card in curated_cards:
+    for idx, card in enumerate(curated_cards, start=1):
+        _upsert_lifecycle(_card_progress_item(card), stage="selected")
         card.manual_pick = card.manual_pick or (card.id in include_ids)
         card.manual_pin = card.id in pin_ids
         card.manual_bottom = card.id in bottom_ids
@@ -1384,16 +1789,18 @@ def sync_accounts(
         normalize_card_semantics(card, preserve_type=True)
         card.importance = score_card(card)
         curation_done_items.append(_card_progress_item(card))
-        pending_items = [_card_progress_item(x) for x in curated_cards[len(curation_done_items):]]
-        _emit_sync_progress(
-            progress_hook,
-            "curation_progress",
-            total_cards=curation_total,
-            done_cards=len(curation_done_items),
-            current_item=_card_progress_item(card),
-            done_items=list(curation_done_items),
-            pending_items=pending_items,
-        )
+        if finalize_progress:
+            pending_items = [_card_progress_item(x) for x in curated_cards[idx:]]
+            _emit_sync_progress(
+                progress_hook,
+                "curation_progress",
+                total_cards=curation_total,
+                done_cards=idx,
+                current_item=_card_progress_item(card),
+                done_items=list(curation_done_items),
+                pending_items=pending_items,
+                phase="finalize",
+            )
     _emit_sync_progress(
         progress_hook,
         "curation_done",
@@ -1403,6 +1810,7 @@ def sync_accounts(
         done_items=list(curation_done_items),
         pending_items=[],
     )
+    _emit_lifecycle_progress()
     curated_cards.sort(
         key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance),
         reverse=True,
@@ -1470,6 +1878,7 @@ def sync_accounts(
         "merged_total": int(merged_total),
         "source_total": int(len(source_cards)),
         "curated_total": int(len(curated_cards)),
+        "carried_forward": int(carried_forward_cards),
         "removed_by_selection": int(removed_by_selection),
         "removed_by_feedback": int(removed_by_feedback),
         "removed_by_source_preference": int(removed_by_source_pref),
@@ -1477,6 +1886,13 @@ def sync_accounts(
         "removed_by_local_dedupe": int(local_deduped),
         "removed_by_curation": int(removed_count),
     }
+    lifecycle_snapshot = [lifecycle_rows.get(key, {}) for key in lifecycle_order if isinstance(lifecycle_rows.get(key), dict)]
+    lifecycle_snapshot.sort(
+        key=lambda row: (_parse_iso_safe(str(row.get("published_at") or "")) or datetime.min.replace(tzinfo=timezone.utc)),
+        reverse=True,
+    )
+    payload["post_lifecycle"] = lifecycle_snapshot[:180]
+    payload["dedupe_decisions"] = [row for row in lifecycle_snapshot if str(row.get("stage") or "") == "dedupe_dropped"][:180]
     payload["source_stats"] = account_stats
     quality: dict[str, str] = {}
     for username in target_accounts:

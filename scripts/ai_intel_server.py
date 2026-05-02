@@ -370,6 +370,15 @@ def _normalize_progress_item(row: object) -> dict[str, str]:
         "title": str(data.get("title") or "").strip(),
         "account": str(data.get("account") or "").strip(),
         "published_at": str(data.get("published_at") or "").strip(),
+        "scan": str(data.get("scan") or "").strip(),
+        "curation": str(data.get("curation") or "").strip(),
+        "translation": str(data.get("translation") or "").strip(),
+        "stage": str(data.get("stage") or "").strip(),
+        "reason_code": str(data.get("reason_code") or "").strip(),
+        "reason": str(data.get("reason") or "").strip(),
+        "winner_post_id": str(data.get("winner_post_id") or "").strip(),
+        "winner_url": str(data.get("winner_url") or "").strip(),
+        "winner_title": str(data.get("winner_title") or "").strip(),
     }
 
 
@@ -417,6 +426,7 @@ def _blank_sync_pipeline(run_id: str = "", trigger: str = "") -> dict[str, objec
             "langs": [],
             "pending_items": [],
         },
+        "lifecycle": [],
         "post_stages": [],
         "updated_at": _now_iso(),
     }
@@ -470,6 +480,8 @@ def _sync_progress_hook(payload: dict[str, object]) -> None:
             curation["current_item"] = _normalize_progress_item(payload.get("current_item"))
             curation["done_items"] = _normalize_progress_items(payload.get("done_items"), limit=80)
             curation["pending_items"] = _normalize_progress_items(payload.get("pending_items"), limit=80)
+        elif event == "lifecycle_update":
+            pipeline["lifecycle"] = _normalize_progress_items(payload.get("rows"), limit=240)
 
         pipeline["updated_at"] = _now_iso()
         SYNC_STATE["sync_pipeline"] = pipeline
@@ -517,39 +529,58 @@ def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict
     cards_raw = feed.get("cards")
     cards = cards_raw if isinstance(cards_raw, list) else []
     card_rows = [row for row in cards if isinstance(row, dict)]
+    card_index: dict[str, dict] = {}
+    for idx, row in enumerate(card_rows):
+        key = _card_lookup_key(row, idx)
+        if key and key not in card_index:
+            card_index[key] = row
+
+    lifecycle_runtime = pipeline.get("lifecycle")
+    lifecycle_feed = feed.get("post_lifecycle")
+    lifecycle_raw = lifecycle_runtime if isinstance(lifecycle_runtime, list) and lifecycle_runtime else (
+        lifecycle_feed if isinstance(lifecycle_feed, list) else []
+    )
+    lifecycle_rows = _normalize_progress_items(lifecycle_raw, limit=240)
+    if not lifecycle_rows:
+        for row in card_rows[:180]:
+            seeded = _normalize_progress_item(row)
+            seeded["scan"] = "done"
+            seeded["curation"] = "done"
+            seeded["translation"] = "pending"
+            seeded["stage"] = "selected"
+            lifecycle_rows.append(seeded)
+    pipeline["lifecycle"] = lifecycle_rows[:240]
+
     lang_rows = i18n_alignment.get("langs") if isinstance(i18n_alignment.get("langs"), dict) else {}
     target_langs = [lang for lang in ("en", "ko", "zh-Hans") if isinstance(lang_rows.get(lang), dict)]
     i18n_running = str(i18n_state.get("status") or "").strip().lower() in {"running", "queued"}
+
+    selected_keys: list[str] = []
+    selected_rows: list[dict[str, str]] = []
+    for idx, row in enumerate(lifecycle_rows):
+        stage = str(row.get("stage") or "").strip().lower()
+        is_selected = stage in {"selected", "translating", "ready", "failed"}
+        if not is_selected:
+            continue
+        key = _progress_lookup_key(row, idx)
+        if not key:
+            continue
+        selected_keys.append(key)
+        selected_rows.append(row)
 
     translation_langs: list[dict[str, object]] = []
     lang_pending_sets: dict[str, set[str]] = {}
     lang_failed_sets: dict[str, set[str]] = {}
     lang_row_state: dict[str, str] = {}
+    lang_done_counts: dict[str, int] = {}
+    lang_total_counts: dict[str, int] = {}
+    lang_pending_counts: dict[str, int] = {}
     for lang in target_langs:
         row = lang_rows.get(lang) if isinstance(lang_rows.get(lang), dict) else {}
-        done = _safe_int(row.get("done"), 0)
-        total = max(_safe_int(row.get("total"), len(card_rows)), len(card_rows))
-        if total <= 0:
-            total = len(card_rows)
-        percent = round((done / total) * 100, 1) if total else 0
+        lang_done_counts[lang] = _safe_int(row.get("done"), 0)
+        lang_total_counts[lang] = _safe_int(row.get("total"), 0)
+        lang_pending_counts[lang] = _safe_int(row.get("pending_count"), 0)
         state = str(row.get("state") or "").strip().lower()
-        if state == "aligned_ready":
-            status = "done"
-        elif state == "failed":
-            status = "failed"
-        elif i18n_running:
-            status = "running"
-        else:
-            status = "pending"
-        translation_langs.append(
-            {
-                "lang": lang,
-                "status": status,
-                "done": done,
-                "total": total,
-                "percent": percent,
-            }
-        )
         lang_pending_sets[lang] = {
             str(x).strip()
             for x in (row.get("card_pending_ids") or [])
@@ -567,56 +598,149 @@ def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict
         }
         lang_row_state[lang] = state
 
+    def _lang_state_for_card(lang: str, key: str) -> str:
+        if key in lang_failed_sets.get(lang, set()):
+            return "failed"
+        if key in lang_pending_sets.get(lang, set()):
+            return "pending"
+        row_state = lang_row_state.get(lang, "")
+        if row_state == "aligned_ready":
+            return "done"
+        if row_state == "failed":
+            return "failed"
+        if row_state == "aligned_pending":
+            if lang_pending_sets.get(lang):
+                return "done"
+            done = _safe_int(lang_done_counts.get(lang), 0)
+            total = _safe_int(lang_total_counts.get(lang), 0)
+            pending = _safe_int(lang_pending_counts.get(lang), 0)
+            if total > 0 and done >= total and pending <= 0:
+                return "done"
+        if i18n_running:
+            return "pending"
+        return "pending"
+
+    for lang in target_langs:
+        total = len(selected_keys)
+        done = 0
+        failed = 0
+        pending = 0
+        for key in selected_keys:
+            st = _lang_state_for_card(lang, key)
+            if st == "done":
+                done += 1
+            elif st == "failed":
+                failed += 1
+            else:
+                pending += 1
+        percent = round((done / total) * 100, 1) if total else 0
+        if failed > 0:
+            status = "failed"
+        elif total > 0 and done >= total:
+            status = "done"
+        elif i18n_running and total > 0:
+            status = "running"
+        elif total > 0:
+            status = "pending"
+        else:
+            status = "idle"
+        translation_langs.append(
+            {
+                "lang": lang,
+                "status": status,
+                "done": done,
+                "total": total,
+                "pending": pending,
+                "failed": failed,
+                "percent": percent,
+            }
+        )
+
     post_stages: list[dict[str, str]] = []
     pending_items: list[dict[str, str]] = []
     ready_cards = 0
-    for idx, card in enumerate(card_rows):
-        key = _card_lookup_key(card, idx)
+    for idx, lifecycle_row in enumerate(lifecycle_rows):
+        row = _normalize_progress_item(lifecycle_row)
+        key = _progress_lookup_key(row, idx)
+        base_card = card_index.get(key)
+        if isinstance(base_card, dict):
+            card_row = _normalize_progress_item(base_card)
+            for field in ("title", "account", "published_at", "url", "id"):
+                if not row.get(field) and card_row.get(field):
+                    row[field] = card_row[field]
+
+        base_stage = str(row.get("stage") or "").strip().lower()
+        if base_stage == "scanned":
+            row["scan"] = "done"
+            row["curation"] = "pending"
+            row["translation"] = "pending"
+            row["stage"] = "scanned"
+            post_stages.append(row)
+            continue
+        if base_stage == "analyzing":
+            row["scan"] = "done"
+            row["curation"] = "running"
+            row["translation"] = "pending"
+            row["stage"] = "analyzing"
+            post_stages.append(row)
+            continue
+        if base_stage == "dedupe_dropped":
+            row["scan"] = "done"
+            row["curation"] = "done"
+            row["translation"] = "idle"
+            row["stage"] = "dedupe_dropped"
+            post_stages.append(row)
+            continue
+
+        is_selected = base_stage in {"selected", "translating", "ready", "failed"}
+        if not is_selected:
+            row["scan"] = "done"
+            row["curation"] = "done"
+            row["translation"] = "pending"
+            row["stage"] = "selected"
+            is_selected = True
+
         translation_states: list[str] = []
-        for lang in target_langs:
-            if key in lang_failed_sets.get(lang, set()):
-                translation_states.append("failed")
-                continue
-            if key in lang_pending_sets.get(lang, set()):
-                translation_states.append("running")
-                continue
-            row_state = lang_row_state.get(lang, "")
-            if row_state == "aligned_ready":
-                translation_states.append("done")
-            elif row_state == "failed":
-                translation_states.append("failed")
-            elif i18n_running:
-                translation_states.append("running")
-            else:
-                translation_states.append("pending")
+        if key:
+            for lang in target_langs:
+                translation_states.append(_lang_state_for_card(lang, key))
 
         if not translation_states:
+            selected_stage = "ready"
             translation_state = "done"
         elif "failed" in translation_states:
+            selected_stage = "failed"
             translation_state = "failed"
         elif all(state == "done" for state in translation_states):
+            selected_stage = "ready"
             translation_state = "done"
-        else:
+        elif any(state == "pending" for state in translation_states):
+            selected_stage = "translating"
             translation_state = "running"
+        else:
+            selected_stage = "selected"
+            translation_state = "pending"
 
-        if translation_state == "done":
-            ready_cards += 1
-
-        row = _normalize_progress_item(card)
         row["scan"] = "done"
         row["curation"] = "done"
         row["translation"] = translation_state
-        row["stage"] = translation_state
+        row["stage"] = selected_stage
         post_stages.append(row)
-        if translation_state != "done":
+        if selected_stage == "ready":
+            ready_cards += 1
+        elif selected_stage in {"selected", "translating", "failed"}:
             pending_items.append(dict(row))
 
-    total_cards = len(post_stages)
+    total_cards = len(selected_rows)
+    if not total_cards:
+        total_cards = ready_cards
     if translation_langs and any(str(row.get("status")) == "failed" for row in translation_langs):
         translation_status = "failed"
     elif total_cards > 0 and ready_cards >= total_cards:
         translation_status = "ok"
-    elif i18n_running:
+    elif any(str(row.get("stage")) == "translating" for row in post_stages):
+        translation_status = "running"
+    elif i18n_running and total_cards > 0:
         translation_status = "running"
     elif total_cards > 0:
         translation_status = "pending"
@@ -637,6 +761,18 @@ def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict
     pipeline["run_id"] = str(pipeline.get("run_id") or "")
     pipeline["trigger"] = str(pipeline.get("trigger") or sync_state.get("trigger") or "")
     return pipeline
+
+
+def _progress_lookup_key(row: dict, index: int) -> str:
+    if not isinstance(row, dict):
+        return f"idx:{index}"
+    card_id = str(row.get("id") or "").strip()
+    if card_id:
+        return card_id
+    card_url = str(row.get("url") or "").strip()
+    if card_url:
+        return card_url
+    return _card_lookup_key(row, index)
 
 
 def _count_recent_cards(cards: list[dict], hours: int) -> int:
