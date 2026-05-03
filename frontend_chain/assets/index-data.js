@@ -282,7 +282,6 @@
       pollTimer: null,
       jobId: "",
     };
-    const INTEL_API_BASE_STORAGE_KEY = "intel_api_base";
     let intelFeedCache = null;
     const intelFeedLangCache = new Map();
     const intelAuthState = {
@@ -311,35 +310,26 @@
     let pokemonNewsPollTimer = null;
     let pokemonNewsItemsState = [];
     const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
-    const INTEL_API_BASE = (() => {
-      const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
-      const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
-      const fromData = normalize(document.body?.dataset?.intelApiBase || "");
-      const search = new URLSearchParams(window.location.search || "");
-      const fromQuery = normalize(search.get("intel_api_base") || "");
-      let fromStorage = "";
+    function detectIntelApiBase() {
       try {
-        fromStorage = normalize(localStorage.getItem(INTEL_API_BASE_STORAGE_KEY) || "");
-      } catch (_error) {
-        fromStorage = "";
-      }
-      const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
-      const fromHost = localHost ? normalize(window.location.origin || "") : "";
-      const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
-      const resolved = fromQuery
-        || fromWindow
-        || fromData
-        || fromHost
-        || safeStorage
-        || DEFAULT_INTEL_API_BASE;
-      if (fromQuery) {
-        try {
-          localStorage.setItem(INTEL_API_BASE_STORAGE_KEY, fromQuery);
-        } catch (_error) {
+        const win = window || {};
+        const explicit = String(
+          win.__INTEL_API_BASE__ ||
+          window.localStorage.getItem("intel_api_base") ||
+          ""
+        ).trim();
+        if (explicit) {
+          return explicit.replace(/\/+$/, "");
         }
+      } catch (_err) {}
+      const host = String(window.location?.hostname || "").toLowerCase();
+      const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local");
+      if (isLocal) {
+        return String(window.location?.origin || "").replace(/\/+$/, "");
       }
-      return resolved;
-    })();
+      return DEFAULT_INTEL_API_BASE;
+    }
+    const INTEL_API_BASE = detectIntelApiBase();
 
     function clampMasterIndex(index, len) {
       if (!len) return 0;
@@ -619,7 +609,7 @@
     function timelineTopic(item) {
       const raw = String(item?.title || item?.glance || item?.summary || "")
         .replace(/\s+/g, " ")
-        .replace(/^(活動重點|活動快訊|活動速報|功能進度|公告快訊|市場訊號|收藏趨勢|社群觀點|活動|功能|公告|市場|趨勢|觀點)\s*[｜|:：\-]\s*/u, "")
+        .replace(/^(活動重點|活動快訊|活動速報|功能進度|公告快訊|市場訊號|社群觀點|活動|功能|公告|市場|觀點)\s*[｜|:：\-]\s*/u, "")
         .trim();
       const type = categoryLabel(item?.card_type);
       if (!raw) return `${type}｜未命名`;
@@ -638,7 +628,7 @@
     function cleanMasterTitle(rawText) {
       return String(rawText || "")
         .replace(/\s+/g, " ")
-        .replace(/^(活動重點|活動快訊|活動速報|功能進度|公告快訊|市場訊號|收藏趨勢|社群觀點|活動|功能|公告|市場|趨勢|觀點)\s*[｜|:：\-]\s*/u, "")
+        .replace(/^(活動重點|活動快訊|活動速報|功能進度|公告快訊|市場訊號|社群觀點|活動|功能|公告|市場|觀點)\s*[｜|:：\-]\s*/u, "")
         .trim();
     }
 
@@ -657,7 +647,6 @@
     const intelTypeLabelMap = {
       event: "活動",
       market: "市場",
-      trend: "收藏趨勢",
       report: "報告",
       announcement: "公告",
       feature: "功能",
@@ -669,14 +658,12 @@
         intelligence: "情報",
         event: "活動",
         market: "市場",
-        trend: "收藏趨勢",
         report: "報告",
         announcement: "公告",
         feature: "功能",
         insight: "觀點",
         official: "官方",
         pokemon: "寶可夢",
-        collectibles: "收藏趨勢",
         alpha: "未來 Alpha",
         tools: "工具",
         other: "社群精選",
@@ -708,7 +695,6 @@
         alphaSlots: "Alpha 四格整理",
         eventSlots: "活動四格整理",
         marketSlots: "市場四格整理",
-        trendSlots: "收藏趨勢四格整理",
         reportSlots: "工具/攻略四格整理",
         generalSlots: "重點四格整理",
         whenOnline: "何時上線",
@@ -739,8 +725,6 @@
         seeSourcePrice: "請看原文中的價格/成交/規模資訊",
         marketUpdate: "市場更新",
         marketImpact: "影響社群對短期市場方向的判讀",
-        trendUpdate: "收藏趨勢",
-        trendImpact: "協助判斷收藏品市場熱度與後續追蹤方向",
         compareSourcesFirst: "比對多來源後再做決策",
         comparePlanDiff: "重點在比較不同方案差異",
         planAudience: "適合需要快速選方案的人",
@@ -785,14 +769,12 @@
         intelligence: "情报",
         event: "活动",
         market: "市场",
-        trend: "收藏趋势",
         report: "报告",
         announcement: "公告",
         feature: "功能",
         insight: "观点",
         official: "官方",
         pokemon: "宝可梦",
-        collectibles: "收藏趋势",
         alpha: "未来 Alpha",
         tools: "工具",
         other: "社群精选",
@@ -824,7 +806,6 @@
         alphaSlots: "Alpha 四格整理",
         eventSlots: "活动四格整理",
         marketSlots: "市场四格整理",
-        trendSlots: "收藏趋势四格整理",
         reportSlots: "工具/攻略四格整理",
         generalSlots: "重点四格整理",
         whenOnline: "何时上线",
@@ -855,8 +836,6 @@
         seeSourcePrice: "请看原文中的价格/成交/规模信息",
         marketUpdate: "市场更新",
         marketImpact: "影响社群对短期市场方向的判断",
-        trendUpdate: "收藏趋势",
-        trendImpact: "协助判断收藏品市场热度与后续追踪方向",
         compareSourcesFirst: "比对多来源后再做决策",
         comparePlanDiff: "重点在比较不同方案差异",
         planAudience: "适合需要快速选方案的人",
@@ -901,14 +880,12 @@
         intelligence: "Intel",
         event: "Event",
         market: "Market",
-        trend: "Collectibles",
         report: "Report",
         announcement: "Announcement",
         feature: "Feature",
         insight: "Insight",
         official: "Official",
         pokemon: "Pokemon",
-        collectibles: "Collectibles",
         alpha: "Future Alpha",
         tools: "Tools",
         other: "Community Picks",
@@ -940,7 +917,6 @@
         alphaSlots: "Alpha Four-Point Brief",
         eventSlots: "Event Four-Point Brief",
         marketSlots: "Market Four-Point Brief",
-        trendSlots: "Collectibles Trend Brief",
         reportSlots: "Tool / Guide Four-Point Brief",
         generalSlots: "Four-Point Brief",
         whenOnline: "When",
@@ -971,8 +947,6 @@
         seeSourcePrice: "Check the original post for price, sale, or market-size context",
         marketUpdate: "Market Update",
         marketImpact: "This may shift short-term community market expectations",
-        trendUpdate: "Collectibles Trend",
-        trendImpact: "Helps track collectibles-market momentum and follow-up signals",
         compareSourcesFirst: "Compare multiple sources before deciding",
         comparePlanDiff: "Focuses on differences between options",
         planAudience: "Best for people who need to choose quickly",
@@ -1017,14 +991,12 @@
         intelligence: "정보",
         event: "이벤트",
         market: "시장",
-        trend: "컬렉터블 트렌드",
         report: "리포트",
         announcement: "공지",
         feature: "기능",
         insight: "관점",
         official: "공식",
         pokemon: "포켓몬",
-        collectibles: "컬렉터블 트렌드",
         alpha: "향후 Alpha",
         tools: "도구",
         other: "커뮤니티 픽",
@@ -1056,7 +1028,6 @@
         alphaSlots: "Alpha 4분할 정리",
         eventSlots: "이벤트 4분할 정리",
         marketSlots: "시장 4분할 정리",
-        trendSlots: "컬렉터블 트렌드 정리",
         reportSlots: "도구 / 가이드 4분할 정리",
         generalSlots: "4분할 정리",
         whenOnline: "시점",
@@ -1087,8 +1058,6 @@
         seeSourcePrice: "가격, 거래, 시장 규모 정보는 원문에서 확인",
         marketUpdate: "시장 업데이트",
         marketImpact: "단기 시장 방향에 대한 커뮤니티 판단에 영향을 줄 수 있습니다",
-        trendUpdate: "컬렉터블 트렌드",
-        trendImpact: "컬렉터블 시장 열기와 후속 신호를 파악하는 데 도움이 됩니다",
         compareSourcesFirst: "결정 전에 여러 출처를 비교하세요",
         comparePlanDiff: "여러 선택지의 차이를 비교하는 내용",
         planAudience: "빠르게 선택해야 하는 사람에게 적합",
@@ -1136,11 +1105,6 @@
       "參與": "participation",
       "市场": "market",
       "市場": "market",
-      "收藏": "collectibles",
-      "收藏趨勢": "collectibles",
-      "收藏趋势": "collectibles",
-      "趨勢": "trend",
-      "趋势": "trend",
       "數據": "keyNumber",
       "数据": "keyNumber",
       "功能": "feature",
@@ -1380,8 +1344,12 @@
         return `<button class="intel-masterline-chip ${i === idx ? "is-active" : ""}" data-master-index="${i}" type="button"><span class="intel-masterline-date-row"><span class="intel-masterline-date">${escapeHtml(label)}</span>${today}</span><span class="intel-masterline-topic">${escapeHtml(topic)}</span></button>`;
       }).join("");
       const activeChip = rail.querySelector(".intel-masterline-chip.is-active");
-      if (activeChip && typeof activeChip.scrollIntoView === "function") {
-        activeChip.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      if (activeChip && typeof rail.scrollTo === "function") {
+        const targetLeft = Math.max(
+          0,
+          activeChip.offsetLeft - ((rail.clientWidth - activeChip.offsetWidth) / 2)
+        );
+        rail.scrollTo({ left: targetLeft, behavior: "smooth" });
       }
     }
 
@@ -1440,7 +1408,7 @@
     }
 
     function intelCardHtml(card) {
-      const layout = ["poster", "brief", "data", "timeline", "trend"].includes(card.layout) ? card.layout : "brief";
+      const layout = ["poster", "brief", "data", "timeline"].includes(card.layout) ? card.layout : "brief";
       const typeLabel = intelTypeLabel(card.card_type);
       const cardKey = String(card?._card_key || cardStableKey(card)).trim();
       const cover = String(card.cover_image || "");
@@ -1481,36 +1449,6 @@
             <h4 class="intel-title">${escapeHtml(card.title || "@source event")}</h4>
             ${keylineLabel}
             ${keylineText ? `<p class="intel-keyline">${escapeHtml(keylineText)}</p>` : ""}
-            <div class="intel-footer">
-              <div class="intel-tags">${tagHtml}</div>
-              <span class="intel-time">${escapeHtml(timeText)}</span>
-              ${actionHtml}
-              <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
-            </div>
-            ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
-          </article>
-        `;
-      }
-
-      if (layout === "trend") {
-        const trendPoints = (Array.isArray(card.bullets) ? card.bullets : [])
-          .map((x) => normalizeKeylineText(x))
-          .filter(Boolean)
-          .slice(0, 3);
-        const trendPointsHtml = trendPoints.length
-          ? `<ul class="intel-trend-points">${trendPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>`
-          : "";
-        return `
-          <article class="intel-card layout-trend" data-intel-card-id="${escapeHtml(cardKey)}">
-            <div class="intel-trend-top">
-              <span class="intel-kicker">@${escapeHtml(card.account)} · ${escapeHtml(typeLabel)}</span>
-              <span class="intel-trend-label">${escapeHtml(uiLabel("trendUpdate"))}</span>
-            </div>
-            <h4 class="intel-title">${escapeHtml(card.title || "@source trend")}</h4>
-            ${keylineLabel}
-            ${keylineText ? `<p class="intel-keyline">${escapeHtml(keylineText)}</p>` : ""}
-            ${coverHtml}
-            ${trendPointsHtml}
             <div class="intel-footer">
               <div class="intel-tags">${tagHtml}</div>
               <span class="intel-time">${escapeHtml(timeText)}</span>
@@ -1688,14 +1626,7 @@
       return /((sbt|soulbound|points?|積分|积分).{0,42}(threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank))|((threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank).{0,42}(sbt|soulbound|points?|積分|积分))/i.test(String(text || ""));
     }
 
-    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "alpha", "tools", "collectibles", "other"];
-
-    function isCollectiblesSourceCard(card) {
-      const id = String(card?.id || "");
-      const url = String(card?.url || "");
-      return /^discord-1480867987270402149-\d+$/i.test(id)
-        || /discord\.com\/channels\/[^/]+\/1480867987270402149\/\d+/i.test(url);
-    }
+    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "alpha", "tools", "other"];
 
     function normalizeTopicLabels(value) {
       const raw = Array.isArray(value)
@@ -1769,13 +1700,6 @@
 
       const toolsTerms = ["攻略", "教學", "指南", "tool", "工具", "集運", "how to", "比價", "price compare", "報告整理"];
       if (cardType === "report" || (!isOfficial && hasAny(text, toolsTerms))) add("tools");
-
-      const collectiblesTerms = [
-        "collectibles", "collectible market", "trading card", "card hobby", "graded card",
-        "psa", "bgs", "cgc", "auction", "收藏品", "收藏市場", "收藏市场", "拍賣", "拍卖",
-        "卡牌市場", "卡牌市场", "二級市場", "二级市场",
-      ];
-      if (cardType === "trend" || isCollectiblesSourceCard(card) || hasAny(clsText, collectiblesTerms)) add("collectibles");
 
       if (isOfficial) add("official");
       if (!labels.length) add("other");
@@ -1984,7 +1908,6 @@
         pokemon: [],
         alpha: [],
         tools: [],
-        collectibles: [],
         other: [],
       };
       const seenByBucket = {
@@ -1994,7 +1917,6 @@
         pokemon: new Set(),
         alpha: new Set(),
         tools: new Set(),
-        collectibles: new Set(),
         other: new Set(),
       };
       (Array.isArray(cards) ? cards : []).forEach((card) => {
@@ -2015,6 +1937,9 @@
       });
       Object.keys(buckets).forEach((key) => {
         buckets[key] = sortCardsByTimeDesc(buckets[key]);
+        if (key === "alpha") {
+          buckets[key] = dedupeAlphaCardsPreferOfficial(buckets[key]);
+        }
       });
       return buckets;
     }

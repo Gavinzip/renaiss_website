@@ -33,7 +33,11 @@ DEFAULT_ACCOUNTS = ["TCGRWA", "ChenYichiao", "renaissxyz", "davidcheang99"]
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_MAX_POSTS_PER_ACCOUNT = 20
 DEFAULT_DISCORD_MONITOR_LIMIT = 80
-DEFAULT_CURATED_MAX_CARDS = 24
+DEFAULT_CURATED_MAX_CARDS = 30
+DEFAULT_INTEL_DEDUPE_EMBED_MODEL = "text-embedding-3-small"
+DEFAULT_INTEL_DEDUPE_EMBED_TOP_K = 8
+DEFAULT_INTEL_DEDUPE_EMBED_SIM_THRESHOLD = 0.50
+DEFAULT_INTEL_DEDUPE_EMBED_CACHE_MAX = 8000
 MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
@@ -205,7 +209,10 @@ SYNDICATION_META_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[3]
+    if root.name == ".deploy":
+        return root.parent
+    return root
 
 
 def website_root() -> Path:
