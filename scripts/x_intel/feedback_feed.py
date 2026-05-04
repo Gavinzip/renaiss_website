@@ -1435,21 +1435,19 @@ def _story_card_from_saved_row(row: dict[str, Any], fallback: StoryCard | None =
     return card
 
 
-def _story_card_source_identity(card: StoryCard) -> tuple[str, str, str, str]:
+def _story_card_source_identity(card: StoryCard) -> tuple[str, str, str]:
     return (
         str(card.account or "").strip().lower(),
         str(card.url or "").strip(),
         str(card.published_at or "").strip(),
-        clean_text(str(card.raw_text or "")).strip(),
     )
 
 
-def _saved_card_source_identity(row: dict[str, Any]) -> tuple[str, str, str, str]:
+def _saved_card_source_identity(row: dict[str, Any]) -> tuple[str, str, str]:
     return (
         str(row.get("account") or "").strip().lower(),
         str(row.get("url") or "").strip(),
         str(row.get("published_at") or "").strip(),
-        clean_text(str(row.get("raw_text") or "")).strip(),
     )
 
 
