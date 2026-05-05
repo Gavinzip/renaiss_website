@@ -32,10 +32,31 @@ DEFAULT_MEMORY_RULES = [
 ]
 
 
+def _normalize_card_field_overrides(raw: Any) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        card_id = str(key or "").strip()
+        if not card_id or not isinstance(value, dict):
+            continue
+        names = normalize_sbt_names(
+            value.get("sbt_names") if value.get("sbt_names") is not None else value.get("sbt_name")
+        )
+        acquisition = clean_text(str(value.get("sbt_acquisition") or "")).strip()[:260]
+        out[card_id] = {
+            "sbt_name": names[0] if names else "",
+            "sbt_names": names,
+            "sbt_acquisition": acquisition,
+            "updated_at": str(value.get("updated_at") or ""),
+        }
+    return out
+
+
 def read_feedback_state() -> dict[str, Any]:
     raw = read_json(feedback_path(), {})
     if not isinstance(raw, dict):
-        return {"items": {}, "rules": {}, "source_profiles": {}}
+        return {"items": {}, "rules": {}, "source_profiles": {}, "card_field_overrides": {}}
     items = raw.get("items")
     if not isinstance(items, dict):
         items = {}
@@ -45,7 +66,14 @@ def read_feedback_state() -> dict[str, Any]:
     source_profiles = raw.get("source_profiles")
     if not isinstance(source_profiles, dict):
         source_profiles = {}
-    return {"items": items, "rules": rules, "source_profiles": source_profiles, "updated_at": raw.get("updated_at")}
+    card_field_overrides = _normalize_card_field_overrides(raw.get("card_field_overrides"))
+    return {
+        "items": items,
+        "rules": rules,
+        "source_profiles": source_profiles,
+        "card_field_overrides": card_field_overrides,
+        "updated_at": raw.get("updated_at"),
+    }
 
 
 def write_feedback_state(state: dict[str, Any]) -> None:
@@ -54,6 +82,7 @@ def write_feedback_state(state: dict[str, Any]) -> None:
         "items": state.get("items", {}),
         "rules": state.get("rules", {}),
         "source_profiles": state.get("source_profiles", {}),
+        "card_field_overrides": _normalize_card_field_overrides(state.get("card_field_overrides")),
     }
     write_json(feedback_path(), payload)
 
@@ -485,6 +514,486 @@ def set_manual_selection(tweet_id: str, action: str) -> dict[str, Any]:
     }
 
 
+def _normalize_timeline_edit_value(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    iso_match = re.fullmatch(r"(20\d{2})-(\d{1,2})-(\d{1,2})", raw)
+    if iso_match:
+        year, month, day = [int(x) for x in iso_match.groups()]
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc).date().isoformat()
+        except Exception as exc:
+            raise ValueError(f"invalid date: {raw}") from exc
+    dt = _parse_iso_safe(raw)
+    if dt:
+        return dt.date().isoformat()
+    fuzzy = re.search(r"(20\d{2})[/-](\d{1,2})[/-](\d{1,2})", raw)
+    if fuzzy:
+        year, month, day = [int(x) for x in fuzzy.groups()]
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc).date().isoformat()
+        except Exception as exc:
+            raise ValueError(f"invalid date: {raw}") from exc
+    raise ValueError("timeline date format invalid; use YYYY-MM-DD or ISO datetime")
+
+
+def _normalize_event_wall_edit_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    raw = str(value or "").strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError("event_wall must be true/false")
+
+
+def _apply_timeline_fields_to_cards(
+    rows: list[dict[str, Any]],
+    *,
+    card_id: str,
+    timeline_date: str,
+    timeline_end_date: str,
+) -> int:
+    updated = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "").strip() != card_id:
+            continue
+        row["timeline_date"] = timeline_date
+        row["timeline_end_date"] = timeline_end_date
+        updated += 1
+    return updated
+
+
+def _apply_event_wall_field_to_cards(
+    rows: list[dict[str, Any]],
+    *,
+    card_id: str,
+    event_wall: bool,
+) -> int:
+    updated = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "").strip() != card_id:
+            continue
+        row["event_wall"] = bool(event_wall)
+        updated += 1
+    return updated
+
+
+def _normalize_sbt_names_edit_value(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return normalize_sbt_names(value)
+    text = str(value or "").strip()
+    if not text:
+        return []
+    parts = [
+        chunk.strip()
+        for chunk in re.split(r"[,\n/|;；、，]+", text)
+        if chunk and str(chunk).strip()
+    ]
+    return normalize_sbt_names(parts)
+
+
+def _normalize_sbt_acquisition_edit_value(value: Any) -> str:
+    text = clean_text(str(value or "")).strip()
+    text = re.sub(r"^\s*SBT\s*取得方式\s*[:：]\s*", "", text, flags=re.I).strip()
+    return text[:260]
+
+
+def _normalize_cover_image_edit_value(value: Any) -> str:
+    text = clean_text(str(value or "")).strip()
+    if not text:
+        return ""
+    if text.startswith("/data/generated_covers/"):
+        return text
+    if text.startswith("data/generated_covers/"):
+        return f"/{text}"
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return text
+
+
+def _apply_cover_image_to_cards(
+    rows: list[dict[str, Any]],
+    *,
+    card_id: str,
+    cover_image: str,
+) -> int:
+    updated = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "").strip() != card_id:
+            continue
+        row["cover_image"] = cover_image
+        updated += 1
+    return updated
+
+
+def _apply_sbt_fields_to_cards(
+    rows: list[dict[str, Any]],
+    *,
+    card_id: str,
+    sbt_names: list[str],
+    sbt_acquisition: str,
+) -> int:
+    updated = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id") or "").strip() != card_id:
+            continue
+        row["sbt_names"] = list(sbt_names)
+        row["sbt_name"] = sbt_names[0] if sbt_names else ""
+        row["sbt_acquisition"] = sbt_acquisition
+        if sbt_names or sbt_acquisition:
+            labels = normalize_topic_labels(row.get("topic_labels"))
+            if "sbt" not in labels:
+                labels.append("sbt")
+            row["topic_labels"] = labels
+        updated += 1
+    return updated
+
+
+def update_card_cover_image(
+    tweet_id: str,
+    *,
+    linked_card_url: str = "",
+    cover_image: Any = "",
+) -> dict[str, Any]:
+    card_id = str(tweet_id or "").strip()
+    linked_url = str(linked_card_url or "").strip()
+    if not card_id and not linked_url:
+        raise ValueError("tweet id or linked_card_url is required")
+
+    cover = _normalize_cover_image_edit_value(cover_image)
+    if not cover:
+        raise ValueError("cover_image is required")
+
+    feed_path = data_dir() / "x_intel_feed.json"
+    feed_payload = read_json(feed_path, {})
+    cards = feed_payload.get("cards") if isinstance(feed_payload, dict) else None
+    if not isinstance(cards, list):
+        raise ValueError("feed cards not found")
+
+    if not card_id and linked_url:
+        for row in cards:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("url") or "").strip() == linked_url:
+                card_id = str(row.get("id") or "").strip()
+                break
+    if not card_id:
+        raise ValueError("card not found")
+
+    updated_base = _apply_cover_image_to_cards(
+        cards,
+        card_id=card_id,
+        cover_image=cover,
+    )
+    if updated_base <= 0:
+        raise ValueError("card not found")
+
+    feed_payload["cards"] = cards
+    write_json(feed_path, feed_payload)
+
+    i18n_bundle_path = data_dir() / "x_intel_feed_i18n.json"
+    i18n_updated = 0
+    i18n_payload = read_json(i18n_bundle_path, {})
+    i18n_changed = False
+    if isinstance(i18n_payload, dict):
+        root_cards = i18n_payload.get("cards")
+        if isinstance(root_cards, list):
+            count = _apply_cover_image_to_cards(
+                root_cards,
+                card_id=card_id,
+                cover_image=cover,
+            )
+            if count:
+                i18n_updated += count
+                i18n_changed = True
+        langs = i18n_payload.get("langs")
+        if isinstance(langs, dict):
+            for lang_row in langs.values():
+                if not isinstance(lang_row, dict):
+                    continue
+                lang_cards = lang_row.get("cards")
+                if not isinstance(lang_cards, list):
+                    continue
+                count = _apply_cover_image_to_cards(
+                    lang_cards,
+                    card_id=card_id,
+                    cover_image=cover,
+                )
+                if count:
+                    i18n_updated += count
+                    i18n_changed = True
+        if i18n_changed:
+            write_json(i18n_bundle_path, i18n_payload)
+
+    return {
+        "id": card_id,
+        "cover_image": cover,
+        "updated_cards": updated_base,
+        "updated_i18n_cards": i18n_updated,
+    }
+
+
+def update_card_sbt_fields(
+    tweet_id: str,
+    *,
+    linked_card_url: str = "",
+    sbt_names: Any = None,
+    sbt_acquisition: Any = "",
+) -> dict[str, Any]:
+    card_id = str(tweet_id or "").strip()
+    linked_url = str(linked_card_url or "").strip()
+    if not card_id and not linked_url:
+        raise ValueError("tweet id or linked_card_url is required")
+
+    names = _normalize_sbt_names_edit_value(sbt_names)
+    acquisition = _normalize_sbt_acquisition_edit_value(sbt_acquisition)
+
+    feed_path = data_dir() / "x_intel_feed.json"
+    feed_payload = read_json(feed_path, {})
+    cards = feed_payload.get("cards") if isinstance(feed_payload, dict) else None
+    if not isinstance(cards, list):
+        raise ValueError("feed cards not found")
+
+    if not card_id and linked_url:
+        for row in cards:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("url") or "").strip() == linked_url:
+                card_id = str(row.get("id") or "").strip()
+                break
+    if not card_id:
+        raise ValueError("card not found")
+
+    updated_base = _apply_sbt_fields_to_cards(
+        cards,
+        card_id=card_id,
+        sbt_names=names,
+        sbt_acquisition=acquisition,
+    )
+    if updated_base <= 0:
+        raise ValueError("card not found")
+
+    feed_payload["cards"] = cards
+    write_json(feed_path, feed_payload)
+
+    i18n_bundle_path = data_dir() / "x_intel_feed_i18n.json"
+    i18n_updated = 0
+    i18n_payload = read_json(i18n_bundle_path, {})
+    i18n_changed = False
+    if isinstance(i18n_payload, dict):
+        root_cards = i18n_payload.get("cards")
+        if isinstance(root_cards, list):
+            count = _apply_sbt_fields_to_cards(
+                root_cards,
+                card_id=card_id,
+                sbt_names=names,
+                sbt_acquisition=acquisition,
+            )
+            if count:
+                i18n_updated += count
+                i18n_changed = True
+        langs = i18n_payload.get("langs")
+        if isinstance(langs, dict):
+            for lang_row in langs.values():
+                if not isinstance(lang_row, dict):
+                    continue
+                lang_cards = lang_row.get("cards")
+                if not isinstance(lang_cards, list):
+                    continue
+                count = _apply_sbt_fields_to_cards(
+                    lang_cards,
+                    card_id=card_id,
+                    sbt_names=names,
+                    sbt_acquisition=acquisition,
+                )
+                if count:
+                    i18n_updated += count
+                    i18n_changed = True
+        if i18n_changed:
+            write_json(i18n_bundle_path, i18n_payload)
+
+    state = read_feedback_state()
+    overrides = state.get("card_field_overrides")
+    if not isinstance(overrides, dict):
+        overrides = {}
+    overrides[card_id] = {
+        "sbt_name": names[0] if names else "",
+        "sbt_names": names,
+        "sbt_acquisition": acquisition,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    state["card_field_overrides"] = overrides
+    write_feedback_state(state)
+
+    return {
+        "id": card_id,
+        "sbt_name": names[0] if names else "",
+        "sbt_names": names,
+        "sbt_acquisition": acquisition,
+        "updated_cards": updated_base,
+        "updated_i18n_cards": i18n_updated,
+    }
+
+
+def update_card_timeline_fields(
+    tweet_id: str,
+    *,
+    timeline_date: str = "",
+    timeline_end_date: str = "",
+) -> dict[str, Any]:
+    card_id = str(tweet_id or "").strip()
+    if not card_id:
+        raise ValueError("tweet id is required")
+
+    start_date = _normalize_timeline_edit_value(timeline_date)
+    end_date = _normalize_timeline_edit_value(timeline_end_date)
+    if start_date and end_date and end_date < start_date:
+        raise ValueError("timeline_end_date must be on or after timeline_date")
+
+    feed_path = data_dir() / "x_intel_feed.json"
+    feed_payload = read_json(feed_path, {})
+    cards = feed_payload.get("cards") if isinstance(feed_payload, dict) else None
+    if not isinstance(cards, list):
+        raise ValueError("feed cards not found")
+
+    updated_base = _apply_timeline_fields_to_cards(
+        cards,
+        card_id=card_id,
+        timeline_date=start_date,
+        timeline_end_date=end_date,
+    )
+    if updated_base <= 0:
+        raise ValueError("card not found")
+
+    feed_payload["cards"] = cards
+    write_json(feed_path, feed_payload)
+
+    i18n_bundle_path = data_dir() / "x_intel_feed_i18n.json"
+    i18n_updated = 0
+    i18n_payload = read_json(i18n_bundle_path, {})
+    i18n_changed = False
+    if isinstance(i18n_payload, dict):
+        root_cards = i18n_payload.get("cards")
+        if isinstance(root_cards, list):
+            count = _apply_timeline_fields_to_cards(
+                root_cards,
+                card_id=card_id,
+                timeline_date=start_date,
+                timeline_end_date=end_date,
+            )
+            if count:
+                i18n_updated += count
+                i18n_changed = True
+        langs = i18n_payload.get("langs")
+        if isinstance(langs, dict):
+            for lang_row in langs.values():
+                if not isinstance(lang_row, dict):
+                    continue
+                lang_cards = lang_row.get("cards")
+                if not isinstance(lang_cards, list):
+                    continue
+                count = _apply_timeline_fields_to_cards(
+                    lang_cards,
+                    card_id=card_id,
+                    timeline_date=start_date,
+                    timeline_end_date=end_date,
+                )
+                if count:
+                    i18n_updated += count
+                    i18n_changed = True
+        if i18n_changed:
+            write_json(i18n_bundle_path, i18n_payload)
+
+    return {
+        "id": card_id,
+        "timeline_date": start_date,
+        "timeline_end_date": end_date,
+        "updated_cards": updated_base,
+        "updated_i18n_cards": i18n_updated,
+    }
+
+
+def update_card_event_wall_field(
+    tweet_id: str,
+    *,
+    event_wall: Any,
+) -> dict[str, Any]:
+    card_id = str(tweet_id or "").strip()
+    if not card_id:
+        raise ValueError("tweet id is required")
+
+    wall = _normalize_event_wall_edit_value(event_wall)
+
+    feed_path = data_dir() / "x_intel_feed.json"
+    feed_payload = read_json(feed_path, {})
+    cards = feed_payload.get("cards") if isinstance(feed_payload, dict) else None
+    if not isinstance(cards, list):
+        raise ValueError("feed cards not found")
+
+    updated_base = _apply_event_wall_field_to_cards(
+        cards,
+        card_id=card_id,
+        event_wall=wall,
+    )
+    if updated_base <= 0:
+        raise ValueError("card not found")
+
+    feed_payload["cards"] = cards
+    write_json(feed_path, feed_payload)
+
+    i18n_bundle_path = data_dir() / "x_intel_feed_i18n.json"
+    i18n_updated = 0
+    i18n_payload = read_json(i18n_bundle_path, {})
+    i18n_changed = False
+    if isinstance(i18n_payload, dict):
+        root_cards = i18n_payload.get("cards")
+        if isinstance(root_cards, list):
+            count = _apply_event_wall_field_to_cards(
+                root_cards,
+                card_id=card_id,
+                event_wall=wall,
+            )
+            if count:
+                i18n_updated += count
+                i18n_changed = True
+        langs = i18n_payload.get("langs")
+        if isinstance(langs, dict):
+            for lang_row in langs.values():
+                if not isinstance(lang_row, dict):
+                    continue
+                lang_cards = lang_row.get("cards")
+                if not isinstance(lang_cards, list):
+                    continue
+                count = _apply_event_wall_field_to_cards(
+                    lang_cards,
+                    card_id=card_id,
+                    event_wall=wall,
+                )
+                if count:
+                    i18n_updated += count
+                    i18n_changed = True
+        if i18n_changed:
+            write_json(i18n_bundle_path, i18n_payload)
+
+    return {
+        "id": card_id,
+        "event_wall": wall,
+        "updated_cards": updated_base,
+        "updated_i18n_cards": i18n_updated,
+    }
+
+
 def merge_cards(*groups: list[StoryCard]) -> list[StoryCard]:
     merged: dict[str, StoryCard] = {}
     for group in groups:
@@ -613,6 +1122,99 @@ def _card_quality_score(card: StoryCard) -> float:
     return round(score, 3)
 
 
+AI_DEDUPE_TITLE_SIM_THRESHOLD = float(os.getenv("INTEL_DEDUPE_TITLE_SIM_THRESHOLD", "0.62") or 0.62)
+AI_DEDUPE_DATE_WINDOW_DAYS = int(os.getenv("INTEL_DEDUPE_DATE_WINDOW_DAYS", "1") or 1)
+DEDUPE_VERSION = "title_glance_incremental_v1"
+
+
+def _card_reference_date(card: StoryCard) -> date | None:
+    dt = _parse_iso_safe(str(card.timeline_date or "")) or _parse_iso_safe(str(card.published_at or ""))
+    if dt:
+        return dt.date()
+    ymd = (_event_date_hint(card) or "").strip()
+    if ymd:
+        try:
+            return date.fromisoformat(ymd)
+        except Exception:
+            return None
+    return None
+
+
+def _date_distance_within(a: date | None, b: date | None, days: int) -> bool:
+    if a is None or b is None:
+        # Keep title-similar pairs as candidates even when one side lacks explicit date.
+        return True
+    return abs((a - b).days) <= max(0, int(days))
+
+
+def _dedupe_seed_text(card: StoryCard) -> str:
+    title = clean_text(str(card.title or ""))
+    glance = clean_text(str(card.glance or card.summary or ""))
+    if title and glance and glance != title:
+        return f"{title} {glance}"
+    return title or glance
+
+
+def _dedupe_seed_similarity(a: StoryCard, b: StoryCard) -> float:
+    seed_a = _dedupe_seed_text(a)
+    seed_b = _dedupe_seed_text(b)
+    if not seed_a or not seed_b:
+        return 0.0
+    sim_text = similarity_ratio(seed_a, seed_b)
+    key_a = dedupe_key(seed_a)
+    key_b = dedupe_key(seed_b)
+    sim_key = similarity_ratio(key_a, key_b) if key_a and key_b else 0.0
+    return max(sim_text, sim_key)
+
+
+def _is_ai_dedupe_pair_candidate(a: StoryCard, b: StoryCard, *, strict_title: bool = True) -> bool:
+    if str(a.id or "").strip() == str(b.id or "").strip():
+        return False
+    if str(a.card_type or "").strip().lower() != str(b.card_type or "").strip().lower():
+        return False
+    if not _date_distance_within(
+        _card_reference_date(a),
+        _card_reference_date(b),
+        AI_DEDUPE_DATE_WINDOW_DAYS,
+    ):
+        return False
+    if not strict_title:
+        return True
+    return _dedupe_seed_similarity(a, b) >= AI_DEDUPE_TITLE_SIM_THRESHOLD
+
+
+def _collect_ai_dedupe_candidate_ids(cards: list[StoryCard], target_ids: set[str] | None = None) -> set[str]:
+    candidate_ids: set[str] = set()
+    id_map = {str(c.id or "").strip(): c for c in cards if str(c.id or "").strip()}
+    target = {x for x in (target_ids or set()) if x in id_map}
+    if target:
+        for target_id in sorted(target):
+            a = id_map[target_id]
+            for b_id, b in id_map.items():
+                if b_id == target_id:
+                    continue
+                # Incremental mode: broaden candidates by type/date, then let AI decide
+                # by title + glance semantics.
+                if _is_ai_dedupe_pair_candidate(a, b, strict_title=False):
+                    candidate_ids.add(target_id)
+                    candidate_ids.add(b_id)
+        return candidate_ids
+
+    n = len(cards)
+    for i in range(n):
+        a = cards[i]
+        for j in range(i + 1, n):
+            b = cards[j]
+            if _is_ai_dedupe_pair_candidate(a, b, strict_title=True):
+                a_id = str(a.id or "").strip()
+                b_id = str(b.id or "").strip()
+                if a_id:
+                    candidate_ids.add(a_id)
+                if b_id:
+                    candidate_ids.add(b_id)
+    return candidate_ids
+
+
 def _dedupe_detail_features(card: StoryCard) -> list[str]:
     facts = normalize_event_facts(card.event_facts)
     flags: list[str] = []
@@ -675,7 +1277,7 @@ def _is_official_update_card(card: StoryCard) -> bool:
 
 
 def _is_dedupe_protected_card(card: StoryCard) -> bool:
-    return _is_official_update_card(card) or _is_future_alpha_card(card)
+    return _is_official_update_card(card)
 
 
 def _build_rank_cutoff_drop_record(
@@ -842,9 +1444,11 @@ def drop_discord_event_duplicates_preferring_x(
 def drop_redundant_cards_local(
     cards: list[StoryCard],
     force_include_ids: set[str] | None = None,
+    target_drop_ids: set[str] | None = None,
     dropped_logs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[StoryCard], int]:
     force_ids = set(force_include_ids or set())
+    target_ids = {str(x or "").strip() for x in (target_drop_ids or set()) if str(x or "").strip()}
     picked_by_sig: dict[str, StoryCard] = {}
     passthrough: list[StoryCard] = []
     removed = 0
@@ -864,6 +1468,37 @@ def drop_redundant_cards_local(
         if prev is None:
             picked_by_sig[sig] = card
             continue
+        if target_ids:
+            prev_target = str(prev.id or "").strip() in target_ids
+            now_target = str(card.id or "").strip() in target_ids
+            if (not prev_target) and (not now_target):
+                passthrough.append(card)
+                continue
+            if prev_target and not now_target:
+                if isinstance(dropped_logs, list):
+                    dropped_logs.append(
+                        _dedupe_drop_record(
+                            prev,
+                            reason_code="local_signature_dedupe",
+                            reason="本地去重：新增卡與舊卡同簽名，保留既有卡片。",
+                            winner=card,
+                        )
+                    )
+                picked_by_sig[sig] = card
+                removed += 1
+                continue
+            if now_target and not prev_target:
+                if isinstance(dropped_logs, list):
+                    dropped_logs.append(
+                        _dedupe_drop_record(
+                            card,
+                            reason_code="local_signature_dedupe",
+                            reason="本地去重：新增卡與既有卡同簽名，保留既有卡片。",
+                            winner=prev,
+                        )
+                    )
+                removed += 1
+                continue
         prev_score = _card_quality_score(prev)
         now_score = _card_quality_score(card)
         if now_score > prev_score:
@@ -902,14 +1537,26 @@ def apply_minimax_global_dedupe(
     cards: list[StoryCard],
     api_key: str,
     force_include_ids: set[str] | None = None,
+    target_drop_ids: set[str] | None = None,
     dropped_logs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[StoryCard], int]:
     if not cards:
         return cards, 0
     force_ids = set(force_include_ids or set())
+    target_ids = {str(x or "").strip() for x in (target_drop_ids or set()) if str(x or "").strip()}
+    if target_ids:
+        target_ids = {x for x in target_ids if any(str(c.id or "").strip() == x for c in cards)}
+        if not target_ids:
+            return cards, 0
     protected_ids = {str(c.id or "").strip() for c in cards if str(c.id or "").strip() and _is_dedupe_protected_card(c)}
+    candidate_ids = _collect_ai_dedupe_candidate_ids(cards, target_ids=target_ids)
+    if len(candidate_ids) < 2:
+        return cards, 0
+    ai_cards = [c for c in cards if str(c.id or "").strip() in candidate_ids]
+    if len(ai_cards) < 2:
+        return cards, 0
     payload_rows: list[dict[str, Any]] = []
-    for c in cards:
+    for c in ai_cards:
         facts = normalize_event_facts(c.event_facts)
         payload_rows.append(
             {
@@ -917,6 +1564,7 @@ def apply_minimax_global_dedupe(
                 "account": c.account,
                 "type": c.card_type,
                 "title": compact_point(c.title or "", 96),
+                "glance": compact_point(c.glance or c.summary or "", 120),
                 "summary": compact_point(c.summary or "", 160),
                 "event_date": _event_date_hint(c),
                 "schedule": facts.get("schedule", ""),
@@ -929,7 +1577,7 @@ def apply_minimax_global_dedupe(
 
     prompt = (
         "你是社群情報總編，任務是『去重』而不是重寫內容。"
-        "請從候選卡片中判斷哪些是同一事件/同一更新的重複貼文，只輸出應該刪掉的 id。"
+        "請先以標題(title)與一句話重點(glance)做初步篩選，再判斷哪些是同一事件/同一更新的重複貼文，只輸出應該刪掉的 id。"
         "規則："
         "1) 同主題、同日期（或同場次）且內容高度重疊，跨帳號也可視為重複；"
         "2) 優先保留資訊更完整者（有時間/地點/獎勵/參與方式/圖片）；完整度相近時再優先官方來源；"
@@ -945,9 +1593,11 @@ def apply_minimax_global_dedupe(
         drop_ids_raw = parsed.get("drop_ids")
         if not isinstance(drop_ids_raw, list):
             return cards, 0
-        known = {c.id for c in cards}
+        known = {c.id for c in ai_cards}
         drop_ids = {str(x).strip() for x in drop_ids_raw if str(x).strip() in known}
         drop_ids = {x for x in drop_ids if x not in force_ids and x not in protected_ids}
+        if target_ids:
+            drop_ids = {x for x in drop_ids if x in target_ids}
         if not drop_ids:
             return cards, 0
         out = [c for c in cards if c.id not in drop_ids]
@@ -1414,6 +2064,12 @@ def _story_card_from_saved_row(row: dict[str, Any], fallback: StoryCard | None =
             template_id=str(row.get("template_id") or (fallback.template_id if fallback else "community_brief")).strip() or "community_brief",
             glance=str(row.get("glance") or (fallback.glance if fallback else "")).strip(),
             timeline_date=str(row.get("timeline_date") or (fallback.timeline_date if fallback else "")).strip(),
+            timeline_end_date=str(row.get("timeline_end_date") or (fallback.timeline_end_date if fallback else "")).strip(),
+            event_wall=(
+                row.get("event_wall")
+                if isinstance(row.get("event_wall"), bool)
+                else (fallback.event_wall if fallback and isinstance(fallback.event_wall, bool) else None)
+            ),
             urgency=str(row.get("urgency") or (fallback.urgency if fallback else "normal")).strip() or "normal",
             manual_pick=bool(row.get("manual_pick") if row.get("manual_pick") is not None else (fallback.manual_pick if fallback else False)),
             manual_pin=bool(row.get("manual_pin") if row.get("manual_pin") is not None else (fallback.manual_pin if fallback else False)),
@@ -1422,6 +2078,9 @@ def _story_card_from_saved_row(row: dict[str, Any], fallback: StoryCard | None =
             topic_labels=normalize_topic_labels(row.get("topic_labels")),
             detail_summary=str(row.get("detail_summary") or (fallback.detail_summary if fallback else "")).strip(),
             detail_lines=normalize_detail_lines(row.get("detail_lines"), limit=6),
+            sbt_name=str(row.get("sbt_name") or (fallback.sbt_name if fallback else "")).strip(),
+            sbt_names=normalize_sbt_names(row.get("sbt_names") if row.get("sbt_names") is not None else (fallback.sbt_names if fallback else row.get("sbt_name"))),
+            sbt_acquisition=str(row.get("sbt_acquisition") or (fallback.sbt_acquisition if fallback else "")).strip(),
             reply_to_id=str(row.get("reply_to_id") or (fallback.reply_to_id if fallback else "")).strip(),
         )
     except Exception:
@@ -1451,6 +2110,23 @@ def _saved_card_source_identity(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _retention_reference_datetime(card: StoryCard) -> datetime | None:
+    return (
+        _parse_iso_safe(str(card.timeline_end_date or ""))
+        or _parse_iso_safe(str(card.timeline_date or ""))
+        or _parse_iso_safe(str(card.published_at or ""))
+    )
+
+
+def _is_within_feed_retention_window(card: StoryCard, now_dt: datetime, days: int = 14) -> bool:
+    ref = _retention_reference_datetime(card)
+    if not ref:
+        return True
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return (now_dt - timedelta(days=days)) <= ref <= (now_dt + timedelta(days=days))
+
+
 def _is_saved_card_reusable(row: dict[str, Any]) -> bool:
     if not isinstance(row, dict):
         return False
@@ -1459,6 +2135,136 @@ def _is_saved_card_reusable(row: dict[str, Any]) -> bool:
     card_type = str(row.get("card_type") or "").strip().lower()
     layout = str(row.get("layout") or "").strip().lower()
     return bool(summary and bullets and card_type and layout)
+
+
+_PRESERVE_STRING_FIELDS = (
+    "title",
+    "summary",
+    "glance",
+    "detail_summary",
+    "sbt_name",
+    "sbt_acquisition",
+    "raw_text",
+    "cover_image",
+    "timeline_date",
+    "timeline_end_date",
+    "published_at",
+    "card_type",
+    "layout",
+    "template_id",
+    "urgency",
+    "account",
+    "url",
+    "provider",
+    "reply_to_id",
+)
+_PRESERVE_LIST_FIELDS = (
+    "bullets",
+    "tags",
+    "detail_lines",
+    "topic_labels",
+    "sbt_names",
+)
+_PRESERVE_DICT_FIELDS = (
+    "event_facts",
+    "metrics",
+)
+_PRESERVE_BOOL_FIELDS = (
+    "event_wall",
+)
+
+_EVENT_WALL_CARD_TYPES = {"event", "announcement"}
+
+
+def _default_event_wall_value(row: dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    card_type = str(row.get("card_type") or "").strip().lower()
+    if card_type not in _EVENT_WALL_CARD_TYPES:
+        return False
+    return bool(
+        _parse_iso_safe(str(row.get("timeline_end_date") or ""))
+        or _parse_iso_safe(str(row.get("timeline_date") or ""))
+    )
+
+
+def _is_blank_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _clone_preserved_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _preserve_existing_nonempty_card_fields(
+    cards: list[dict[str, Any]],
+    existing_map: dict[str, dict[str, Any]],
+    card_field_overrides: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Never overwrite previously written card fields with blank values."""
+    override_map = card_field_overrides if isinstance(card_field_overrides, dict) else {}
+    merged_rows: list[dict[str, Any]] = []
+    for row in cards:
+        if not isinstance(row, dict):
+            continue
+        cur = dict(row)
+        card_id = str(cur.get("id") or "").strip()
+        prev = existing_map.get(card_id) if card_id else None
+        if isinstance(prev, dict):
+            for key in _PRESERVE_STRING_FIELDS:
+                if _is_blank_value(cur.get(key)) and not _is_blank_value(prev.get(key)):
+                    cur[key] = prev.get(key)
+            for key in _PRESERVE_LIST_FIELDS:
+                if _is_blank_value(cur.get(key)) and not _is_blank_value(prev.get(key)):
+                    prior = prev.get(key)
+                    if isinstance(prior, list):
+                        cur[key] = list(prior)
+            for key in _PRESERVE_DICT_FIELDS:
+                if _is_blank_value(cur.get(key)) and not _is_blank_value(prev.get(key)):
+                    prior = prev.get(key)
+                    if isinstance(prior, dict):
+                        cur[key] = dict(prior)
+            for key in _PRESERVE_BOOL_FIELDS:
+                if cur.get(key) is None and isinstance(prev.get(key), bool):
+                    cur[key] = bool(prev.get(key))
+            # Future-proof preservation:
+            # if an old field exists but the new mapping omitted it,
+            # carry it forward so scheduled sync will not silently drop it.
+            for key, prior in prev.items():
+                if key in cur:
+                    continue
+                if _is_blank_value(prior):
+                    continue
+                if isinstance(prior, (str, int, float, bool, list, dict)):
+                    cur[key] = _clone_preserved_value(prior)
+        override = override_map.get(card_id) if card_id else None
+        if isinstance(override, dict):
+            names = normalize_sbt_names(
+                override.get("sbt_names") if override.get("sbt_names") is not None else override.get("sbt_name")
+            )
+            acquisition = clean_text(str(override.get("sbt_acquisition") or "")).strip()[:260]
+            cur["sbt_names"] = list(names)
+            cur["sbt_name"] = names[0] if names else ""
+            cur["sbt_acquisition"] = acquisition
+            if names or acquisition:
+                labels = normalize_topic_labels(cur.get("topic_labels"))
+                if "sbt" not in labels:
+                    labels.append("sbt")
+                cur["topic_labels"] = labels
+        if not isinstance(cur.get("event_wall"), bool):
+            cur["event_wall"] = _default_event_wall_value(cur)
+        merged_rows.append(cur)
+    return merged_rows
 
 
 def sync_accounts(
@@ -1506,24 +2312,37 @@ def sync_accounts(
             "winner_post_id": str(current.get("winner_post_id") or ""),
             "winner_url": str(current.get("winner_url") or ""),
             "winner_title": str(current.get("winner_title") or ""),
+            "dedupe_status": str(current.get("dedupe_status") or "pending"),
+            "dedupe_checked_at": str(current.get("dedupe_checked_at") or ""),
+            "dedupe_version": str(current.get("dedupe_version") or DEDUPE_VERSION),
         }
         stage_norm = str(stage or "").strip().lower()
         if stage_norm == "scanned":
             merged["scan"] = "done"
             merged["curation"] = "pending"
             merged["translation"] = "pending"
+            merged["dedupe_status"] = "pending"
+            merged["dedupe_checked_at"] = ""
         elif stage_norm == "analyzing":
             merged["scan"] = "done"
             merged["curation"] = "running"
             merged["translation"] = "pending"
+            merged["dedupe_status"] = "pending"
+            merged["dedupe_checked_at"] = ""
         elif stage_norm == "dedupe_dropped":
             merged["scan"] = "done"
             merged["curation"] = "done"
             merged["translation"] = "idle"
+            merged["dedupe_status"] = "dropped"
+            merged["dedupe_checked_at"] = datetime.now(timezone.utc).isoformat()
+            merged["dedupe_version"] = DEDUPE_VERSION
         elif stage_norm == "selected":
             merged["scan"] = "done"
             merged["curation"] = "done"
             merged["translation"] = "pending"
+            merged["dedupe_status"] = "kept"
+            merged["dedupe_checked_at"] = datetime.now(timezone.utc).isoformat()
+            merged["dedupe_version"] = DEDUPE_VERSION
         elif stage_norm == "failed":
             merged["scan"] = "done"
             merged["curation"] = "failed"
@@ -1700,6 +2519,9 @@ def sync_accounts(
                     topic_labels=normalize_topic_labels(item.get("topic_labels")),
                     detail_summary=str(item.get("detail_summary") or ""),
                     detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
+                    sbt_name=str(item.get("sbt_name") or ""),
+                    sbt_names=normalize_sbt_names(item.get("sbt_names") if item.get("sbt_names") is not None else item.get("sbt_name")),
+                    sbt_acquisition=str(item.get("sbt_acquisition") or ""),
                     reply_to_id=str(item.get("reply_to_id") or ""),
                 )
             )
@@ -1711,9 +2533,11 @@ def sync_accounts(
     normalize_cards_semantics(merged_cards)
     feedback_result = apply_feedback_overrides(merged_cards)
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
+    retention_now = datetime.now(timezone.utc)
     source_cards: list[StoryCard] = []
     removed_by_selection = 0
     removed_by_feedback = 0
+    removed_by_retention = 0
     for c in merged_cards:
         c.manual_pin = c.id in pin_ids
         c.manual_bottom = c.id in bottom_ids
@@ -1739,6 +2563,15 @@ def sync_accounts(
                 stage="dedupe_dropped",
                 reason_code="manual_exclude",
                 reason="因手動排除規則淘汰。",
+            )
+            continue
+        if c.id not in force_ids and not _is_within_feed_retention_window(c, retention_now):
+            removed_by_retention += 1
+            _upsert_lifecycle(
+                _card_progress_item(c),
+                stage="dedupe_dropped",
+                reason_code="retention_window_expired",
+                reason="超出保留時間窗（今天前後 14 天）而移除。",
             )
             continue
         source_cards.append(c)
@@ -1767,8 +2600,16 @@ def sync_accounts(
         old_id = str(old_card.id or "").strip()
         if not old_id or old_id in source_ids:
             continue
-        dt = _parse_iso_safe(old_card.published_at)
-        if dt and dt >= since_dt:
+        if old_id in exclude_ids and old_id not in force_ids:
+            removed_by_selection += 1
+            _upsert_lifecycle(
+                _card_progress_item(old_card),
+                stage="dedupe_dropped",
+                reason_code="manual_exclude",
+                reason="因手動排除規則淘汰。",
+            )
+            continue
+        if _is_within_feed_retention_window(old_card, retention_now):
             source_cards.append(old_card)
             source_ids.add(old_id)
             carried_forward_cards += 1
@@ -1794,26 +2635,8 @@ def sync_accounts(
     dedupe_drop_logs = []
     _emit_lifecycle_progress()
 
-    pre_curate_cards = list(source_cards)
-    curated_cards, removed_count = curate_cards(
-        source_cards,
-        max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
-        force_include_ids=force_ids,
-    )
-    curated_id_set = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
-    curation_drop_logs: list[dict[str, Any]] = []
-    for card in pre_curate_cards:
-        cid = str(card.id or "").strip()
-        if cid and cid not in curated_id_set:
-            curation_drop_logs.append(
-                _build_rank_cutoff_drop_record(
-                    card,
-                    kept_cards=curated_cards,
-                    reason_code="curation_rank_cutoff",
-                    max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
-                )
-            )
-    _apply_dropped_logs(curation_drop_logs)
+    curated_cards = list(source_cards)
+    removed_count = 0
     _emit_lifecycle_progress()
 
     reused_done_items: list[dict[str, Any]] = []
@@ -1823,18 +2646,20 @@ def sync_accounts(
         restored: StoryCard | None = None
         prev = existing_map.get(str(card.id or "").strip())
         if isinstance(prev, dict):
-            if _saved_card_source_identity(prev) == _story_card_source_identity(card) and _is_saved_card_reusable(prev):
-                restored = _story_card_from_saved_row(prev, fallback=card)
+            restored = _story_card_from_saved_row(prev, fallback=card)
         if restored:
+            # Scheduled sync must not rewrite old cards. Preserve the saved card
+            # payload exactly unless the admin explicitly changes manual controls.
             restored.manual_pick = card.manual_pick or restored.manual_pick
-            restored.manual_pin = card.manual_pin
-            restored.manual_bottom = card.manual_bottom
+            restored.manual_pin = card.manual_pin or restored.manual_pin
+            restored.manual_bottom = card.manual_bottom or restored.manual_bottom
             resolved_cards.append(restored)
             reused_done_items.append(_card_progress_item(restored))
         else:
             resolved_cards.append(card)
             cards_to_refine.append(card)
     curated_cards = resolved_cards
+    new_card_ids = {str(card.id or "").strip() for card in cards_to_refine if str(card.id or "").strip()}
     curation_total = len(curated_cards)
     reused_count = len(reused_done_items)
     _emit_sync_progress(
@@ -1902,6 +2727,7 @@ def sync_accounts(
             curated_cards,
             api_key,
             force_include_ids=force_ids,
+            target_drop_ids=new_card_ids,
             dropped_logs=dedupe_drop_logs,
         )
         _apply_dropped_logs(dedupe_drop_logs)
@@ -1909,35 +2735,18 @@ def sync_accounts(
         curated_cards, local_deduped = drop_redundant_cards_local(
             curated_cards,
             force_include_ids=force_ids,
+            target_drop_ids=new_card_ids,
             dropped_logs=dedupe_drop_logs,
         )
         _apply_dropped_logs(dedupe_drop_logs)
         dedupe_drop_logs = []
-        pre_final_curate = list(curated_cards)
-        curated_cards, removed_count = curate_cards(
-            curated_cards,
-            max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
-            force_include_ids=force_ids,
-        )
-        final_curated_ids = {str(c.id or "").strip() for c in curated_cards if str(c.id or "").strip()}
-        final_curation_drop_logs: list[dict[str, Any]] = []
-        for card in pre_final_curate:
-            cid = str(card.id or "").strip()
-            if cid and cid not in final_curated_ids:
-                final_curation_drop_logs.append(
-                    _build_rank_cutoff_drop_record(
-                        card,
-                        kept_cards=curated_cards,
-                        reason_code="final_curation_rank_cutoff",
-                        max_cards=max(DEFAULT_CURATED_MAX_CARDS, len(force_ids)),
-                    )
-                )
-        _apply_dropped_logs(final_curation_drop_logs)
+        removed_count = 0
     else:
         apply_editorial_fallback(curated_cards)
         curated_cards, local_deduped = drop_redundant_cards_local(
             curated_cards,
             force_include_ids=force_ids,
+            target_drop_ids=new_card_ids,
             dropped_logs=dedupe_drop_logs,
         )
         _apply_dropped_logs(dedupe_drop_logs)
@@ -1946,8 +2755,12 @@ def sync_accounts(
     curation_total = len(curated_cards)
     finalize_progress = not bool(api_key)
     curation_done_items: list[dict[str, Any]] = []
+    reused_ids = {str(item.get("id") or "").strip() for item in reused_done_items if isinstance(item, dict)}
     for idx, card in enumerate(curated_cards, start=1):
         _upsert_lifecycle(_card_progress_item(card), stage="selected")
+        if str(card.id or "").strip() in reused_ids:
+            curation_done_items.append(_card_progress_item(card))
+            continue
         card.manual_pick = card.manual_pick or (card.id in include_ids)
         card.manual_pin = card.id in pin_ids
         card.manual_bottom = card.id in bottom_ids
@@ -2011,6 +2824,7 @@ def sync_accounts(
     payload["excluded_cards"] = removed_count
     payload["excluded_by_selection"] = removed_by_selection
     payload["excluded_by_feedback"] = removed_by_feedback
+    payload["excluded_by_retention"] = removed_by_retention
     payload["excluded_by_source_preference"] = int(removed_by_source_pref)
     payload["key_terms"] = key_terms
     payload["intel_sections"] = sections
@@ -2050,6 +2864,7 @@ def sync_accounts(
         "carried_forward": int(carried_forward_cards),
         "removed_by_selection": int(removed_by_selection),
         "removed_by_feedback": int(removed_by_feedback),
+        "removed_by_retention": int(removed_by_retention),
         "removed_by_source_preference": int(removed_by_source_pref),
         "removed_by_ai_dedupe": int(ai_deduped),
         "removed_by_local_dedupe": int(local_deduped),
@@ -2090,6 +2905,46 @@ def sync_accounts(
         "twitter_cli_ready": twitter_cli_ready,
         "discord_monitor_enabled": bool(discord_cfg.get("enabled")),
     }
+    feedback_state = read_feedback_state()
+    card_field_overrides = (
+        feedback_state.get("card_field_overrides")
+        if isinstance(feedback_state.get("card_field_overrides"), dict)
+        else {}
+    )
+    payload["cards"] = _preserve_existing_nonempty_card_fields(
+        payload.get("cards") if isinstance(payload.get("cards"), list) else [],
+        existing_map,
+        card_field_overrides=card_field_overrides,
+    )
+    lifecycle_by_id: dict[str, dict[str, Any]] = {}
+    lifecycle_by_url: dict[str, dict[str, Any]] = {}
+    for row in lifecycle_snapshot:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or "").strip()
+        rurl = str(row.get("url") or "").strip()
+        if rid:
+            lifecycle_by_id[rid] = row
+        if rurl:
+            lifecycle_by_url[rurl] = row
+    cards_payload = payload.get("cards") if isinstance(payload.get("cards"), list) else []
+    for row in cards_payload:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("id") or "").strip()
+        curl = str(row.get("url") or "").strip()
+        life = lifecycle_by_id.get(cid) or lifecycle_by_url.get(curl) or {}
+        dedupe_status = str(life.get("dedupe_status") or "pending").strip().lower() or "pending"
+        dedupe_checked_at = str(life.get("dedupe_checked_at") or "").strip()
+        row["dedupe_status"] = dedupe_status
+        row["dedupe_checked"] = bool(dedupe_checked_at)
+        row["dedupe_checked_at"] = dedupe_checked_at
+        row["dedupe_version"] = str(life.get("dedupe_version") or DEDUPE_VERSION).strip() or DEDUPE_VERSION
+        row["dedupe_reason_code"] = str(life.get("reason_code") or "").strip()
+        row["dedupe_reason"] = str(life.get("reason") or "").strip()
+        row["dedupe_winner_post_id"] = str(life.get("winner_post_id") or "").strip()
+        row["dedupe_winner_url"] = str(life.get("winner_url") or "").strip()
+        row["dedupe_winner_title"] = str(life.get("winner_title") or "").strip()
 
     write_json(data_dir() / "x_intel_feed.json", payload)
     return payload
@@ -2104,14 +2959,18 @@ def add_manual_tweet(tweet_url: str) -> dict[str, Any]:
     current = read_json(manual_path, [])
 
     filtered = [item for item in current if str(item.get("id")) != card.id]
-    card.manual_pick = True
+    # Manual URL submit should enter normal analysis pipeline first.
+    # Do not pre-arrange keep/pin/bottom here.
+    card.manual_pick = False
+    card.manual_pin = False
+    card.manual_bottom = False
     filtered.append(card.to_dict())
     write_json(manual_path, filtered)
-    set_manual_selection(card.id, "include")
 
     payload = sync_accounts()
     return {
         "ok": True,
+        "tweet": card.to_dict(),
         "added": card.to_dict(),
         "feed": payload,
     }

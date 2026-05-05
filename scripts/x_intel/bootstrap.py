@@ -162,6 +162,8 @@ class StoryCard:
     template_id: str = "community_brief"
     glance: str = ""
     timeline_date: str = ""
+    timeline_end_date: str = ""
+    event_wall: bool | None = None
     urgency: str = "normal"
     manual_pick: bool = False
     manual_pin: bool = False
@@ -170,6 +172,9 @@ class StoryCard:
     topic_labels: list[str] | None = None
     detail_summary: str = ""
     detail_lines: list[str] | None = None
+    sbt_name: str = ""
+    sbt_names: list[str] | None = None
+    sbt_acquisition: str = ""
     reply_to_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -193,6 +198,8 @@ class StoryCard:
             "template_id": self.template_id,
             "glance": self.glance,
             "timeline_date": self.timeline_date,
+            "timeline_end_date": self.timeline_end_date,
+            "event_wall": self.event_wall if isinstance(self.event_wall, bool) else None,
             "urgency": self.urgency,
             "manual_pick": self.manual_pick,
             "manual_pin": self.manual_pin,
@@ -201,6 +208,9 @@ class StoryCard:
             "topic_labels": self.topic_labels or [],
             "detail_summary": self.detail_summary,
             "detail_lines": self.detail_lines or [],
+            "sbt_name": self.sbt_name,
+            "sbt_names": self.sbt_names or [],
+            "sbt_acquisition": self.sbt_acquisition,
             "reply_to_id": self.reply_to_id,
         }
 
@@ -1379,6 +1389,44 @@ def normalize_topic_labels(value: Any) -> list[str]:
         seen.add(label)
         out.append(label)
         if len(out) >= 6:
+            break
+    return out
+
+
+def normalize_sbt_names(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[,，/|、\n]+", value)
+    elif isinstance(value, list):
+        raw_items = [str(x) for x in value]
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    bad_patterns = (
+        r"^[#\d\s個个]+sbt$",
+        r"^的\s*sbt$",
+        r"^此結果代表.*sbt$",
+        r"^目前共有.*sbt$",
+        r"^同步釋出\s*sbt$",
+        r"^對應\s*sbt$",
+        r"^已結束的\s*sbt$",
+    )
+    for raw in raw_items:
+        name = _clean_fact_value(str(raw or ""), max_len=64)
+        if not name:
+            continue
+        normalized = dedupe_key(name)
+        if len(normalized) < 4:
+            continue
+        if not re.search(r"\bsbt\b|soulbound|認證|认证|徽章|badge", name, re.I):
+            continue
+        if any(re.search(pat, name, re.I) for pat in bad_patterns):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(name)
+        if len(out) >= 5:
             break
     return out
 

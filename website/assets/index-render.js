@@ -6,8 +6,10 @@
       "intel-events-cards",
       "intel-other-cards",
       "intel-pokemon-cards",
+      "intel-collectibles-cards",
       "pokemon-news-list",
       "intel-sbt-cards",
+      "intel-sbt-acquisition-list",
       "intel-tools-cards",
       "intel-alpha-cards",
       "intel-official-overview-title",
@@ -499,6 +501,7 @@
 
     function updateIntelAuthUi() {
       const statusEl = document.getElementById("intel-auth-status");
+      const adminControls = document.getElementById("intel-admin-controls");
       const adminPanel = document.getElementById("intel-admin-monitor");
       const adminOpenBtn = document.getElementById("nav-admin-monitor-btn");
       const adminPipelineLink = document.getElementById("nav-admin-pipeline-link");
@@ -519,10 +522,12 @@
         && Boolean(intelAuthState.authRequired)
         && Boolean(intelAuthState.authConfigured)
         && Boolean(intelAuthState.authenticated);
+      const showIntelControls = showAdminPanel;
 
       if (analyzeBtn) analyzeBtn.disabled = !editable;
       if (syncBtn) syncBtn.disabled = !editable;
       if (input) input.disabled = !editable;
+      if (adminControls) adminControls.style.display = showIntelControls ? "" : "none";
       if (adminPanel) adminPanel.style.display = showAdminPanel ? "grid" : "none";
       if (adminOpenBtn) adminOpenBtn.style.display = showAdminPanel ? "inline-flex" : "none";
       if (adminPipelineLink) adminPipelineLink.style.display = showAdminPanel ? "inline-flex" : "none";
@@ -663,6 +668,7 @@
         official: uiLabel("official"),
         sbt: "SBT",
         pokemon: uiLabel("pokemon"),
+        collectibles: uiLabel("collectibles"),
         alpha: uiLabel("alpha"),
         tools: uiLabel("tools"),
         other: uiLabel("other"),
@@ -856,7 +862,7 @@
       const summary = cleanMasterSummary(card?.summary || "");
       const cover = String(card?.cover_image || "").trim();
       const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" />`
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" onerror="this.closest('.intel-detail-cover')?.remove()" />`
         : `<div class="intel-detail-cover-empty">${escapeHtml(uiLabel("noImage"))}</div>`;
       const bullets = Array.isArray(card?.bullets) ? card.bullets.filter((x) => String(x || "").trim()).slice(0, 8) : [];
       const normalizedBullets = [];
@@ -967,6 +973,160 @@
       const card = intelCardLookup.get(key);
       if (!card) return;
       openDetailModalWithHtml(intelDetailHtml(card));
+    }
+
+    function normalizeSbtText(raw, limit = 120) {
+      return truncateText(String(raw || "")
+        .replace(/^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i, "")
+        .replace(/\s+/g, " ")
+        .trim(), limit);
+    }
+
+    function isWeakSbtName(name) {
+      const text = String(name || "").replace(/\s+/g, " ").trim();
+      if (!text) return true;
+      if (!/(sbt|soulbound|認證|认证|徽章|badge)/i.test(text)) return true;
+      return /^(#?\d+\s*)?(個|个)?\s*sbt$/i.test(text)
+        || /^的\s*sbt$/i.test(text)
+        || /^此結果代表.*sbt$/i.test(text)
+        || /^目前共有.*sbt$/i.test(text)
+        || /^同步釋出\s*sbt$/i.test(text)
+        || /^對應\s*sbt$/i.test(text)
+        || /^已結束的\s*sbt$/i.test(text);
+    }
+
+    function sbtNamesForCard(card) {
+      const rows = [];
+      if (Array.isArray(card?.sbt_names)) rows.push(...card.sbt_names);
+      if (card?.sbt_name) rows.push(card.sbt_name);
+      const seen = new Set();
+      return rows
+        .map((x) => normalizeSbtText(x, 64))
+        .filter((x) => x && !isWeakSbtName(x))
+        .filter((x) => {
+          const key = x.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 4);
+    }
+
+    function sbtDisplayTitle(card) {
+      const names = sbtNamesForCard(card);
+      if (names.length) return names.join(" / ");
+      return "";
+    }
+
+    function sbtAcquisitionForCard(card) {
+      let direct = normalizeSbtText(card?.sbt_acquisition, 128);
+      if (!direct) {
+        const rows = [
+          ...(Array.isArray(card?.detail_lines) ? card.detail_lines : []),
+          ...(Array.isArray(card?.bullets) ? card.bullets : []),
+        ];
+        const explicit = rows.find((x) => /^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]/i.test(String(x || "")));
+        direct = normalizeSbtText(explicit, 128);
+      }
+      if (!direct) return "";
+      if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(direct)) return "";
+      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
+      if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(direct)) return "";
+      return direct;
+    }
+
+    function sbtEffectiveEndDate(card) {
+      const endRaw = String(card?.timeline_end_date || "").trim();
+      if (endRaw) return endRaw;
+      return String(card?.timeline_date || "").trim();
+    }
+
+    function sbtStatusForCard(card) {
+      const dateRaw = sbtEffectiveEndDate(card);
+      if (!dateRaw) return { label: uiLabel("sbtStatusPending"), expired: false, date: toPosterDate(card?.published_at) };
+      const dt = new Date(dateRaw);
+      if (Number.isNaN(dt.valueOf())) return { label: uiLabel("sbtStatusPending"), expired: false, date: toPosterDate(card?.published_at) };
+      const endOfDay = new Date(dt);
+      endOfDay.setHours(23, 59, 59, 999);
+      const isExpired = endOfDay.getTime() < Date.now();
+      return {
+        label: isExpired ? uiLabel("sbtStatusExpired") : uiLabel("sbtStatusClaimable"),
+        expired: isExpired,
+        date: toPosterDate(dateRaw),
+      };
+    }
+
+    function sbtNameGroupKey(names) {
+      return (Array.isArray(names) ? names : [])
+        .map((x) => String(x || "").trim().toLowerCase())
+        .filter(Boolean)
+        .sort()
+        .join("||");
+    }
+
+    function sbtRowTimeMs(card) {
+      const raw = String(card?.timeline_date || card?.published_at || "").trim();
+      if (!raw) return 0;
+      const dt = new Date(raw);
+      return Number.isNaN(dt.valueOf()) ? 0 : dt.getTime();
+    }
+
+    function pickBetterSbtSummaryRow(current, incoming) {
+      const currentAcqLen = String(current?.acquisition || "").trim().length;
+      const incomingAcqLen = String(incoming?.acquisition || "").trim().length;
+      if (incomingAcqLen !== currentAcqLen) return incomingAcqLen > currentAcqLen ? incoming : current;
+      const currentActive = current?.status?.expired ? 0 : 1;
+      const incomingActive = incoming?.status?.expired ? 0 : 1;
+      if (incomingActive !== currentActive) return incomingActive > currentActive ? incoming : current;
+      return sbtRowTimeMs(incoming?.card) >= sbtRowTimeMs(current?.card) ? incoming : current;
+    }
+
+    function renderSbtAcquisitionSummary(cards) {
+      const panel = document.getElementById("intel-sbt-acquisition-panel");
+      const list = document.getElementById("intel-sbt-acquisition-list");
+      const empty = document.getElementById("intel-sbt-acquisition-empty");
+      const count = document.getElementById("intel-sbt-acquisition-count");
+      const title = document.getElementById("intel-sbt-acquisition-title");
+      const next = document.getElementById("intel-sbt-acquisition-next");
+      if (!panel || !list || !empty || !count || !title || !next) return;
+      title.textContent = uiLabel("sbtAcquisition");
+      next.textContent = uiLabel("sbtAcquisitionNext");
+      empty.textContent = uiLabel("sbtAcquisitionEmpty");
+      const candidateRows = (Array.isArray(cards) ? cards : [])
+        .map((card, idx) => {
+          const names = sbtNamesForCard(card);
+          if (!names.length) return null;
+          const acquisition = sbtAcquisitionForCard(card);
+          const key = String(card?._card_key || cardStableKey(card, idx)).trim();
+          return { card, key, names, name: names.join(" / "), acquisition, status: sbtStatusForCard(card) };
+        })
+        .filter(Boolean);
+      const grouped = new Map();
+      for (const row of candidateRows) {
+        const groupKey = sbtNameGroupKey(row.names);
+        if (!groupKey) continue;
+        const prev = grouped.get(groupKey);
+        grouped.set(groupKey, prev ? pickBetterSbtSummaryRow(prev, row) : row);
+      }
+      const rows = Array.from(grouped.values())
+        .sort((a, b) => sbtRowTimeMs(b.card) - sbtRowTimeMs(a.card))
+        .slice(0, 10);
+      count.textContent = String(rows.length);
+      list.innerHTML = rows.map((row, idx) => `
+        <button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.key)}">
+          <span class="sbt-acq-index">#${idx + 1}</span>
+          <span class="sbt-acq-main">
+            <span class="sbt-acq-name">${escapeHtml(row.name)}</span>
+            ${row.acquisition ? `<span class="sbt-acq-method">${escapeHtml(row.acquisition)}</span>` : ""}
+          </span>
+          <span class="sbt-acq-meta">
+            <span>${escapeHtml(row.status.date || "--")}</span>
+            <span class="sbt-acq-status ${row.status.expired ? "is-expired" : (row.status.label === uiLabel("sbtStatusClaimable") ? "is-claimable" : "")}">${escapeHtml(row.status.label)}</span>
+          </span>
+        </button>
+      `).join("");
+      empty.style.display = rows.length ? "none" : "block";
+      panel.style.display = rows.length ? "block" : "none";
     }
 
     function pokemonNewsDetailHtml(item) {
@@ -1329,8 +1489,10 @@
 
       renderCardGrid("intel-events-cards", "intel-events-empty", eventsByPublished, uiLabel("noHighlights"));
       renderCardGrid("intel-cards", "intel-empty", routed.official, uiLabel("noHighlights"));
+      renderSbtAcquisitionSummary(routed.sbt);
       renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
       renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
+      renderCardGrid("intel-collectibles-cards", "intel-collectibles-empty", routed.collectibles, uiLabel("noHighlights"));
       renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, uiLabel("noHighlights"));
       renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, uiLabel("noHighlights"));
       renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
@@ -1906,7 +2068,16 @@
       return true;
     }
 
-    async function handleIntelAction(action, id, hintLabel = "") {
+    async function submitIntelTimelineUpdate(id, timelineDate = "", timelineEndDate = "") {
+      await postIntel("/api/intel/timeline", {
+        id,
+        timeline_date: String(timelineDate || "").trim(),
+        timeline_end_date: String(timelineEndDate || "").trim(),
+      });
+      await refreshIntelFeedForCurrentLang();
+    }
+
+    async function handleIntelAction(action, id, hintLabel = "", extra = {}) {
       if (!id || !action) return false;
       if (!intelCanEdit()) {
         setIntelMessage("請先登入管理員帳號，再執行保留/排除/分類操作。", "error");
@@ -1967,8 +2138,40 @@
         if (ok) setIntelMessage("已記錄分類回饋，並重新同步。", "ok");
         return ok;
       }
+      if (action === "timeline-save") {
+        const timelineDate = String(extra?.timeline_date || "").trim();
+        const timelineEndDate = String(extra?.timeline_end_date || "").trim();
+        if (timelineDate && timelineEndDate && timelineEndDate < timelineDate) {
+          setIntelMessage("結束日期不得早於開始日期。", "error");
+          return false;
+        }
+        setIntelMessage("正在更新卡片日期...", "");
+        await submitIntelTimelineUpdate(id, timelineDate, timelineEndDate);
+        setIntelMessage("卡片日期已更新。", "ok");
+        return true;
+      }
       return false;
     }
+
+    document.addEventListener("click", (event) => {
+      const trigger = event.target?.closest?.("[data-sbt-jump-card]");
+      if (!trigger) return;
+      const key = String(trigger.getAttribute("data-sbt-jump-card") || "").trim();
+      if (!key) return;
+      const escaped = (window.CSS && typeof window.CSS.escape === "function")
+        ? window.CSS.escape(key)
+        : key.replace(/["\\]/g, "\\$&");
+      const matches = Array.from(document.querySelectorAll(`[data-intel-card-id="${escaped}"]`));
+      if (!matches.length) return;
+      const sbtWrap = document.getElementById("intel-sbt-cards");
+      const inVisibleSbt = matches.find((el) => Boolean(sbtWrap && sbtWrap.contains(el) && el.getClientRects().length > 0));
+      const visible = matches.find((el) => el.getClientRects().length > 0);
+      const card = inVisibleSbt || visible || matches[0];
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("is-sbt-jump-target");
+      window.setTimeout(() => card.classList.remove("is-sbt-jump-target"), 1800);
+    });
 
     async function renderIntelOnLoad() {
       try {

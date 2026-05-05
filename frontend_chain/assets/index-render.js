@@ -6,8 +6,10 @@
       "intel-events-cards",
       "intel-other-cards",
       "intel-pokemon-cards",
+      "intel-collectibles-cards",
       "pokemon-news-list",
       "intel-sbt-cards",
+      "intel-sbt-acquisition-list",
       "intel-tools-cards",
       "intel-alpha-cards",
       "intel-official-overview-title",
@@ -499,6 +501,7 @@
 
     function updateIntelAuthUi() {
       const statusEl = document.getElementById("intel-auth-status");
+      const adminControls = document.getElementById("intel-admin-controls");
       const adminPanel = document.getElementById("intel-admin-monitor");
       const adminOpenBtn = document.getElementById("nav-admin-monitor-btn");
       const adminPipelineLink = document.getElementById("nav-admin-pipeline-link");
@@ -519,10 +522,12 @@
         && Boolean(intelAuthState.authRequired)
         && Boolean(intelAuthState.authConfigured)
         && Boolean(intelAuthState.authenticated);
+      const showIntelControls = showAdminPanel;
 
       if (analyzeBtn) analyzeBtn.disabled = !editable;
       if (syncBtn) syncBtn.disabled = !editable;
       if (input) input.disabled = !editable;
+      if (adminControls) adminControls.style.display = showIntelControls ? "" : "none";
       if (adminPanel) adminPanel.style.display = showAdminPanel ? "grid" : "none";
       if (adminOpenBtn) adminOpenBtn.style.display = showAdminPanel ? "inline-flex" : "none";
       if (adminPipelineLink) adminPipelineLink.style.display = showAdminPanel ? "inline-flex" : "none";
@@ -663,6 +668,7 @@
         official: uiLabel("official"),
         sbt: "SBT",
         pokemon: uiLabel("pokemon"),
+        collectibles: uiLabel("collectibles"),
         alpha: uiLabel("alpha"),
         tools: uiLabel("tools"),
         other: uiLabel("other"),
@@ -854,9 +860,10 @@
       const title = cleanMasterTitle(card?.title || uiLabel("unnamedPost"));
       const glance = cardPrimaryHighlight(card);
       const summary = cleanMasterSummary(card?.summary || "");
-      const cover = String(card?.cover_image || "").trim();
+      const coverRaw = String(card?.cover_image || "").trim();
+      const cover = (typeof resolveCoverImageUrl === "function") ? resolveCoverImageUrl(coverRaw) : coverRaw;
       const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" />`
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" onerror="this.closest('.intel-detail-cover')?.remove()" />`
         : `<div class="intel-detail-cover-empty">${escapeHtml(uiLabel("noImage"))}</div>`;
       const bullets = Array.isArray(card?.bullets) ? card.bullets.filter((x) => String(x || "").trim()).slice(0, 8) : [];
       const normalizedBullets = [];
@@ -969,6 +976,240 @@
       openDetailModalWithHtml(intelDetailHtml(card));
     }
 
+    function normalizeSbtText(raw, limit = 120) {
+      return truncateText(String(raw || "")
+        .replace(/^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i, "")
+        .replace(/\s+/g, " ")
+        .trim(), limit);
+    }
+
+    function isWeakSbtName(name) {
+      const text = String(name || "").replace(/\s+/g, " ").trim();
+      if (!text) return true;
+      if (!/(sbt|soulbound|認證|认证|徽章|badge)/i.test(text)) return true;
+      return /^(#?\d+\s*)?(個|个)?\s*sbt$/i.test(text)
+        || /^的\s*sbt$/i.test(text)
+        || /^此結果代表.*sbt$/i.test(text)
+        || /^目前共有.*sbt$/i.test(text)
+        || /^同步釋出\s*sbt$/i.test(text)
+        || /^對應\s*sbt$/i.test(text)
+        || /^已結束的\s*sbt$/i.test(text);
+    }
+
+    function sbtNamesForCard(card) {
+      const rows = [];
+      if (Array.isArray(card?.sbt_names)) rows.push(...card.sbt_names);
+      if (card?.sbt_name) rows.push(card.sbt_name);
+      const seen = new Set();
+      return rows
+        .map((x) => normalizeSbtText(x, 64))
+        .filter((x) => x && !isWeakSbtName(x))
+        .filter((x) => {
+          const key = x.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 4);
+    }
+
+    function sbtDisplayTitle(card) {
+      const names = sbtNamesForCard(card);
+      if (names.length) return names.join(" / ");
+      return "";
+    }
+
+    function sbtAcquisitionForCard(card) {
+      let direct = normalizeSbtText(card?.sbt_acquisition, 128);
+      if (!direct) {
+        const rows = [
+          ...(Array.isArray(card?.detail_lines) ? card.detail_lines : []),
+          ...(Array.isArray(card?.bullets) ? card.bullets : []),
+        ];
+        const explicit = rows.find((x) => /^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]/i.test(String(x || "")));
+        direct = normalizeSbtText(explicit, 128);
+      }
+      if (!direct) return "";
+      if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(direct)) return "";
+      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
+      if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(direct)) return "";
+      return direct;
+    }
+
+    function sbtEffectiveEndDate(card) {
+      const endRaw = String(card?.timeline_end_date || "").trim();
+      if (endRaw) return endRaw;
+      return String(card?.timeline_date || "").trim();
+    }
+
+    function sbtStatusForCard(card) {
+      const dateRaw = sbtEffectiveEndDate(card);
+      if (!dateRaw) return { label: uiLabel("sbtStatusPending"), expired: false, date: toPosterDate(card?.published_at) };
+      const dt = new Date(dateRaw);
+      if (Number.isNaN(dt.valueOf())) return { label: uiLabel("sbtStatusPending"), expired: false, date: toPosterDate(card?.published_at) };
+      const endOfDay = new Date(dt);
+      endOfDay.setHours(23, 59, 59, 999);
+      const isExpired = endOfDay.getTime() < Date.now();
+      return {
+        label: isExpired ? uiLabel("sbtStatusExpired") : uiLabel("sbtStatusClaimable"),
+        expired: isExpired,
+        date: toPosterDate(dateRaw),
+      };
+    }
+
+    function sbtNameGroupKey(names) {
+      return (Array.isArray(names) ? names : [])
+        .map((x) => String(x || "").trim().toLowerCase())
+        .filter(Boolean)
+        .sort()
+        .join("||");
+    }
+
+    function sbtRowTimeMs(card) {
+      const raw = String(card?.timeline_date || card?.published_at || "").trim();
+      if (!raw) return 0;
+      const dt = new Date(raw);
+      return Number.isNaN(dt.valueOf()) ? 0 : dt.getTime();
+    }
+
+    function pickBetterSbtSummaryRow(current, incoming) {
+      const currentAcqLen = String(current?.acquisition || "").trim().length;
+      const incomingAcqLen = String(incoming?.acquisition || "").trim().length;
+      if (incomingAcqLen !== currentAcqLen) return incomingAcqLen > currentAcqLen ? incoming : current;
+      const currentActive = current?.status?.expired ? 0 : 1;
+      const incomingActive = incoming?.status?.expired ? 0 : 1;
+      if (incomingActive !== currentActive) return incomingActive > currentActive ? incoming : current;
+      return sbtRowTimeMs(incoming?.card) >= sbtRowTimeMs(current?.card) ? incoming : current;
+    }
+
+    let sbtAcqEditMode = false;
+
+    function renderSbtAcquisitionSummary(cards, allCards = []) {
+      const panel = document.getElementById("intel-sbt-acquisition-panel");
+      const list = document.getElementById("intel-sbt-acquisition-list");
+      const empty = document.getElementById("intel-sbt-acquisition-empty");
+      const count = document.getElementById("intel-sbt-acquisition-count");
+      const title = document.getElementById("intel-sbt-acquisition-title");
+      const next = document.getElementById("intel-sbt-acquisition-next");
+      if (!panel || !list || !empty || !count || !title || !next) return;
+      const adminMode = intelCanEdit();
+      title.textContent = uiLabel("sbtAcquisition");
+      if (adminMode) {
+        next.innerHTML = `
+          <span>${escapeHtml(uiLabel("sbtAcquisitionNext"))}</span>
+          <button type="button" class="sbt-acq-mode-btn" data-sbt-edit-toggle>
+            ${escapeHtml(sbtAcqEditMode ? "完成編輯" : "編輯")}
+          </button>
+        `;
+      } else {
+        next.textContent = uiLabel("sbtAcquisitionNext");
+      }
+      empty.textContent = uiLabel("sbtAcquisitionEmpty");
+      const candidateRows = (Array.isArray(cards) ? cards : [])
+        .map((card, idx) => {
+          const names = sbtNamesForCard(card);
+          if (!names.length) return null;
+          const acquisition = sbtAcquisitionForCard(card);
+          const key = String(card?._card_key || cardStableKey(card, idx)).trim();
+          return { card, key, cardId: String(card?.id || "").trim(), names, name: names.join(" / "), acquisition, status: sbtStatusForCard(card) };
+        })
+        .filter(Boolean);
+      const grouped = new Map();
+      for (const row of candidateRows) {
+        const groupKey = sbtNameGroupKey(row.names);
+        if (!groupKey) continue;
+        const prev = grouped.get(groupKey);
+        grouped.set(groupKey, prev ? pickBetterSbtSummaryRow(prev, row) : row);
+      }
+      const rows = Array.from(grouped.values())
+        .sort((a, b) => sbtRowTimeMs(b.card) - sbtRowTimeMs(a.card))
+        .slice(0, 10);
+      const cardsForSelect = (Array.isArray(allCards) ? allCards : [])
+        .map((card, idx) => {
+          const id = String(card?.id || "").trim();
+          if (!id) return null;
+          const titleText = cleanMasterTitle(String(card?.title || card?.glance || uiLabel("unnamedPost")));
+          const account = String(card?.account || "source").trim();
+          const whenText = toPosterDate(String(card?.timeline_date || card?.published_at || ""));
+          const key = String(card?._card_key || cardStableKey(card, idx)).trim();
+          return { id, key, label: `@${account} · ${titleText} · ${whenText || "--"}` };
+        })
+        .filter(Boolean);
+      const optionHtml = cardsForSelect
+        .map((row) => `<option value="${escapeHtml(row.id)}" data-card-key="${escapeHtml(row.key)}">${escapeHtml(row.label)}</option>`)
+        .join("");
+      count.textContent = String(rows.length);
+      list.innerHTML = rows.map((row, idx) => `
+        <div class="sbt-acq-row-wrap" data-sbt-row="${escapeHtml(row.key)}">
+          <button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.key)}">
+            <span class="sbt-acq-index">#${idx + 1}</span>
+            <span class="sbt-acq-main">
+              <span class="sbt-acq-name">${escapeHtml(row.name)}</span>
+              ${row.acquisition ? `<span class="sbt-acq-method">${escapeHtml(row.acquisition)}</span>` : ""}
+            </span>
+            <span class="sbt-acq-meta">
+              <span>${escapeHtml(row.status.date || "--")}</span>
+              <span class="sbt-acq-status ${row.status.expired ? "is-expired" : (row.status.label === uiLabel("sbtStatusClaimable") ? "is-claimable" : "")}">${escapeHtml(row.status.label)}</span>
+            </span>
+          </button>
+          ${adminMode && sbtAcqEditMode && row.cardId ? `<button type="button" class="sbt-acq-edit-btn" data-sbt-edit-open="${escapeHtml(row.key)}">${escapeHtml("編輯")}</button>` : ""}
+          ${adminMode && sbtAcqEditMode && row.cardId ? `<div class="sbt-acq-editor" data-sbt-editor="${escapeHtml(row.key)}" hidden>
+            <div class="sbt-acq-editor-fields">
+              <label>SBT Name
+                <input type="text" data-sbt-edit-name value="${escapeHtml(row.name)}" />
+              </label>
+              <label>SBT 取得方式
+                <textarea data-sbt-edit-acq rows="2">${escapeHtml(row.acquisition || "")}</textarea>
+              </label>
+              <label>Start
+                <input type="date" data-sbt-edit-start value="${escapeHtml(String(row.card?.timeline_date || "").trim().slice(0, 10))}" />
+              </label>
+              <label>End
+                <input type="date" data-sbt-edit-end value="${escapeHtml(String(row.card?.timeline_end_date || "").trim().slice(0, 10))}" />
+              </label>
+            </div>
+            <div class="sbt-acq-editor-actions">
+              <button type="button" class="intel-pick-btn" data-sbt-edit-save="${escapeHtml(row.cardId)}" data-sbt-row-key="${escapeHtml(row.key)}">更新SBT</button>
+              <button type="button" class="intel-pick-btn" data-sbt-edit-cancel="${escapeHtml(row.key)}">取消</button>
+            </div>
+          </div>` : ""}
+        </div>
+      `).join("");
+      if (adminMode && sbtAcqEditMode) {
+        list.insertAdjacentHTML("beforeend", `
+          <div class="sbt-acq-add" data-sbt-add-box>
+            <div class="sbt-acq-add-title">新增 SBT 取得方式</div>
+            <div class="sbt-acq-add-grid">
+              <label>連接卡片
+                <select data-sbt-add-card>
+                  <option value="">請選擇卡片</option>
+                  ${optionHtml}
+                </select>
+              </label>
+              <label>SBT Name
+                <input type="text" data-sbt-add-name placeholder="例如：RenaCrypt Restock SBT" />
+              </label>
+              <label>SBT 取得方式
+                <textarea data-sbt-add-acq rows="2" placeholder="例如：在 5 月前完成一次抽卡即可解鎖"></textarea>
+              </label>
+              <label>Start
+                <input type="date" data-sbt-add-start />
+              </label>
+              <label>End
+                <input type="date" data-sbt-add-end />
+              </label>
+            </div>
+            <div class="sbt-acq-editor-actions">
+              <button type="button" class="intel-pick-btn" data-sbt-add-save>新增 / 注入卡片</button>
+            </div>
+          </span>
+          </div>
+        `);
+      }
+      empty.style.display = rows.length ? "none" : "block";
+      panel.style.display = (rows.length || (adminMode && sbtAcqEditMode)) ? "block" : "none";
+    }
+
     function pokemonNewsDetailHtml(item) {
       const title = String(item?.summary_title || item?.title || uiLabel("unnamedPost")).trim();
       const summary = String(item?.summary || "").trim();
@@ -1070,27 +1311,35 @@
       const modal = document.getElementById("intel-feedback-modal");
       const titleEl = document.getElementById("intel-feedback-title");
       const subEl = document.getElementById("intel-feedback-sub");
-      const labelField = document.getElementById("intel-feedback-label-field");
-      const labelEl = document.getElementById("intel-feedback-label");
+      const cardTypeField = document.getElementById("intel-feedback-card-type-field");
+      const cardTypeEl = document.getElementById("intel-feedback-card-type");
+      const sectionField = document.getElementById("intel-feedback-section-field");
+      const sectionEl = document.getElementById("intel-feedback-section");
       const reasonEl = document.getElementById("intel-feedback-reason");
-      if (!modal || !labelEl || !reasonEl) return Promise.resolve(null);
+      if (!modal || !cardTypeEl || !sectionEl || !reasonEl) return Promise.resolve(null);
 
       const mode = String(options.mode || "feedback");
       const defaultLabel = String(options.defaultLabel || "insight").trim().toLowerCase();
-      const normalizedLabel = intelFeedbackLabels.has(defaultLabel) ? defaultLabel : "insight";
+      const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
+      const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other"]);
+      const defaultCardType = cardTypeLabels.has(defaultLabel) ? defaultLabel : "";
+      const defaultSection = sectionLabels.has(defaultLabel) ? defaultLabel : "";
       const isExclude = mode === "exclude";
       if (titleEl) titleEl.textContent = isExclude ? "排除這篇貼文" : "回饋分類";
       if (subEl) {
         subEl.textContent = isExclude
           ? "請說明為什麼這篇不該出現在目前整理或活動時間軸。這會讓 AI 下次遇到類似內容時避開。"
-          : "請選擇正確分類，並說明為什麼要改。這會被存進 AI 分類記憶。";
+          : "請分別回饋卡片類型與分區（可只填其中一個），並說明為什麼要改。這會被存進 AI 分類記憶。";
       }
-      if (labelField) labelField.style.display = isExclude ? "none" : "";
-      labelEl.value = isExclude ? "exclude" : normalizedLabel;
+      modal.dataset.mode = mode;
+      if (cardTypeField) cardTypeField.style.display = isExclude ? "none" : "";
+      if (sectionField) sectionField.style.display = isExclude ? "none" : "";
+      cardTypeEl.value = isExclude ? "" : defaultCardType;
+      sectionEl.value = isExclude ? "" : defaultSection;
       reasonEl.value = "";
       reasonEl.placeholder = isExclude
         ? "例：這只是卡包 / 功能更新，不是需要放在活動主時間軸的活動。"
-        : "例：這篇主要在說 SBT 取得條件，不應只算活動；SBT 分區要強調怎麼獲得。";
+        : "例：卡片類型應改為公告；分區應改到 SBT，因為主軸是取得方式。";
       modal.classList.add("is-open");
       modal.setAttribute("aria-hidden", "false");
       window.setTimeout(() => reasonEl.focus(), 0);
@@ -1329,8 +1578,10 @@
 
       renderCardGrid("intel-events-cards", "intel-events-empty", eventsByPublished, uiLabel("noHighlights"));
       renderCardGrid("intel-cards", "intel-empty", routed.official, uiLabel("noHighlights"));
+      renderSbtAcquisitionSummary(routed.sbt, cards);
       renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
       renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
+      renderCardGrid("intel-collectibles-cards", "intel-collectibles-empty", routed.collectibles, uiLabel("noHighlights"));
       renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, uiLabel("noHighlights"));
       renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, uiLabel("noHighlights"));
       renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
@@ -1891,22 +2142,61 @@
     async function submitIntelFeedback(id, defaultLabel = "insight") {
       const result = await openIntelFeedbackModal({ mode: "feedback", defaultLabel });
       if (!result) return false;
-      const label = String(result.label || "").trim().toLowerCase();
-      if (!intelFeedbackLabels.has(label)) {
-        setIntelMessage("分類無效，請選擇 event/feature/announcement/market/report/insight/official/sbt/pokemon/alpha/tools/other/exclude。", "error");
-        return false;
-      }
+      const cardType = String(result.cardType || "").trim().toLowerCase();
+      const section = String(result.section || "").trim().toLowerCase();
       const reason = String(result.reason || "").trim();
       if (!reason) {
         setIntelMessage("請填寫原因，這樣 AI 才能學到為什麼要改。", "error");
         return false;
       }
-      await postIntel("/api/intel/feedback", { id, label, reason });
+      const labels = [];
+      if (cardType) labels.push(cardType);
+      if (section) labels.push(section);
+      if (!labels.length) {
+        setIntelMessage("請至少選擇一個分類（卡片類型或分區）。", "error");
+        return false;
+      }
+      const uniqueLabels = Array.from(new Set(labels));
+      for (const label of uniqueLabels) {
+        if (!intelFeedbackLabels.has(label)) {
+          setIntelMessage("分類無效，請改用系統提供的卡片類型/分區。", "error");
+          return false;
+        }
+      }
+      for (const label of uniqueLabels) {
+        await postIntel("/api/intel/feedback", { id, label, reason });
+      }
       await refreshIntelFeedForCurrentLang();
       return true;
     }
 
-    async function handleIntelAction(action, id, hintLabel = "") {
+    async function submitIntelTimelineUpdate(id, timelineDate = "", timelineEndDate = "") {
+      await postIntel("/api/intel/timeline", {
+        id,
+        timeline_date: String(timelineDate || "").trim(),
+        timeline_end_date: String(timelineEndDate || "").trim(),
+      });
+      await refreshIntelFeedForCurrentLang();
+    }
+
+    async function submitIntelSbtUpdate(id, sbtNames = "", sbtAcquisition = "") {
+      await postIntel("/api/intel/sbt-fields", {
+        id,
+        sbt_names: String(sbtNames || "").trim(),
+        sbt_acquisition: String(sbtAcquisition || "").trim(),
+      });
+      await refreshIntelFeedForCurrentLang();
+    }
+
+    async function submitIntelEventWallUpdate(id, eventWall) {
+      await postIntel("/api/intel/event-wall", {
+        id,
+        event_wall: Boolean(eventWall),
+      });
+      await refreshIntelFeedForCurrentLang();
+    }
+
+    async function handleIntelAction(action, id, hintLabel = "", extra = {}) {
       if (!id || !action) return false;
       if (!intelCanEdit()) {
         setIntelMessage("請先登入管理員帳號，再執行保留/排除/分類操作。", "error");
@@ -1967,8 +2257,173 @@
         if (ok) setIntelMessage("已記錄分類回饋，並重新同步。", "ok");
         return ok;
       }
+      if (action === "timeline-save") {
+        const timelineDate = String(extra?.timeline_date || "").trim();
+        const timelineEndDate = String(extra?.timeline_end_date || "").trim();
+        if (timelineDate && timelineEndDate && timelineEndDate < timelineDate) {
+          setIntelMessage("結束日期不得早於開始日期。", "error");
+          return false;
+        }
+        setIntelMessage("正在更新卡片日期...", "");
+        await submitIntelTimelineUpdate(id, timelineDate, timelineEndDate);
+        setIntelMessage("卡片日期已更新。", "ok");
+        return true;
+      }
+      if (action === "eventwall-true") {
+        setIntelMessage("正在加入活動主時間軸...", "");
+        await submitIntelEventWallUpdate(id, true);
+        setIntelMessage("已加入活動主時間軸。", "ok");
+        return true;
+      }
+      if (action === "eventwall-false") {
+        if (!window.confirm("確定要把這張卡移出活動主時間軸嗎？")) return false;
+        setIntelMessage("正在移出活動主時間軸...", "");
+        await submitIntelEventWallUpdate(id, false);
+        setIntelMessage("已移出活動主時間軸。", "ok");
+        return true;
+      }
+      if (action === "sbt-save") {
+        const sbtNames = String(extra?.sbt_names || "").trim();
+        const sbtAcquisition = String(extra?.sbt_acquisition || "").trim();
+        const shouldClear = !sbtNames && !sbtAcquisition;
+        if (shouldClear) {
+          const yes = window.confirm("你要清空這張卡的 SBT 名稱與取得方式嗎？");
+          if (!yes) return false;
+        }
+        setIntelMessage("正在更新 SBT 欄位...", "");
+        await submitIntelSbtUpdate(id, sbtNames, sbtAcquisition);
+        setIntelMessage("SBT 欄位已更新。", "ok");
+        return true;
+      }
       return false;
     }
+
+    document.addEventListener("click", async (event) => {
+      const editToggle = event.target?.closest?.("[data-sbt-edit-toggle]");
+      if (editToggle) {
+        sbtAcqEditMode = !sbtAcqEditMode;
+        if (intelFeedCache && typeof intelFeedCache === "object") {
+          renderIntelFeed(intelFeedCache);
+        }
+        return;
+      }
+      const editOpen = event.target?.closest?.("[data-sbt-edit-open]");
+      if (editOpen) {
+        const rowKey = String(editOpen.getAttribute("data-sbt-edit-open") || "").trim();
+        if (!rowKey) return;
+        const host = editOpen.closest("[data-sbt-row]");
+        const editor = host?.querySelector?.(`[data-sbt-editor="${rowKey.replace(/"/g, '\\"')}"]`) || host?.querySelector?.("[data-sbt-editor]");
+        if (editor) editor.hidden = false;
+        return;
+      }
+      const editCancel = event.target?.closest?.("[data-sbt-edit-cancel]");
+      if (editCancel) {
+        const rowKey = String(editCancel.getAttribute("data-sbt-edit-cancel") || "").trim();
+        if (!rowKey) return;
+        const host = editCancel.closest("[data-sbt-row]");
+        const editor = host?.querySelector?.(`[data-sbt-editor="${rowKey.replace(/"/g, '\\"')}"]`) || host?.querySelector?.("[data-sbt-editor]");
+        if (editor) editor.hidden = true;
+        return;
+      }
+      const editSave = event.target?.closest?.("[data-sbt-edit-save]");
+      if (editSave) {
+        if (!intelCanEdit()) {
+          setIntelMessage("請先登入管理員帳號。", "error");
+          openIntelAuthModal();
+          return;
+        }
+        const cardId = String(editSave.getAttribute("data-sbt-edit-save") || "").trim();
+        if (!cardId) {
+          setIntelMessage("找不到卡片 ID。", "error");
+          return;
+        }
+        const host = editSave.closest("[data-sbt-editor]");
+        const nameEl = host?.querySelector?.("[data-sbt-edit-name]");
+        const acqEl = host?.querySelector?.("[data-sbt-edit-acq]");
+        const startEl = host?.querySelector?.("[data-sbt-edit-start]");
+        const endEl = host?.querySelector?.("[data-sbt-edit-end]");
+        const sbtNames = String(nameEl?.value || "").trim();
+        const sbtAcquisition = String(acqEl?.value || "").trim();
+        const timelineDate = String(startEl?.value || "").trim();
+        const timelineEndDate = String(endEl?.value || "").trim();
+        if (timelineDate && timelineEndDate && timelineEndDate < timelineDate) {
+          setIntelMessage("結束日期不得早於開始日期。", "error");
+          return;
+        }
+        editSave.disabled = true;
+        try {
+          setIntelMessage("正在更新 SBT 欄位...", "");
+          await submitIntelSbtUpdate(cardId, sbtNames, sbtAcquisition);
+          await submitIntelTimelineUpdate(cardId, timelineDate, timelineEndDate);
+          setIntelMessage("SBT 欄位已更新。", "ok");
+        } catch (error) {
+          setIntelMessage(`更新失敗：${error.message}`, "error");
+        } finally {
+          editSave.disabled = false;
+        }
+        return;
+      }
+      const addSave = event.target?.closest?.("[data-sbt-add-save]");
+      if (addSave) {
+        if (!intelCanEdit()) {
+          setIntelMessage("請先登入管理員帳號。", "error");
+          openIntelAuthModal();
+          return;
+        }
+        const box = addSave.closest("[data-sbt-add-box]");
+        const selectEl = box?.querySelector?.("[data-sbt-add-card]");
+        const nameEl = box?.querySelector?.("[data-sbt-add-name]");
+        const acqEl = box?.querySelector?.("[data-sbt-add-acq]");
+        const startEl = box?.querySelector?.("[data-sbt-add-start]");
+        const endEl = box?.querySelector?.("[data-sbt-add-end]");
+        const cardId = String(selectEl?.value || "").trim();
+        const sbtNames = String(nameEl?.value || "").trim();
+        const sbtAcquisition = String(acqEl?.value || "").trim();
+        const timelineDate = String(startEl?.value || "").trim();
+        const timelineEndDate = String(endEl?.value || "").trim();
+        if (!cardId) {
+          setIntelMessage("請先選擇要連接的卡片。", "error");
+          return;
+        }
+        if (!sbtNames && !sbtAcquisition) {
+          setIntelMessage("請至少填入 SBT Name 或 取得方式。", "error");
+          return;
+        }
+        if (timelineDate && timelineEndDate && timelineEndDate < timelineDate) {
+          setIntelMessage("結束日期不得早於開始日期。", "error");
+          return;
+        }
+        addSave.disabled = true;
+        try {
+          setIntelMessage("正在新增 SBT 取得方式...", "");
+          await submitIntelSbtUpdate(cardId, sbtNames, sbtAcquisition);
+          await submitIntelTimelineUpdate(cardId, timelineDate, timelineEndDate);
+          setIntelMessage("已注入對應卡片。", "ok");
+        } catch (error) {
+          setIntelMessage(`新增失敗：${error.message}`, "error");
+        } finally {
+          addSave.disabled = false;
+        }
+        return;
+      }
+      const trigger = event.target?.closest?.("[data-sbt-jump-card]");
+      if (!trigger) return;
+      const key = String(trigger.getAttribute("data-sbt-jump-card") || "").trim();
+      if (!key) return;
+      const escaped = (window.CSS && typeof window.CSS.escape === "function")
+        ? window.CSS.escape(key)
+        : key.replace(/["\\]/g, "\\$&");
+      const matches = Array.from(document.querySelectorAll(`[data-intel-card-id="${escaped}"]`));
+      if (!matches.length) return;
+      const sbtWrap = document.getElementById("intel-sbt-cards");
+      const inVisibleSbt = matches.find((el) => Boolean(sbtWrap && sbtWrap.contains(el) && el.getClientRects().length > 0));
+      const visible = matches.find((el) => el.getClientRects().length > 0);
+      const card = inVisibleSbt || visible || matches[0];
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("is-sbt-jump-target");
+      window.setTimeout(() => card.classList.remove("is-sbt-jump-target"), 1800);
+    });
 
     async function renderIntelOnLoad() {
       try {

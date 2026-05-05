@@ -204,6 +204,11 @@
         grid-template-columns: 1fr;
       }
 
+      .beginner-grid-3,
+      .beginner-stat-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .steps {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -213,7 +218,7 @@
       }
 
       .sbt-groups {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
       }
 
       .roadmap {
@@ -265,6 +270,49 @@
         grid-template-columns: 1fr;
       }
 
+      .beginner-grid-3,
+      .beginner-stat-row {
+        grid-template-columns: 1fr;
+      }
+
+      .beginner-static-points,
+      .beginner-step-grid,
+      .beginner-info-grid,
+      .beginner-rating-grid,
+      .beginner-sbt-primer,
+      .beginner-sbt-primer-grid,
+      .beginner-inline-sbt .sbt-list,
+      .beginner-media-split {
+        grid-template-columns: 1fr;
+      }
+
+      .beginner-cover-hero img {
+        min-height: 170px;
+      }
+
+      .beginner-static-section {
+        padding: 0.82rem;
+        border-radius: 14px;
+      }
+
+      .beginner-sync-bar {
+        align-items: flex-start;
+      }
+
+      .beginner-md-block {
+        padding: 0.7rem 0.74rem;
+      }
+
+      .beginner-md-block-fact {
+        grid-template-columns: 1fr;
+        gap: 0.44rem;
+      }
+
+      .beginner-md-block p {
+        font-size: 0.92rem;
+        line-height: 1.76;
+      }
+
       .tools {
         grid-template-columns: 1fr;
       }
@@ -283,6 +331,15 @@
 
       .intel-grid {
         grid-template-columns: 1fr;
+      }
+
+      .sbt-acq-row {
+        grid-template-columns: auto 1fr;
+      }
+
+      .sbt-acq-meta {
+        grid-column: 2;
+        justify-content: flex-start;
       }
 
       .intel-template-grid {

@@ -22,10 +22,25 @@ from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
+from urllib.request import Request
+from urllib.request import urlopen
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
-from x_intel_core import add_classification_feedback, add_manual_tweet, feedback_memory_stats, load_environment, set_manual_selection, sync_accounts
+from x_intel_core import (
+    StoryCard,
+    add_classification_feedback,
+    add_manual_tweet,
+    feedback_memory_stats,
+    generate_minimax_cover_image,
+    load_environment,
+    set_manual_selection,
+    sync_accounts,
+    update_card_cover_image,
+    update_card_event_wall_field,
+    update_card_sbt_fields,
+    update_card_timeline_fields,
+)
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
 from website_i18n_runtime import configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
@@ -42,6 +57,7 @@ FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
+BEGINNER_GUIDE_CACHE_PATH = DATA_ROOT / "beginner_guide_cache.json"
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 PIPELINE_RUNTIME_LOG_PATH = DATA_ROOT / "intel_runtime_log.jsonl"
 RUNTIME_LOG_PATHS: dict[str, Path] = {
@@ -97,6 +113,8 @@ AUTH_TOKEN_PREFIX = "iat1"
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
+    "http://127.0.0.1:18787",
+    "http://localhost:18787",
     "http://127.0.0.1:3000",
     "http://localhost:3000",
 }
@@ -104,11 +122,52 @@ PROTECTED_POST_PATHS = {
     "/api/intel/sync",
     "/api/intel/analyze-url",
     "/api/intel/pick",
+    "/api/intel/timeline",
+    "/api/intel/event-wall",
+    "/api/intel/generate-cover",
+    "/api/intel/sbt-fields",
     "/api/intel/feedback",
     "/api/intel/job-status",
     "/api/intel/backup",
     "/api/intel/restore",
     "/api/intel/retranslate",
+}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
+
+BEGINNER_GUIDE_SOURCE_URL = str(
+    os.getenv(
+        "BEGINNER_GUIDE_SOURCE_URL",
+        "https://www.notion.so/Renaiss-bfbbc705aae04129aee2b619f8cb2b0e",
+    )
+).strip()
+BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS = max(
+    6,
+    _env_int("BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS", 26),
+)
+BEGINNER_GUIDE_CACHE_TTL_SECONDS = max(
+    30,
+    _env_int("BEGINNER_GUIDE_CACHE_TTL_SECONDS", 900),
+)
+BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS = max(
+    3600,
+    _env_int("BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS", 24 * 60 * 60),
+)
+BEGINNER_GUIDE_LOCK = Lock()
+BEGINNER_GUIDE_CACHE: dict[str, object] = {
+    "fetched_at": "",
+    "expires_at": 0.0,
+    "payload": {},
+    "error": "",
 }
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -118,6 +177,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+BEGINNER_GUIDE_SYNC_ENABLED = _env_flag("BEGINNER_GUIDE_SYNC_ENABLED", False)
+BEGINNER_GUIDE_RUN_ON_STARTUP = _env_flag("BEGINNER_GUIDE_RUN_ON_STARTUP", False)
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 
 
@@ -372,6 +433,353 @@ def _safe_int(value: object, default: int = 0) -> int:
 def _safe_limit(value: object, default: int = 200, min_value: int = 1, max_value: int = 1000) -> int:
     raw = _safe_int(value, default)
     return max(min_value, min(max_value, raw))
+
+
+def _strip_rjina_envelope(text: str) -> str:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    marker = "Markdown Content:"
+    idx = raw.find(marker)
+    if idx >= 0:
+        raw = raw[idx + len(marker):]
+    return raw.strip()
+
+
+def _markdown_table_cells(line: str) -> list[str]:
+    text = str(line or "").strip()
+    if not (text.startswith("|") and text.endswith("|")):
+        return []
+    return [cell.strip() for cell in text.strip("|").split("|")]
+
+
+def _strip_sbt_table(markdown: str) -> tuple[str, list[dict[str, str]]]:
+    lines = str(markdown or "").split("\n")
+    out: list[str] = []
+    rows: list[dict[str, str]] = []
+    i = 0
+    while i < len(lines):
+        current = str(lines[i] or "").strip()
+        next_line = str(lines[i + 1] or "").strip() if i + 1 < len(lines) else ""
+        is_table_start = bool(current.startswith("|") and current.endswith("|") and next_line.startswith("|"))
+        if not is_table_start:
+            out.append(lines[i])
+            i += 1
+            continue
+
+        block: list[str] = [lines[i], lines[i + 1]]
+        j = i + 2
+        while j < len(lines):
+            row = str(lines[j] or "").strip()
+            if not (row.startswith("|") and row.endswith("|")):
+                break
+            block.append(lines[j])
+            j += 1
+
+        header_cells = _markdown_table_cells(block[0])
+        looks_like_sbt_table = len(header_cells) >= 3 and (
+            "sbt" in " ".join(header_cells).lower() or "徽章" in "".join(header_cells)
+        )
+        if looks_like_sbt_table and len(block) >= 3:
+            for row_line in block[2:]:
+                cells = _markdown_table_cells(row_line)
+                if len(cells) < 3:
+                    continue
+                name = str(cells[0] or "").strip()
+                status = str(cells[1] or "").strip()
+                requirement = str(cells[2] or "").strip()
+                if not name:
+                    continue
+                if status == "✅":
+                    status = "✅ Available"
+                rows.append(
+                    {
+                        "name": name,
+                        "status": status,
+                        "requirement": requirement,
+                    }
+                )
+            i = j
+            continue
+
+        out.extend(block)
+        i = j
+
+    clean = "\n".join(out).strip()
+    return clean, rows
+
+
+def _extract_markdown_images(markdown: str) -> list[str]:
+    pattern = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in pattern.finditer(str(markdown or "")):
+        url = str(match.group(1) or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _extract_tools_from_markdown(markdown: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    seen_names: set[str] = set()
+    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+    author_pattern = re.compile(r"作者[：:]\s*([^)）\n]+)")
+    for raw_line in str(markdown or "").split("\n"):
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if "作者" not in line:
+            continue
+        link_pos = line.find("[")
+        prefix = line[:link_pos] if link_pos >= 0 else line
+        name = re.sub(r"[:：]\s*$", "", str(prefix or "").strip()).strip()
+        if not name:
+            continue
+        link_match = link_pattern.search(line)
+        link_url = str(link_match.group(2) or "").strip() if link_match else ""
+        link_label = str(link_match.group(1) or "").strip() if link_match else ""
+        author_match = author_pattern.search(line)
+        author_text = str(author_match.group(1) or "").strip() if author_match else ""
+        authors = [
+            part.strip()
+            for part in re.split(r"[、,，/]+", author_text)
+            if part.strip()
+        ]
+        key = name.lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        rows.append(
+            {
+                "name": name,
+                "link": link_url,
+                "link_label": link_label or "連結",
+                "authors": authors,
+                "raw": line,
+            }
+        )
+    return rows
+
+
+def _extract_faq_from_markdown(markdown: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen_q: set[str] = set()
+    single_line_pattern = re.compile(r"^\s*Q[:：]\s*(.*?)\s*A[:：]\s*(.+)\s*$")
+    for raw_line in str(markdown or "").split("\n"):
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        m = single_line_pattern.match(line)
+        if not m:
+            continue
+        question = str(m.group(1) or "").strip()
+        answer = str(m.group(2) or "").strip()
+        if not question or not answer:
+            continue
+        key = question.lower()
+        if key in seen_q:
+            continue
+        seen_q.add(key)
+        rows.append({"q": question, "a": answer})
+    return rows
+
+
+def _build_beginner_guide_payload(source_url: str, relay_url: str, relay_text: str) -> dict[str, object]:
+    source = str(source_url or "").strip()
+    markdown = _strip_rjina_envelope(relay_text)
+    markdown_no_table, sbt_rows = _strip_sbt_table(markdown)
+    images = _extract_markdown_images(markdown_no_table)
+    tools = _extract_tools_from_markdown(markdown_no_table)
+    faq = _extract_faq_from_markdown(markdown_no_table)
+    return {
+        "source_url": source,
+        "relay_url": relay_url,
+        "fetched_at": _now_iso(),
+        "markdown": markdown_no_table,
+        "images": images,
+        "tools": tools,
+        "faq": faq,
+        "sbt_rows": sbt_rows,
+    }
+
+
+def _read_beginner_guide_cache_unlocked() -> dict[str, object]:
+    if not BEGINNER_GUIDE_CACHE_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(BEGINNER_GUIDE_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_beginner_guide_cache_unlocked(payload: dict[str, object]) -> None:
+    BEGINNER_GUIDE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BEGINNER_GUIDE_CACHE_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _beginner_guide_signature(guide: dict[str, object]) -> str:
+    core = {
+        "markdown": guide.get("markdown"),
+        "images": guide.get("images"),
+        "tools": guide.get("tools"),
+        "faq": guide.get("faq"),
+        "sbt_rows": guide.get("sbt_rows"),
+    }
+    encoded = json.dumps(core, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _remember_beginner_guide_in_memory(guide: dict[str, object], *, error: str = "") -> None:
+    payload = dict(guide) if isinstance(guide, dict) else {}
+    BEGINNER_GUIDE_CACHE["payload"] = payload
+    BEGINNER_GUIDE_CACHE["fetched_at"] = str(payload.get("fetched_at") or "")
+    BEGINNER_GUIDE_CACHE["expires_at"] = float(time.time()) + float(BEGINNER_GUIDE_CACHE_TTL_SECONDS)
+    BEGINNER_GUIDE_CACHE["error"] = str(error or "")
+
+
+def _beginner_cache_timestamp(cache: dict[str, object]) -> datetime | None:
+    for key in ("last_checked_at", "updated_at"):
+        dt = _parse_iso_utc(str(cache.get(key) or ""))
+        if dt is not None:
+            return dt
+    guide = cache.get("guide")
+    if isinstance(guide, dict):
+        dt = _parse_iso_utc(str(guide.get("fetched_at") or ""))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _is_beginner_cache_fresh(cache: dict[str, object], max_age_seconds: int = BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS) -> bool:
+    dt = _beginner_cache_timestamp(cache)
+    if dt is None:
+        return False
+    age = datetime.now(timezone.utc) - dt
+    return age <= timedelta(seconds=max(1, int(max_age_seconds)))
+
+
+def _fetch_beginner_guide(force: bool = False, reason: str = "request") -> dict[str, object]:
+    now_ts = float(time.time())
+    now_iso = _now_iso()
+    with BEGINNER_GUIDE_LOCK:
+        mem_payload = BEGINNER_GUIDE_CACHE.get("payload")
+        mem_expires_at = float(BEGINNER_GUIDE_CACHE.get("expires_at") or 0.0)
+        if not force and isinstance(mem_payload, dict) and mem_payload and now_ts < mem_expires_at:
+            return {
+                "ok": True,
+                "cached": True,
+                "stale": False,
+                "guide": mem_payload,
+                "source": "memory",
+            }
+        disk_cache = _read_beginner_guide_cache_unlocked()
+        disk_guide = disk_cache.get("guide") if isinstance(disk_cache.get("guide"), dict) else {}
+        if isinstance(disk_guide, dict) and disk_guide:
+            _remember_beginner_guide_in_memory(disk_guide)
+            if not force and _is_beginner_cache_fresh(disk_cache):
+                return {
+                    "ok": True,
+                    "cached": True,
+                    "stale": False,
+                    "guide": disk_guide,
+                    "source": "disk",
+                    "unchanged": True,
+                }
+
+    source_url = str(BEGINNER_GUIDE_SOURCE_URL or "").strip()
+    relay_url = f"https://r.jina.ai/{source_url}"
+    try:
+        req = Request(
+            relay_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; RenaissBeginnerGuideBot/1.0)",
+                "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
+            },
+        )
+        with urlopen(req, timeout=BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS) as resp:
+            raw_bytes = resp.read()
+        relay_text = raw_bytes.decode("utf-8", errors="replace")
+        fresh_guide = _build_beginner_guide_payload(source_url, relay_url, relay_text)
+        fresh_sig = _beginner_guide_signature(fresh_guide)
+        with BEGINNER_GUIDE_LOCK:
+            old_cache = _read_beginner_guide_cache_unlocked()
+            old_guide = old_cache.get("guide") if isinstance(old_cache.get("guide"), dict) else {}
+            old_sig = str(old_cache.get("content_hash") or "").strip()
+            old_updated_at = str(old_cache.get("updated_at") or "").strip()
+            if isinstance(old_guide, dict) and old_guide and not old_sig:
+                old_sig = _beginner_guide_signature(old_guide)
+            unchanged = bool(old_guide and old_sig and old_sig == fresh_sig)
+            if unchanged:
+                cache_doc = {
+                    "schema": "beginner_guide_cache_v1",
+                    "source_url": source_url,
+                    "relay_url": relay_url,
+                    "content_hash": old_sig,
+                    "last_checked_at": now_iso,
+                    "updated_at": old_updated_at or str(old_guide.get("fetched_at") or now_iso),
+                    "last_reason": str(reason or "request"),
+                    "guide": old_guide,
+                }
+                _write_beginner_guide_cache_unlocked(cache_doc)
+                _remember_beginner_guide_in_memory(old_guide)
+                return {
+                    "ok": True,
+                    "cached": True,
+                    "stale": False,
+                    "unchanged": True,
+                    "guide": old_guide,
+                    "source": "disk",
+                }
+            cache_doc = {
+                "schema": "beginner_guide_cache_v1",
+                "source_url": source_url,
+                "relay_url": relay_url,
+                "content_hash": fresh_sig,
+                "last_checked_at": now_iso,
+                "updated_at": str(fresh_guide.get("fetched_at") or now_iso),
+                "last_reason": str(reason or "request"),
+                "guide": fresh_guide,
+            }
+            _write_beginner_guide_cache_unlocked(cache_doc)
+            _remember_beginner_guide_in_memory(fresh_guide)
+        return {
+            "ok": True,
+            "cached": False,
+            "stale": False,
+            "unchanged": False,
+            "guide": fresh_guide,
+            "source": "live",
+        }
+    except Exception as exc:
+        with BEGINNER_GUIDE_LOCK:
+            old_cache = _read_beginner_guide_cache_unlocked()
+            old_guide = old_cache.get("guide") if isinstance(old_cache.get("guide"), dict) else {}
+            if isinstance(old_guide, dict) and old_guide:
+                old_cache["last_checked_at"] = now_iso
+                old_cache["last_reason"] = str(reason or "request")
+                old_cache["last_error"] = str(exc)
+                _write_beginner_guide_cache_unlocked(old_cache)
+                _remember_beginner_guide_in_memory(old_guide, error=str(exc))
+                return {
+                    "ok": True,
+                    "cached": True,
+                    "stale": True,
+                    "warning": f"live fetch failed, serving stale cache: {exc}",
+                    "guide": old_guide,
+                    "source": "disk",
+                }
+            BEGINNER_GUIDE_CACHE["error"] = str(exc)
+        return {
+            "ok": False,
+            "error": f"failed to fetch beginner guide: {exc}",
+            "relay_url": relay_url,
+            "source_url": source_url,
+        }
 
 
 def _append_pipeline_runtime_log(event: str, **payload: object) -> None:
@@ -1359,6 +1767,42 @@ def _start_x_sync_scheduler(
     Thread(target=_loop, daemon=True).start()
 
 
+def _start_beginner_guide_scheduler(
+    *,
+    interval_seconds: int = BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS,
+    run_on_startup: bool = BEGINNER_GUIDE_RUN_ON_STARTUP,
+) -> None:
+    if not BEGINNER_GUIDE_SYNC_ENABLED:
+        _append_pipeline_runtime_log("beginner_guide_scheduler_disabled", enabled=False)
+        return
+
+    safe_interval_seconds = max(3600, int(interval_seconds or BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS))
+
+    def _log_refresh(trigger: str, payload: dict[str, object]) -> None:
+        _append_pipeline_runtime_log(
+            "beginner_guide_refresh",
+            trigger=trigger,
+            ok=bool(payload.get("ok")),
+            cached=bool(payload.get("cached")),
+            stale=bool(payload.get("stale")),
+            source=str(payload.get("source") or ""),
+            unchanged=bool(payload.get("unchanged")),
+            error=str(payload.get("error") or payload.get("warning") or ""),
+        )
+
+    if run_on_startup:
+        startup_payload = _fetch_beginner_guide(force=True, reason="startup")
+        _log_refresh("startup", startup_payload)
+
+    def _loop() -> None:
+        while True:
+            time.sleep(safe_interval_seconds)
+            scheduled_payload = _fetch_beginner_guide(force=True, reason="scheduled")
+            _log_refresh("scheduled", scheduled_payload)
+
+    Thread(target=_loop, daemon=True).start()
+
+
 def _backup_state_snapshot() -> dict:
     with BACKUP_STATE_LOCK:
         return dict(BACKUP_STATE)
@@ -1889,7 +2333,7 @@ def _run_analyze_job(job_id: str, url: str) -> None:
             job_id,
             status="done",
             finished_at=_now_iso(),
-            message="分析完成，已加入精選卡片。",
+            message="分析完成，已進入貼文分析流程。",
             tweet_id=tweet.get("id"),
             tweet_url=tweet.get("url"),
             generated_at=feed.get("generated_at"),
@@ -2135,6 +2579,18 @@ class Handler(SimpleHTTPRequestHandler):
             localized_feed = localized_feed_from_bundle(feed, request_lang)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
+        if path == "/api/beginner-guide":
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                refresh_raw = str((params.get("refresh") or [""])[0] or "").strip().lower()
+                force = refresh_raw in {"1", "true", "yes", "y", "on"}
+                result = _fetch_beginner_guide(force=force, reason="manual_refresh" if force else "request")
+                status = HTTPStatus.OK if bool(result.get("ok")) else HTTPStatus.BAD_GATEWAY
+                self._send_json(result, status=status)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to load beginner guide: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path.startswith("/api/"):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -2150,6 +2606,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/sync",
             "/api/intel/analyze-url",
             "/api/intel/pick",
+            "/api/intel/timeline",
+            "/api/intel/event-wall",
+            "/api/intel/generate-cover",
+            "/api/intel/sbt-fields",
             "/api/intel/feedback",
             "/api/intel/job-status",
             "/api/intel/backup",
@@ -2283,6 +2743,143 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
                 return
 
+            if path == "/api/intel/timeline":
+                tweet_id = str(payload.get("id") or "").strip()
+                timeline_date = str(payload.get("timeline_date") or "").strip()
+                timeline_end_date = str(payload.get("timeline_end_date") or "").strip()
+                updated = update_card_timeline_fields(
+                    tweet_id,
+                    timeline_date=timeline_date,
+                    timeline_end_date=timeline_end_date,
+                )
+                feed = _read_feed_snapshot()
+                self._send_json({"ok": True, "updated": updated, "feed": feed})
+                return
+
+            if path == "/api/intel/event-wall":
+                tweet_id = str(payload.get("id") or "").strip()
+                updated = update_card_event_wall_field(
+                    tweet_id,
+                    event_wall=payload.get("event_wall"),
+                )
+                feed = _read_feed_snapshot()
+                self._send_json({"ok": True, "updated": updated, "feed": feed})
+                return
+
+            if path == "/api/intel/generate-cover":
+                tweet_id = str(payload.get("id") or "").strip()
+                linked_card_url = str(payload.get("linked_card_url") or "").strip()
+                title = str(payload.get("title") or "").strip()
+                force = bool(payload.get("force"))
+
+                feed = _read_feed_snapshot()
+                cards = feed.get("cards") if isinstance(feed, dict) else None
+                if not isinstance(cards, list):
+                    self._send_json({"ok": False, "error": "feed cards not found"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+
+                target_row = None
+                if tweet_id:
+                    for row in cards:
+                        if isinstance(row, dict) and str(row.get("id") or "").strip() == tweet_id:
+                            target_row = row
+                            break
+                if target_row is None and linked_card_url:
+                    for row in cards:
+                        if isinstance(row, dict) and str(row.get("url") or "").strip() == linked_card_url:
+                            target_row = row
+                            break
+                if target_row is None and title:
+                    exact = title.strip().lower()
+                    for row in cards:
+                        if not isinstance(row, dict):
+                            continue
+                        if str(row.get("title") or "").strip().lower() == exact:
+                            target_row = row
+                            break
+                if target_row is None and title:
+                    keyword = title.strip().lower()
+                    for row in cards:
+                        if not isinstance(row, dict):
+                            continue
+                        value = str(row.get("title") or "").strip().lower()
+                        if keyword and keyword in value:
+                            target_row = row
+                            break
+                if not isinstance(target_row, dict):
+                    self._send_json({"ok": False, "error": "target card not found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+
+                target_card = StoryCard(
+                    id=str(target_row.get("id") or "").strip(),
+                    account=str(target_row.get("account") or "").strip(),
+                    url=str(target_row.get("url") or "").strip(),
+                    title=str(target_row.get("title") or "").strip(),
+                    summary=str(target_row.get("summary") or "").strip(),
+                    bullets=[str(x) for x in (target_row.get("bullets") or []) if str(x).strip()][:5],
+                    published_at=str(target_row.get("published_at") or "").strip(),
+                    confidence=float(target_row.get("confidence") or 0.66),
+                    card_type=str(target_row.get("card_type") or "").strip(),
+                    layout=str(target_row.get("layout") or "").strip(),
+                    tags=[str(x) for x in (target_row.get("tags") or []) if str(x).strip()][:5],
+                    raw_text=str(target_row.get("raw_text") or "").strip(),
+                    provider=str(target_row.get("provider") or "").strip() or "manual",
+                    cover_image=str(target_row.get("cover_image") or "").strip(),
+                    metrics=target_row.get("metrics") if isinstance(target_row.get("metrics"), dict) else {},
+                    event_facts=target_row.get("event_facts") if isinstance(target_row.get("event_facts"), dict) else {},
+                    topic_labels=target_row.get("topic_labels") if isinstance(target_row.get("topic_labels"), list) else [],
+                )
+                if not target_card.raw_text:
+                    target_card.raw_text = " ".join(
+                        x for x in [target_card.title, target_card.summary, " ".join(target_card.bullets)] if x
+                    )[:2500]
+
+                generated = generate_minimax_cover_image(target_card, force=force)
+                updated = {}
+                if not bool(generated.get("skipped")):
+                    cover_image = str(generated.get("cover_image") or "").strip()
+                    if not cover_image:
+                        self._send_json({"ok": False, "error": "cover generated but path missing"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                        return
+                    updated = update_card_cover_image(
+                        str(target_card.id or "").strip(),
+                        linked_card_url=str(target_card.url or "").strip(),
+                        cover_image=cover_image,
+                    )
+                    feed = _read_feed_snapshot()
+
+                self._send_json(
+                    {
+                        "ok": True,
+                        "target": {
+                            "id": str(target_card.id or "").strip(),
+                            "title": str(target_card.title or "").strip(),
+                            "url": str(target_card.url or "").strip(),
+                        },
+                        "generated": generated,
+                        "updated": updated,
+                        "feed": feed,
+                    }
+                )
+                return
+
+            if path == "/api/intel/sbt-fields":
+                tweet_id = str(payload.get("id") or "").strip()
+                linked_card_url = str(payload.get("linked_card_url") or "").strip()
+                sbt_names = payload.get("sbt_names")
+                if sbt_names is None:
+                    sbt_names = payload.get("sbt_name")
+                sbt_acquisition = payload.get("sbt_acquisition")
+                updated = update_card_sbt_fields(
+                    tweet_id,
+                    linked_card_url=linked_card_url,
+                    sbt_names=sbt_names,
+                    sbt_acquisition=sbt_acquisition,
+                )
+                feed = _read_feed_snapshot()
+                self._send_json({"ok": True, "updated": updated, "feed": feed})
+                return
+
             if path == "/api/intel/feedback":
                 tweet_id = str(payload.get("id") or "").strip()
                 label = str(payload.get("label") or "").strip().lower()
@@ -2413,6 +3010,10 @@ def main() -> int:
         )
     if I18N_WARM_ON_STARTUP:
         _warm_i18n_bundle_from_feed()
+    _start_beginner_guide_scheduler(
+        interval_seconds=BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS,
+        run_on_startup=BEGINNER_GUIDE_RUN_ON_STARTUP,
+    )
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")
@@ -2422,6 +3023,17 @@ def main() -> int:
         f"migrated={bool(STORAGE_STATE.get('migrated'))}"
     )
     print(f"[ai-intel] pokemon news auto refresh every {max(1, int(args.news_interval_minutes))} minutes; langs={langs or ['zh-Hant']}")
+    if BEGINNER_GUIDE_SYNC_ENABLED:
+        print(
+            "[ai-intel] beginner guide refresh "
+            f"every {int(BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS)} seconds; "
+            f"startup={bool(BEGINNER_GUIDE_RUN_ON_STARTUP)}; cache={BEGINNER_GUIDE_CACHE_PATH}"
+        )
+    else:
+        print(
+            "[ai-intel] beginner guide Notion sync disabled by default; "
+            "set BEGINNER_GUIDE_SYNC_ENABLED=1 to enable"
+        )
     if args.no_sync_scheduler:
         print("[ai-intel] X/Discord auto sync disabled")
     else:
@@ -2433,8 +3045,8 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/intel/runtime-log, "
-        "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
+        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/intel/runtime-log, GET /api/beginner-guide, "
+        "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/generate-cover, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )

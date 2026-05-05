@@ -39,6 +39,17 @@
         setIntelMessage("目前是 file:// 模式。請改用 `python scripts/ai_intel_server.py --port 8787` 後從 http://127.0.0.1:8787 開啟。", "error");
       }
 
+      const readTimelineEditorPayload = (btn) => {
+        const host = btn?.closest?.("article, .intel-master-card, .intel-card");
+        if (!host) return {};
+        const startEl = host.querySelector('input[data-intel-timeline-start]');
+        const endEl = host.querySelector('input[data-intel-timeline-end]');
+        return {
+          timeline_date: String(startEl?.value || "").trim(),
+          timeline_end_date: String(endEl?.value || "").trim(),
+        };
+      };
+
       loginButtons.forEach((loginBtn) => {
         if (loginBtn.dataset.boundAuth) return;
         loginBtn.dataset.boundAuth = "1";
@@ -416,9 +427,10 @@
             const id = String(btn.dataset.intelId || "").trim();
             const hintLabel = String(btn.dataset.intelLabel || "").trim();
             if (!id || !action) return;
+            const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
             try {
-              await handleIntelAction(action, id, hintLabel);
+              await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
@@ -576,9 +588,10 @@
             const id = String(btn.dataset.intelId || "").trim();
             const hintLabel = String(btn.dataset.intelLabel || "").trim();
             if (!id || !action) return;
+            const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
             try {
-              await handleIntelAction(action, id, hintLabel);
+              await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
@@ -608,6 +621,7 @@
       official: "官方近期更新",
       sbt: "SBT",
       pokemon: "寶可夢相關資訊",
+      collectibles: "收藏趨勢",
       alpha: "未來 Alpha",
       tools: "工具",
       other: "社群精選",
@@ -642,6 +656,7 @@
         official: "category.official",
         sbt: "category.sbt",
         pokemon: "category.pokemon",
+        collectibles: "category.collectibles",
         alpha: "category.alpha",
         tools: "category.tools",
         other: "category.other",
@@ -660,6 +675,7 @@
       official: "intel",
       sbt: "sbt",
       pokemon: "pipeline",
+      collectibles: "collectibles",
       alpha: "timeline",
       tools: "ops",
       other: "world",
@@ -671,6 +687,7 @@
       intel: "official",
       sbt: "sbt",
       pipeline: "pokemon",
+      collectibles: "collectibles",
       timeline: "alpha",
       ops: "tools",
       world: "other",

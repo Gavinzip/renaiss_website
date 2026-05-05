@@ -39,6 +39,17 @@
         setIntelMessage("目前是 file:// 模式。請改用 `python scripts/ai_intel_server.py --port 8787` 後從 http://127.0.0.1:8787 開啟。", "error");
       }
 
+      const readTimelineEditorPayload = (btn) => {
+        const host = btn?.closest?.("article, .intel-master-card, .intel-card");
+        if (!host) return {};
+        const startEl = host.querySelector('input[data-intel-timeline-start]');
+        const endEl = host.querySelector('input[data-intel-timeline-end]');
+        return {
+          timeline_date: String(startEl?.value || "").trim(),
+          timeline_end_date: String(endEl?.value || "").trim(),
+        };
+      };
+
       loginButtons.forEach((loginBtn) => {
         if (loginBtn.dataset.boundAuth) return;
         loginBtn.dataset.boundAuth = "1";
@@ -184,20 +195,37 @@
         feedbackForm.dataset.boundFeedbackForm = "1";
         feedbackForm.addEventListener("submit", (event) => {
           event.preventDefault();
-          const labelEl = document.getElementById("intel-feedback-label");
+          const mode = String(feedbackModal?.dataset.mode || "feedback");
+          const cardTypeEl = document.getElementById("intel-feedback-card-type");
+          const sectionEl = document.getElementById("intel-feedback-section");
           const reasonEl = document.getElementById("intel-feedback-reason");
-          const label = String(labelEl?.value || "").trim().toLowerCase();
+          const cardType = String(cardTypeEl?.value || "").trim().toLowerCase();
+          const section = String(sectionEl?.value || "").trim().toLowerCase();
           const reason = String(reasonEl?.value || "").trim();
-          if (!label || !intelFeedbackLabels.has(label)) {
-            setIntelMessage("請選擇有效分類。", "error");
-            return;
-          }
           if (!reason) {
             setIntelMessage("請填寫原因，否則 AI 無法學習這次修正。", "error");
             if (reasonEl) reasonEl.focus();
             return;
           }
-          closeIntelFeedbackModal({ label, reason });
+          if (mode === "exclude") {
+            closeIntelFeedbackModal({ mode: "exclude", reason });
+            return;
+          }
+          const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
+          const sectionLabels = new Set(["official", "event", "sbt", "pokemon", "collectibles", "alpha", "tools", "other"]);
+          if (!cardType && !section) {
+            setIntelMessage("請至少選擇一個分類（卡片類型或分區）。", "error");
+            return;
+          }
+          if (cardType && !cardTypeLabels.has(cardType)) {
+            setIntelMessage("卡片類型無效，請重新選擇。", "error");
+            return;
+          }
+          if (section && !sectionLabels.has(section)) {
+            setIntelMessage("分區無效，請重新選擇。", "error");
+            return;
+          }
+          closeIntelFeedbackModal({ mode: "feedback", cardType, section, reason });
         });
       }
 
@@ -314,7 +342,7 @@
           return;
         }
         analyzeBtn.disabled = true;
-        setIntelMessage("已送出背景分析工作，完成後會自動加入網站卡片（可直接刷新頁面）。", "");
+        setIntelMessage("已送出背景分析工作，會先進入貼文分析流程（可直接刷新頁面）。", "");
         try {
           const data = await postIntel("/api/intel/analyze-url", { url });
           const jobId = String(data?.job?.id || "").trim();
@@ -416,9 +444,10 @@
             const id = String(btn.dataset.intelId || "").trim();
             const hintLabel = String(btn.dataset.intelLabel || "").trim();
             if (!id || !action) return;
+            const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
             try {
-              await handleIntelAction(action, id, hintLabel);
+              await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
@@ -576,9 +605,10 @@
             const id = String(btn.dataset.intelId || "").trim();
             const hintLabel = String(btn.dataset.intelLabel || "").trim();
             if (!id || !action) return;
+            const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
             try {
-              await handleIntelAction(action, id, hintLabel);
+              await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
@@ -608,7 +638,8 @@
       official: "官方近期更新",
       sbt: "SBT",
       pokemon: "寶可夢相關資訊",
-      alpha: "未來 Alpha",
+      collectibles: "收藏趨勢",
+      alpha: "未來規劃",
       tools: "工具",
       other: "社群精選",
     };
@@ -642,6 +673,7 @@
         official: "category.official",
         sbt: "category.sbt",
         pokemon: "category.pokemon",
+        collectibles: "category.collectibles",
         alpha: "category.alpha",
         tools: "category.tools",
         other: "category.other",
@@ -660,6 +692,7 @@
       official: "intel",
       sbt: "sbt",
       pokemon: "pipeline",
+      collectibles: "collectibles",
       alpha: "timeline",
       tools: "ops",
       other: "world",
@@ -671,6 +704,7 @@
       intel: "official",
       sbt: "sbt",
       pipeline: "pokemon",
+      collectibles: "collectibles",
       timeline: "alpha",
       ops: "tools",
       world: "other",

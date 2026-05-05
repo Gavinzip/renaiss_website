@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import time
 
 from . import bootstrap as _bootstrap
@@ -132,6 +135,223 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     raise RuntimeError(f"MiniMax response missing content; model={model_name}")
 
 
+def _resolve_minimax_image_url() -> str:
+    explicit = str(os.getenv("MINIMAX_IMAGE_URL") or "").strip()
+    if explicit:
+        return explicit
+    api_host = str(os.getenv("MINIMAX_API_HOST") or "https://api.minimax.io").strip().rstrip("/")
+    if not api_host:
+        api_host = "https://api.minimax.io"
+    return f"{api_host}/v1/image_generation"
+
+
+def _resolve_cover_reference_candidates() -> list[tuple[str, Path]]:
+    root = Path(__file__).resolve().parents[2]
+    logo_ref = str(os.getenv("INTEL_COVER_LOGO_REF") or "frontend_chain/assets/renaiss-logo-alpha-cropped.png").strip()
+    boss_ref = str(os.getenv("INTEL_COVER_BOSS_REF") or "boss.png").strip()
+    include_boss_raw = str(os.getenv("INTEL_COVER_INCLUDE_BOSS_REF") or "").strip().lower()
+    include_boss = include_boss_raw in {"1", "true", "yes", "on"}
+    candidates: list[tuple[str, str]] = [("logo", logo_ref)]
+    if include_boss:
+        candidates.append(("boss", boss_ref))
+    resolved: list[tuple[str, Path]] = []
+    for name, raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        if path.exists() and path.is_file():
+            resolved.append((name, path))
+    return resolved
+
+
+def _image_mime_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".gif":
+        return "image/gif"
+    return "image/png"
+
+
+def _file_to_data_uri(path: Path) -> str:
+    raw = path.read_bytes()
+    mime = _image_mime_type(path)
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _compose_reference_data_uri(candidates: list[tuple[str, Path]]) -> str:
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return _file_to_data_uri(candidates[0][1])
+    try:
+        from PIL import Image
+    except Exception:
+        return _file_to_data_uri(candidates[0][1])
+    prepared: list[Image.Image] = []
+    for _name, path in candidates[:2]:
+        with Image.open(path) as img:
+            prepared.append(img.convert("RGBA"))
+    target_h = max(320, min(640, max(img.height for img in prepared)))
+    resized: list[Image.Image] = []
+    for img in prepared:
+        ratio = float(target_h) / float(max(1, img.height))
+        target_w = max(120, int(round(img.width * ratio)))
+        resized.append(img.resize((target_w, target_h), Image.Resampling.LANCZOS))
+    gap = 24
+    total_w = sum(img.width for img in resized) + gap * (len(resized) - 1)
+    canvas = Image.new("RGBA", (total_w, target_h), (248, 250, 255, 255))
+    cursor_x = 0
+    for idx, img in enumerate(resized):
+        canvas.paste(img, (cursor_x, 0), img if img.mode == "RGBA" else None)
+        cursor_x += img.width
+        if idx < len(resized) - 1:
+            cursor_x += gap
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG", optimize=True)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _cover_subject_references() -> list[dict[str, str]]:
+    candidates = _resolve_cover_reference_candidates()
+    if not candidates:
+        return []
+    try:
+        composed_uri = _compose_reference_data_uri(candidates)
+    except Exception as exc:
+        print(f"[cover-image] compose references failed: {exc}")
+        composed_uri = _file_to_data_uri(candidates[0][1])
+    if not composed_uri:
+        return []
+    return [
+        {
+            "type": "character",
+            "image_file": composed_uri,
+        }
+    ]
+
+
+def _cover_prompt_text(card: StoryCard) -> str:
+    title = clean_text(str(card.title or "")).strip()[:120]
+    if not title:
+        title = "Renaiss community update"
+
+    prompt = (
+        f"Concept title: {title}. "
+        "Generate a premium abstract editorial cover image. "
+        "Use the reference only for color/style direction. "
+        "Strict rules: no humans, no faces, no body parts, no portraits. "
+        "Strict rules: no text, no letters, no numbers, no words, no logos, no watermark. "
+        "Strict rules: no UI panels, no labels, no signage, no caption blocks. "
+        "Use only symbolic objects, geometric composition, and cinematic lighting. "
+        "Single focal point, clean background, low clutter."
+    )
+    return prompt[:1800]
+
+
+def _image_extension_from_bytes(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return ".webp"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return ".gif"
+    return ".png"
+
+
+def _safe_cover_filename(card_id: str, ext: str) -> str:
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(card_id or "").strip()).strip("_")
+    if not safe_id:
+        safe_id = hashlib.md5(str(card_id or "").encode("utf-8")).hexdigest()[:16]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"{safe_id}_gen_{stamp}{ext}"
+
+
+def generate_minimax_cover_image(card: StoryCard, *, force: bool = False) -> dict[str, Any]:
+    card_id = str(card.id or "").strip()
+    if not card_id:
+        raise ValueError("card id is required")
+
+    existing = str(card.cover_image or "").strip()
+    if existing and not force:
+        return {
+            "ok": True,
+            "id": card_id,
+            "skipped": True,
+            "reason": "cover_exists",
+            "cover_image": existing,
+        }
+
+    api_key = str(resolve_minimax_key() or "").strip()
+    if not api_key:
+        raise RuntimeError("missing MiniMax key")
+
+    model = str(os.getenv("INTEL_COVER_IMAGE_MODEL") or os.getenv("MINIMAX_IMAGE_MODEL") or "image-01").strip() or "image-01"
+    aspect_ratio = str(os.getenv("INTEL_COVER_IMAGE_ASPECT_RATIO") or "16:9").strip() or "16:9"
+    connect_timeout = _env_float("INTEL_COVER_HTTP_CONNECT_TIMEOUT_SEC", default=20.0, minimum=5.0, maximum=120.0)
+    read_timeout = _env_float("INTEL_COVER_HTTP_READ_TIMEOUT_SEC", default=240.0, minimum=30.0, maximum=600.0)
+
+    prompt = _cover_prompt_text(card)
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "response_format": "base64",
+        "n": 1,
+    }
+    subject_refs = _cover_subject_references()
+    if subject_refs:
+        payload["subject_reference"] = subject_refs
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    image_url = _resolve_minimax_image_url()
+    resp = requests.post(image_url, headers=headers, json=payload, timeout=(connect_timeout, read_timeout))
+    resp.raise_for_status()
+    parsed = resp.json()
+    data = parsed if isinstance(parsed, dict) else {}
+    body = data.get("data") if isinstance(data.get("data"), dict) else {}
+    b64_list = body.get("image_base64") if isinstance(body.get("image_base64"), list) else []
+    if not b64_list:
+        raise RuntimeError(f"MiniMax image response missing image_base64; keys={sorted(list(data.keys()))}")
+    b64 = str(b64_list[0] or "").strip()
+    if not b64:
+        raise RuntimeError("MiniMax image response empty base64")
+    raw = base64.b64decode(b64)
+    if len(raw) < 128:
+        raise RuntimeError("MiniMax image decoded bytes too small")
+
+    ext = _image_extension_from_bytes(raw)
+    cache_dir = data_dir() / "generated_covers"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    filename = _safe_cover_filename(card_id, ext)
+    target = cache_dir / filename
+    target.write_bytes(raw)
+    cover_path = _discord_cover_cache_relpath(filename)
+
+    return {
+        "ok": True,
+        "id": card_id,
+        "skipped": False,
+        "cover_image": cover_path,
+        "model": model,
+        "aspect_ratio": aspect_ratio,
+        "prompt": prompt,
+        "subject_reference_count": len(subject_refs),
+        "bytes": len(raw),
+        "path": str(target),
+    }
+
+
 def apply_minimax_story_refine(
     cards: list[StoryCard],
     api_key: str,
@@ -145,7 +365,8 @@ def apply_minimax_story_refine(
             "輸出必須是 JSON，欄位固定為："
             "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline/trend),"
             "confidence(0~1),tags(最多3),event_facts(可選，僅 event 使用: reward/participation/audience/location/schedule),"
-            "topic_labels(可多選: events/official/sbt/pokemon/alpha/tools/collectibles/other)。"
+            "topic_labels(可多選: events/official/sbt/pokemon/alpha/tools/collectibles/other),"
+            "sbt_name(可選),sbt_names(可選陣列),sbt_acquisition(可選)。"
             "限制："
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
@@ -168,7 +389,11 @@ def apply_minimax_story_refine(
             "19) 長度限制：title<=40字、summary<=150字、每條bullet<=34字；"
             "20) 若使用者回饋記憶與原始推斷衝突，以使用者回饋記憶優先；"
             "21) 收藏品新聞、拍賣、評級、IP 熱度、產業趨勢且非純價格數據時，優先用 trend；"
-            "22) 整份 JSON 請控制在約 800 字元內。\n\n"
+            "22) 若 topic_labels 包含 sbt，只有在原文明確寫出 SBT 名稱時才填 sbt_name/sbt_names；"
+            "不要輸出『的 SBT』『2個 SBT』『此結果代表該波 SBT』這種片段或統計句；"
+            "23) 若原文明確寫出取得方式、資格、快照、領取或空投規則，才填 sbt_acquisition；"
+            "只是順帶提到 SBT 但沒有取得方式時留空，不要猜；"
+            "24) 整份 JSON 請控制在約 900 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
@@ -180,8 +405,9 @@ def apply_minimax_story_refine(
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels。"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,sbt_name,sbt_names,sbt_acquisition。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
+                    "若不是明確 SBT 取得資訊，sbt_name/sbt_acquisition 留空；不可猜。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
@@ -202,6 +428,9 @@ def apply_minimax_story_refine(
             topic_labels = normalize_topic_labels(parsed.get("topic_labels"))
             detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
             detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
+            sbt_names = normalize_sbt_names(parsed.get("sbt_names") if parsed.get("sbt_names") is not None else parsed.get("sbt_name"))
+            sbt_acquisition = clean_text(str(parsed.get("sbt_acquisition") or ""))[:180]
+            sbt_acquisition = re.sub(r"^\s*SBT\s*取得方式\s*[:：]\s*", "", sbt_acquisition, flags=re.I).strip()
 
             if title:
                 card.title = title[:120]
@@ -225,6 +454,17 @@ def apply_minimax_story_refine(
                 card.detail_summary = detail_summary
             if detail_lines:
                 card.detail_lines = detail_lines
+            if sbt_names:
+                card.sbt_names = sbt_names
+                card.sbt_name = sbt_names[0]
+                labels_for_sbt = normalize_topic_labels([*(card.topic_labels or []), "sbt"])
+                if labels_for_sbt:
+                    card.topic_labels = labels_for_sbt
+            if sbt_acquisition:
+                card.sbt_acquisition = sbt_acquisition[:180]
+                labels_for_sbt = normalize_topic_labels([*(card.topic_labels or []), "sbt"])
+                if labels_for_sbt:
+                    card.topic_labels = labels_for_sbt
             if (
                 similarity_ratio(card.summary, card.raw_text) > 0.92
                 or _summary_needs_rewrite(card.summary, card.raw_text)
@@ -673,7 +913,7 @@ def _discord_first_image(item: dict[str, Any]) -> str:
         is_image = content_type.startswith("image/") or bool(att.get("width"))
         if not is_image:
             continue
-        url = str(att.get("proxy_url") or att.get("url") or "").strip()
+        url = str(att.get("url") or att.get("proxy_url") or "").strip()
         if url.startswith("http"):
             return url
     embeds = item.get("embeds") if isinstance(item.get("embeds"), list) else []
@@ -683,10 +923,64 @@ def _discord_first_image(item: dict[str, Any]) -> str:
         image = embed.get("image") if isinstance(embed.get("image"), dict) else {}
         thumbnail = embed.get("thumbnail") if isinstance(embed.get("thumbnail"), dict) else {}
         for source in (image, thumbnail):
-            url = str(source.get("proxy_url") or source.get("url") or "").strip()
+            url = str(source.get("url") or source.get("proxy_url") or "").strip()
             if url.startswith("http"):
                 return url
     return ""
+
+
+def _discord_cover_extension(url: str, content_type: str) -> str:
+    ext = Path(urlparse(str(url or "")).path).suffix.lower()
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return ext
+    ctype = str(content_type or "").split(";", 1)[0].strip().lower()
+    mapping = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }
+    return mapping.get(ctype, ".jpg")
+
+
+def _discord_cover_cache_relpath(filename: str) -> str:
+    return f"/data/generated_covers/{filename}"
+
+
+def _cache_discord_cover_image(card_id: str, cover_image: str) -> str:
+    raw = str(cover_image or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/data/generated_covers/"):
+        return raw
+    if raw.startswith("data/generated_covers/"):
+        return f"/{raw}"
+    if not raw.startswith("http"):
+        return raw
+
+    cache_dir = data_dir() / "generated_covers"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(card_id or "").strip()).strip("_")[:180] or hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+    timeout_sec = _env_float("DISCORD_COVER_FETCH_TIMEOUT_SEC", default=25.0, minimum=5.0, maximum=120.0)
+    try:
+        resp = requests.get(raw, timeout=(8.0, timeout_sec), allow_redirects=True)
+        if int(resp.status_code) != 200:
+            return raw
+        ctype = str(resp.headers.get("content-type") or "").lower()
+        if ctype and not ctype.startswith("image/"):
+            return raw
+        body = resp.content or b""
+        if len(body) < 64:
+            return raw
+        ext = _discord_cover_extension(raw, ctype)
+        filename = f"{safe_id}{ext}"
+        target = cache_dir / filename
+        target.write_bytes(body)
+        return _discord_cover_cache_relpath(filename)
+    except Exception:
+        return raw
 
 
 def _discord_message_url(item: dict[str, Any], channel_id: str, message_id: str) -> str:
@@ -843,6 +1137,8 @@ def collect_discord_cards(
                 continue
             if not card:
                 continue
+            if card.cover_image:
+                card.cover_image = _cache_discord_cover_image(card.id, card.cover_image)
             cards.append(card)
             produced += 1
         stats[cid] = produced
@@ -913,6 +1209,9 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
                         topic_labels=normalize_topic_labels(item.get("topic_labels")),
                         detail_summary=str(item.get("detail_summary") or ""),
                         detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
+                        sbt_name=str(item.get("sbt_name") or ""),
+                        sbt_names=normalize_sbt_names(item.get("sbt_names") if item.get("sbt_names") is not None else item.get("sbt_name")),
+                        sbt_acquisition=str(item.get("sbt_acquisition") or ""),
                         reply_to_id=str(item.get("reply_to_id") or ""),
                     )
                 )

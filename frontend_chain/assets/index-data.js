@@ -37,6 +37,48 @@
         icons: ["3-the-recruiter.png"],
       },
       {
+        name: "Sequential Cert",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "持有連續編號 PSA 卡，並分享發推。",
+        icons: ["35-supreme-collector.png"],
+      },
+      {
+        name: "Mystic Luck",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "發布 A 級及以上抽卡影片。",
+        icons: ["77-omega-s-card.png"],
+      },
+      {
+        name: "Omega Pack",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "抽取一次 48U 卡機。",
+        icons: ["76-omega-pack.png"],
+      },
+      {
+        name: "Renacrypt Pack",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "抽取一次 88U 卡機。",
+        icons: ["75-renacrypt-pack.png"],
+      },
+      {
+        name: "Discord Server Booster",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "至少為 Renaiss Discord 伺服器提升一次優先級（Boost）。",
+        icons: ["43-discord-server-booster.png"],
+      },
+      {
+        name: "Community Battle Winner",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "在直播中和 Winchman PK 開包，並贏得比賽。",
+        icons: ["74-community-battle-winner.png"],
+      },
+      {
         name: "Community Voice",
         badge: "✅ Available",
         status: "available",
@@ -65,11 +107,25 @@
         icons: ["39-signal-booster.png"],
       },
       {
+        name: "Contributor of the Week",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "被官方評為週度貢獻者（篩選）。",
+        icons: ["29-core-contributor.png"],
+      },
+      {
         name: "Community Developer",
         badge: "✅ Available",
         status: "available",
         requirement: "提交並被認可的工具 / App / AI 技術貢獻。",
         icons: ["44-community-dev.png"],
+      },
+      {
+        name: "Community Leader (L1/L2)",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "作為社區創始人組織社區並向社區玩家分享 Renaiss。",
+        icons: ["63-community-event-mvp.png", "65-community-event-organizer.png"],
       },
       {
         name: "Infinite Pioneer / Grinder / Flash Mint",
@@ -87,9 +143,9 @@
       },
       {
         name: "The Vanguard",
-        badge: "⭕ Invite",
-        status: "invite",
-        requirement: "早期高影響力大使 / KOL 類角色。",
+        badge: "✅ Available",
+        status: "available",
+        requirement: "加入 Renaiss 大使計劃（需申請）。",
         icons: ["33-the-vanguard.png"],
       },
       {
@@ -143,10 +199,10 @@
 
     async function renderSbtGroups() {
       const availableList = document.getElementById("sbt-available-list");
-      const unavailableList = document.getElementById("sbt-unavailable-list");
       const availableCount = document.getElementById("sbt-available-count");
+      const unavailableList = document.getElementById("sbt-unavailable-list");
       const unavailableCount = document.getElementById("sbt-unavailable-count");
-      if (!availableList || !unavailableList || !availableCount || !unavailableCount) return;
+      if (!availableList || !availableCount) return;
 
       let availableTotal = 0;
       let unavailableTotal = 0;
@@ -180,14 +236,16 @@
         if (row.status === "available") {
           availableTotal += 1;
           availableList.appendChild(item);
-        } else {
+        } else if (unavailableList) {
           unavailableTotal += 1;
           unavailableList.appendChild(item);
         }
       });
 
       availableCount.innerHTML = `<iconify-icon icon="lucide:clock-3"></iconify-icon>${availableTotal} items`;
-      unavailableCount.innerHTML = `<iconify-icon icon="lucide:archive-x"></iconify-icon>${unavailableTotal} items`;
+      if (unavailableCount) {
+        unavailableCount.innerHTML = `<iconify-icon icon="lucide:archive-x"></iconify-icon>${unavailableTotal} items`;
+      }
     }
 
     function escapeHtml(text) {
@@ -296,7 +354,8 @@
     };
     const intelFeedbackLabels = new Set([
       "event", "feature", "announcement", "market", "report", "insight",
-      "events", "official", "sbt", "pokemon", "alpha", "tools", "other",
+      "trend",
+      "events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other",
       "exclude",
     ]);
     const INTEL_ANALYZE_JOB_KEY = "intel_analyze_job_id";
@@ -313,6 +372,13 @@
     function detectIntelApiBase() {
       try {
         const win = window || {};
+        const params = new URLSearchParams(String(window.location?.search || ""));
+        const fromQuery = String(params.get("intel_api_base") || "").trim();
+        if (fromQuery) {
+          const normalized = fromQuery.replace(/\/+$/, "");
+          window.localStorage.setItem("intel_api_base", normalized);
+          return normalized;
+        }
         const explicit = String(
           win.__INTEL_API_BASE__ ||
           window.localStorage.getItem("intel_api_base") ||
@@ -325,7 +391,7 @@
       const host = String(window.location?.hostname || "").toLowerCase();
       const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local");
       if (isLocal) {
-        return String(window.location?.origin || "").replace(/\/+$/, "");
+        return "http://127.0.0.1:8787";
       }
       return DEFAULT_INTEL_API_BASE;
     }
@@ -457,7 +523,7 @@
         .split(/\s+/)
         .slice(0, 6)
         .join(" ");
-      const eventRows = rows.filter((c) => String(c?.card_type || "").toLowerCase() === "event");
+      const eventRows = rows.filter((c) => c?.event_wall === true);
       const inferredDateByTopic = new Map();
       eventRows.forEach((card) => {
         const explicit = resolveExplicitTimelineDate(card);
@@ -494,8 +560,7 @@
         return Math.abs(diffDays) <= 7;
       };
       const filtered = rows.filter((c) => {
-        const cardType = String(c?.card_type || "").toLowerCase();
-        if (cardType !== "event") return false;
+        if (c?.event_wall !== true) return false;
         const dt = resolveEventDate(c);
         return withinTimelineWindow(dt);
       });
@@ -647,6 +712,7 @@
     const intelTypeLabelMap = {
       event: "活動",
       market: "市場",
+      trend: "收藏趨勢",
       report: "報告",
       announcement: "公告",
       feature: "功能",
@@ -662,9 +728,11 @@
         announcement: "公告",
         feature: "功能",
         insight: "觀點",
+        trend: "收藏趨勢",
         official: "官方",
         pokemon: "寶可夢",
-        alpha: "未來 Alpha",
+        collectibles: "收藏趨勢",
+        alpha: "未來規劃",
         tools: "工具",
         other: "社群精選",
         published: "發布",
@@ -739,6 +807,12 @@
         audiencePending: "影響對象待官方補充",
         liveReleased: "已上線",
         sbtAcquisition: "SBT 取得方式",
+        sbtAcquisitionNext: "下一步：詳細 → 發布 / 事件",
+        sbtAcquisitionEmpty: "目前沒有整理出明確 SBT 取得方式。",
+        sbtStatusPending: "待確認",
+        sbtStatusClaimable: "可領取",
+        sbtStatusExpired: "已過期",
+        sbtJumpToCard: "直達卡片",
         snapshotAction: "快照前持續拉分，快照後核對官方最終門檻與 SBT 等級。",
         detailFallbackLead: "目前沒有可用摘要，請看原始貼文。",
         eventBackground: "事件背景",
@@ -773,9 +847,11 @@
         announcement: "公告",
         feature: "功能",
         insight: "观点",
+        trend: "收藏趋势",
         official: "官方",
         pokemon: "宝可梦",
-        alpha: "未来 Alpha",
+        collectibles: "收藏趋势",
+        alpha: "未来规划",
         tools: "工具",
         other: "社群精选",
         published: "发布",
@@ -850,6 +926,12 @@
         audiencePending: "影响对象待官方补充",
         liveReleased: "已上线",
         sbtAcquisition: "SBT 获取方式",
+        sbtAcquisitionNext: "下一步：详情 → 发布 / 事件",
+        sbtAcquisitionEmpty: "目前没有整理出明确 SBT 获取方式。",
+        sbtStatusPending: "待确认",
+        sbtStatusClaimable: "可领取",
+        sbtStatusExpired: "已过期",
+        sbtJumpToCard: "直达卡片",
         snapshotAction: "快照前持续拉分，快照后核对官方最终门槛与 SBT 等级。",
         detailFallbackLead: "目前没有可用摘要，请看原始贴文。",
         eventBackground: "事件背景",
@@ -884,9 +966,11 @@
         announcement: "Announcement",
         feature: "Feature",
         insight: "Insight",
+        trend: "Collectibles",
         official: "Official",
         pokemon: "Pokemon",
-        alpha: "Future Alpha",
+        collectibles: "Collectibles",
+        alpha: "Future Plans",
         tools: "Tools",
         other: "Community Picks",
         published: "Published",
@@ -961,6 +1045,12 @@
         audiencePending: "Affected users still need official confirmation",
         liveReleased: "Live",
         sbtAcquisition: "SBT acquisition",
+        sbtAcquisitionNext: "Next: detail -> publish / event",
+        sbtAcquisitionEmpty: "No explicit SBT acquisition method is available yet.",
+        sbtStatusPending: "Pending",
+        sbtStatusClaimable: "Claimable",
+        sbtStatusExpired: "Expired",
+        sbtJumpToCard: "Jump to card",
         snapshotAction: "Keep pushing points before the snapshot, then verify the final official threshold and SBT tier.",
         detailFallbackLead: "No usable summary yet. Read the original post.",
         eventBackground: "Background",
@@ -995,9 +1085,11 @@
         announcement: "공지",
         feature: "기능",
         insight: "관점",
+        trend: "컬렉터블 트렌드",
         official: "공식",
         pokemon: "포켓몬",
-        alpha: "향후 Alpha",
+        collectibles: "컬렉터블 트렌드",
+        alpha: "미래 계획",
         tools: "도구",
         other: "커뮤니티 픽",
         published: "게시",
@@ -1072,6 +1164,12 @@
         audiencePending: "영향 대상 공식 확인 필요",
         liveReleased: "출시됨",
         sbtAcquisition: "SBT 획득 방법",
+        sbtAcquisitionNext: "다음: 상세 -> 게시 / 이벤트",
+        sbtAcquisitionEmpty: "명확한 SBT 획득 방법이 아직 정리되지 않았습니다.",
+        sbtStatusPending: "확인 필요",
+        sbtStatusClaimable: "수령 가능",
+        sbtStatusExpired: "만료됨",
+        sbtJumpToCard: "카드로 이동",
         snapshotAction: "스냅샷 전까지 점수를 올리고, 이후 공식 최종 기준과 SBT 등급을 확인하세요.",
         detailFallbackLead: "사용 가능한 요약이 없습니다. 원문을 확인하세요.",
         eventBackground: "배경",
@@ -1105,6 +1203,11 @@
       "參與": "participation",
       "市场": "market",
       "市場": "market",
+      "收藏": "collectibles",
+      "收藏趨勢": "collectibles",
+      "收藏趋势": "collectibles",
+      "趨勢": "trend",
+      "趋势": "trend",
       "數據": "keyNumber",
       "数据": "keyNumber",
       "功能": "feature",
@@ -1229,33 +1332,72 @@
       return uiLabel("clickForDetail");
     }
 
+    function toTimelineInputDate(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      const exact = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (exact) return exact[1];
+      const dt = new Date(raw);
+      if (Number.isNaN(dt.valueOf())) return "";
+      return dt.toISOString().slice(0, 10);
+    }
+
+    function timelineRangeText(startValue, endValue) {
+      const start = toTimelineInputDate(startValue);
+      const end = toTimelineInputDate(endValue);
+      if (start && end && start !== end) {
+        return `${toPosterDate(start)} ~ ${toPosterDate(end)}`;
+      }
+      if (end) return toPosterDate(end);
+      if (start) return toPosterDate(start);
+      return "";
+    }
+
+    function buildTimelineEditControls(id, startValue, endValue) {
+      if (!id || !intelCanEdit()) return "";
+      const startDate = toTimelineInputDate(startValue);
+      const endDate = toTimelineInputDate(endValue);
+      return `<div class="intel-timeline-edit" data-intel-timeline-editor>
+          <label class="intel-timeline-field">Start
+            <input type="date" data-intel-timeline-start value="${escapeHtml(startDate)}" />
+          </label>
+          <label class="intel-timeline-field">End
+            <input type="date" data-intel-timeline-end value="${escapeHtml(endDate)}" />
+          </label>
+          <button class="intel-pick-btn" data-intel-action="timeline-save" data-intel-id="${escapeHtml(id)}">更新日期</button>
+        </div>`;
+    }
+
     function renderMasterTimelineCard(item, index, total, options = {}) {
       const preview = Boolean(options?.preview);
       const dt = resolveMasterTimelineDate(item);
       const bucket = currentTimelineBucket(dt);
-      const eventText = dt ? toPosterDate(dt.toISOString()) : "--";
+      const eventText = timelineRangeText(item?.timeline_date, item?.timeline_end_date) || (dt ? toPosterDate(dt.toISOString()) : "--");
       const publishText = toLocalTime(item?.published_at);
-      const cover = String(item?.cover_image || "");
-      const backdropStyle = /^https?:\/\//i.test(cover)
+      const cover = resolveCoverImageUrl(item?.cover_image);
+      const backdropStyle = cover
         ? `background-image: url('${escapeHtml(cover)}');`
         : "background-image: linear-gradient(140deg, #1f3551, #2b4e73 46%, #29495b 100%);";
-      const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" loading="lazy" />`
+      const coverHtml = cover
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
         : "";
       const id = String(item?.id || "");
       const picked = Boolean(item?.manual_pick);
       const pinned = Boolean(item?.manual_pin);
       const bottomed = Boolean(item?.manual_bottom);
+      const eventWall = item?.event_wall === true;
       const feedbackLabel = String(item?.card_type || "insight");
       const actionHtml = (!preview && id && intelCanEdit())
         ? `<div class="intel-actions">
             <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
             <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
             <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+            <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-false" data-intel-id="${escapeHtml(id)}">移出活動牆</button>
             <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(id)}">${escapeHtml(uiLabel("exclude"))}</button>
             <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(id)}" data-intel-label="${escapeHtml(feedbackLabel)}">${escapeHtml(uiLabel("feedback"))}</button>
           </div>`
         : "";
+      const timelineEditorHtml = buildTimelineEditControls(id, item?.timeline_date, item?.timeline_end_date);
       const keyline = cardPrimaryHighlight(item);
       const cleanTitle = cleanMasterTitle(item?.title || uiLabel("unnamedTimeline"));
       const toggleHtml = (!preview && id)
@@ -1277,6 +1419,7 @@
           <div class="intel-master-footer">
             <span class="intel-master-index">${index + 1} / ${total}</span>
             ${actionHtml}
+            ${timelineEditorHtml}
             <a class="intel-source-link" href="${escapeHtml(item?.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
           </div>
           ${item?.url ? `<a class="intel-source-raw" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>` : ""}
@@ -1411,29 +1554,32 @@
       const layout = ["poster", "brief", "data", "timeline"].includes(card.layout) ? card.layout : "brief";
       const typeLabel = intelTypeLabel(card.card_type);
       const cardKey = String(card?._card_key || cardStableKey(card)).trim();
-      const cover = String(card.cover_image || "");
-      const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" loading="lazy" /></div>`
+      const cover = resolveCoverImageUrl(card.cover_image);
+      const coverHtml = cover
+        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
         : "";
       const tags = Array.isArray(card.tags) ? card.tags.slice(0, 3) : [];
       const tagHtml = tags
         .map((tag) => `<span class=\"intel-tag\">${escapeHtml(translateDisplayLabel(tag))}</span>`)
         .join("");
-      const timelineText = card.timeline_date ? toPosterDate(card.timeline_date) : "";
+      const timelineText = timelineRangeText(card.timeline_date, card.timeline_end_date);
       const timeText = `${uiLabel("published")} ${toLocalTime(card.published_at)}${timelineText && timelineText !== "--" ? ` · ${uiLabel("eventDate")} ${timelineText}` : ""}`;
       const canPick = String(card.id || "").trim() !== "";
       const picked = Boolean(card.manual_pick);
       const pinned = Boolean(card.manual_pin);
       const bottomed = Boolean(card.manual_bottom);
+      const eventWall = card?.event_wall === true;
       const actionHtml = (canPick && intelCanEdit())
         ? `<div class="intel-actions">
              <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
              <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
              <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+             <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-true" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(eventWall ? "已在活動牆" : "加入活動牆")}</button>
              <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(uiLabel("exclude"))}</button>
              <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(card.id)}" data-intel-label="${escapeHtml(String(card.card_type || "insight"))}">${escapeHtml(uiLabel("feedback"))}</button>
            </div>`
         : "";
+      const timelineEditorHtml = buildTimelineEditControls(card.id, card.timeline_date, card.timeline_end_date);
       const keylineText = cardPrimaryHighlight(card);
       const keylineLabel = keylineText ? `<div class="intel-detail-block-title">${escapeHtml(uiLabel("oneLine"))}</div>` : "";
 
@@ -1453,6 +1599,7 @@
               <div class="intel-tags">${tagHtml}</div>
               <span class="intel-time">${escapeHtml(timeText)}</span>
               ${actionHtml}
+              ${timelineEditorHtml}
               <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
             </div>
             ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
@@ -1471,6 +1618,7 @@
             <div class="intel-tags">${tagHtml}</div>
             <span class="intel-time">${escapeHtml(timeText)}</span>
             ${actionHtml}
+            ${timelineEditorHtml}
             <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
           </div>
           ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
@@ -1626,7 +1774,14 @@
       return /((sbt|soulbound|points?|積分|积分).{0,42}(threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank))|((threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank).{0,42}(sbt|soulbound|points?|積分|积分))/i.test(String(text || ""));
     }
 
-    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "alpha", "tools", "other"];
+    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other"];
+
+    function isCollectiblesSourceCard(card) {
+      const id = String(card?.id || "");
+      const url = String(card?.url || "");
+      return /^discord-1480867987270402149-\d+$/i.test(id)
+        || /discord\.com\/channels\/[^/]+\/1480867987270402149\/\d+/i.test(url);
+    }
 
     function normalizeTopicLabels(value) {
       const raw = Array.isArray(value)
@@ -1700,6 +1855,8 @@
 
       const toolsTerms = ["攻略", "教學", "指南", "tool", "工具", "集運", "how to", "比價", "price compare", "報告整理"];
       if (cardType === "report" || (!isOfficial && hasAny(text, toolsTerms))) add("tools");
+
+      if (isCollectiblesSourceCard(card)) add("collectibles");
 
       if (isOfficial) add("official");
       if (!labels.length) add("other");
@@ -1879,6 +2036,13 @@
     function resolveCardWindowDate(item) {
       const cardType = String(item?.card_type || "").trim().toLowerCase();
       if (cardType === "event" || cardType === "feature" || cardType === "announcement") {
+        const endRaw = String(item?.timeline_end_date || "").trim();
+        if (endRaw) {
+          const endDt = new Date(endRaw);
+          if (!Number.isNaN(endDt.valueOf())) {
+            return new Date(Date.UTC(endDt.getFullYear(), endDt.getMonth(), endDt.getDate()));
+          }
+        }
         const dt = resolveMasterTimelineDate(item);
         if (dt instanceof Date && !Number.isNaN(dt.valueOf())) return dt;
       }
@@ -1906,6 +2070,7 @@
         official: [],
         sbt: [],
         pokemon: [],
+        collectibles: [],
         alpha: [],
         tools: [],
         other: [],
@@ -1915,6 +2080,7 @@
         official: new Set(),
         sbt: new Set(),
         pokemon: new Set(),
+        collectibles: new Set(),
         alpha: new Set(),
         tools: new Set(),
         other: new Set(),
@@ -1925,10 +2091,19 @@
         const normalized = { ...card, route_labels: labels, _card_key: key };
         if (normalized.manual_pin && !labels.includes("other")) labels.push("other");
         const keepByWindow = Boolean(normalized.manual_pin) || isWithinBiweekWindow(normalized);
-        if (!keepByWindow) return;
+        if (normalized.event_wall === true && keepByWindow) {
+          const eventSeen = seenByBucket.events;
+          if (!eventSeen.has(key)) {
+            eventSeen.add(key);
+            buckets.events.push(normalized);
+          }
+        }
         labels.forEach((label) => {
           const bucket = buckets[label] ? label : "other";
+          if (bucket === "events") return;
           if (bucket === "pokemon" && !isPokemonCommunityCard(normalized)) return;
+          if (bucket === "collectibles" && !isCollectiblesSourceCard(normalized)) return;
+          if (bucket !== "collectibles" && !keepByWindow) return;
           const seen = seenByBucket[bucket];
           if (seen.has(key)) return;
           seen.add(key);
@@ -1983,6 +2158,20 @@
       if (/^https?:\/\//i.test(tail)) return tail;
       if (tail.startsWith("/")) return `${INTEL_API_BASE}${tail}`;
       return `${INTEL_API_BASE}/${tail}`;
+    }
+
+    const DEFAULT_COVER_IMAGE = "/website/image.png";
+
+    function resolveCoverImageUrl(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return DEFAULT_COVER_IMAGE;
+      if (/^https?:\/\//i.test(raw)) return raw;
+      if (raw.startsWith("/data/")) return intelApiUrl(raw);
+      if (raw.startsWith("data/")) return intelApiUrl(`/${raw}`);
+      if (raw.startsWith("/website/")) return raw;
+      if (raw.startsWith("website/")) return `/${raw}`;
+      if (raw.startsWith("/")) return raw;
+      return DEFAULT_COVER_IMAGE;
     }
 
     const uiTextNodeCache = new WeakMap();

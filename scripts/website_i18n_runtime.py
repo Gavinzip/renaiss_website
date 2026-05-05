@@ -81,6 +81,7 @@ I18N_FEED_LIST_KEYS = {
     "detail_lines",
     "tags",
     "key_terms",
+    "sbt_names",
 }
 I18N_MAX_TARGET_TEXTS = int(os.getenv("I18N_MAX_TARGET_TEXTS", "0") or "0")
 I18N_MAX_LIST_ITEMS_PER_FIELD = int(os.getenv("I18N_MAX_LIST_ITEMS_PER_FIELD", "0") or "0")
@@ -108,6 +109,8 @@ I18N_CARD_TEXT_KEYS = (
     "glance",
     "detail_summary",
     "headline",
+    "sbt_name",
+    "sbt_acquisition",
 )
 I18N_CARD_FACT_TEXT_KEYS = (
     "schedule",
