@@ -10,7 +10,8 @@
       "pokemon-news-list",
       "intel-sbt-cards",
       "intel-sbt-acquisition-list",
-      "intel-tools-cards",
+      "intel-guides-cards",
+      "intel-community-cards",
       "intel-alpha-cards",
       "intel-official-overview-title",
       "intel-official-overview-summary",
@@ -155,6 +156,147 @@
       el.classList.toggle("is-ready", mode === "ready");
     }
 
+    const INTEL_AUTO_REPAIR_SESSION_KEY = "intel_auto_repair_attempt_v1";
+    const INTEL_CATEGORY_RENDER_ORDER = Object.freeze([
+      "events",
+      "official",
+      "sbt",
+      "pokemon",
+      "collectibles",
+      "alpha",
+      "guides",
+      "community",
+      "other",
+    ]);
+    let intelLazyRenderContext = null;
+    let intelLazyRenderToken = 0;
+    let intelLazyRenderedCategories = new Set();
+    let intelDeferredCategoryQueue = [];
+    let intelDeferredCategoryTimer = null;
+    let uiLanguageApplyTimer = null;
+    let intelFeedPrefetchArmed = false;
+    let intelFeedPrefetchStarted = false;
+    let pokemonNewsAutoRequested = false;
+
+    function isUsableIntelFeed(feed) {
+      return Boolean(feed && typeof feed === "object" && Array.isArray(feed.cards) && feed.cards.length > 0);
+    }
+
+    function scheduleIdleTask(callback, delay = 0) {
+      const run = () => {
+        const fn = () => {
+          try {
+            callback();
+          } catch (_error) {}
+        };
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(fn, { timeout: 2400 });
+        } else {
+          window.setTimeout(fn, 80);
+        }
+      };
+      if (delay > 0) {
+        window.setTimeout(run, delay);
+      } else {
+        run();
+      }
+    }
+
+    function normalizeIntelCategoryName(category) {
+      const value = String(category || "").trim().toLowerCase();
+      return INTEL_CATEGORY_RENDER_ORDER.includes(value) ? value : "events";
+    }
+
+    function getActiveIntelCategory() {
+      const fromWindow = normalizeIntelCategoryName(window.__intelActiveCategory || "");
+      if (fromWindow !== "events" || String(window.__intelActiveCategory || "").trim()) return fromWindow;
+      try {
+        if (typeof activeCategory !== "undefined" && activeCategory) {
+          return normalizeIntelCategoryName(activeCategory);
+        }
+      } catch (_error) {}
+      const rawHash = String(window.location?.hash || "").replace(/^#cat-/i, "").replace(/^#/, "");
+      return normalizeIntelCategoryName(rawHash);
+    }
+
+    function shouldClearIntelStorageKey(key) {
+      const value = String(key || "");
+      const lower = value.toLowerCase();
+      if (!value) return false;
+      if (lower === "intel_admin_bearer_token_v1") return false;
+      return (
+        lower === "intel_api_base"
+        || lower === String(INTEL_LANG_STORAGE_KEY || "").toLowerCase()
+        || lower.startsWith(INTEL_FEED_SNAPSHOT_PREFIX)
+        || lower.includes("intel")
+        || lower.includes("feed")
+        || lower.includes("api")
+        || lower.includes("lang")
+        || lower.includes("i18n")
+        || lower.includes("pokemon-news")
+      );
+    }
+
+    async function clearIntelAppState(options = {}) {
+      const preserveLang = Boolean(options.preserveLang);
+      const preserveApiBase = Boolean(options.preserveApiBase);
+      const clearCacheStorage = options.clearCacheStorage !== false;
+      let savedLang = "";
+      let savedApiBase = "";
+      try {
+        savedLang = String(localStorage.getItem(INTEL_LANG_STORAGE_KEY) || "");
+        savedApiBase = String(localStorage.getItem("intel_api_base") || "");
+        const keys = [];
+        for (let idx = 0; idx < localStorage.length; idx += 1) {
+          keys.push(localStorage.key(idx));
+        }
+        keys.filter(shouldClearIntelStorageKey).forEach((key) => {
+          try { localStorage.removeItem(key); } catch (_error) {}
+        });
+        if (preserveLang && savedLang) localStorage.setItem(INTEL_LANG_STORAGE_KEY, savedLang);
+        if (preserveApiBase && savedApiBase) localStorage.setItem("intel_api_base", savedApiBase);
+      } catch (_error) {}
+      try {
+        sessionStorage.clear();
+      } catch (_error) {}
+      if (clearCacheStorage && window.caches && typeof window.caches.keys === "function") {
+        try {
+          const keys = await window.caches.keys();
+          await Promise.all(keys.map((key) => window.caches.delete(key)));
+        } catch (_error) {}
+      }
+      intelFeedLangCache.clear();
+      intelFeedCache = null;
+      intelLazyRenderContext = null;
+      intelLazyRenderedCategories = new Set();
+      intelDeferredCategoryQueue = [];
+    }
+
+    async function repairIntelLoadState() {
+      const btn = document.getElementById("intel-repair-load-btn");
+      if (btn) btn.disabled = true;
+      setIntelMessage(uiLabel("repairingLoadState"), "");
+      try {
+        await clearIntelAppState({ preserveLang: false, preserveApiBase: false, clearCacheStorage: true });
+        setIntelMessage(uiLabel("repairDoneReloading"), "ok");
+        const url = new URL(window.location.href);
+        url.searchParams.set("refresh", `repair-${Date.now()}`);
+        window.location.replace(url.toString());
+      } catch (error) {
+        if (btn) btn.disabled = false;
+        setIntelMessage(`${uiLabel("repairFailed")}：${String(error?.message || error)}`, "error");
+      }
+    }
+
+    function setupIntelLoadRepairButton() {
+      const btn = document.getElementById("intel-repair-load-btn");
+      if (!btn || btn.dataset.boundIntelRepair) return;
+      btn.dataset.boundIntelRepair = "1";
+      btn.addEventListener("click", () => {
+        repairIntelLoadState();
+      });
+    }
+
     const INTEL_FEED_SNAPSHOT_PREFIX = "intel_feed_snapshot_v1:";
 
     function intelFeedSnapshotKey(lang) {
@@ -167,7 +309,7 @@
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         const feed = parsed && typeof parsed === "object" ? parsed.feed : null;
-        if (!feed || typeof feed !== "object") return null;
+        if (!isUsableIntelFeed(feed)) return null;
         return feed;
       } catch (_error) {
         return null;
@@ -191,12 +333,12 @@
     function readCachedIntelFeed(lang, allowBaseFallback = true) {
       const tag = normalizeUiLang(lang || currentUiLang);
       const inMemory = intelFeedLangCache.get(tag);
-      if (inMemory && typeof inMemory === "object") return inMemory;
+      if (isUsableIntelFeed(inMemory)) return inMemory;
       const fromSnapshot = loadIntelFeedSnapshot(tag);
       if (fromSnapshot) return fromSnapshot;
       if (allowBaseFallback && tag !== "zh-Hant") {
         const memoryBase = intelFeedLangCache.get("zh-Hant");
-        if (memoryBase && typeof memoryBase === "object") return memoryBase;
+        if (isUsableIntelFeed(memoryBase)) return memoryBase;
         const snapshotBase = loadIntelFeedSnapshot("zh-Hant");
         if (snapshotBase) return snapshotBase;
       }
@@ -418,6 +560,19 @@
       });
     }
 
+    function scheduleUiLanguageApply(delay = 140) {
+      if (uiLanguageApplyTimer) {
+        window.clearTimeout(uiLanguageApplyTimer);
+        uiLanguageApplyTimer = null;
+      }
+      uiLanguageApplyTimer = window.setTimeout(() => {
+        uiLanguageApplyTimer = null;
+        scheduleIdleTask(() => {
+          applyUiLanguage().catch(() => {});
+        });
+      }, Math.max(0, Number(delay) || 0));
+    }
+
     function setupLanguageSwitcher() {
       updateLangSwitcherUi();
       const select = document.getElementById("lang-select");
@@ -434,12 +589,14 @@
           .then(() => {
             setLangBuildStatus("");
             applyUiLanguage().catch(() => {});
+            scheduleIntelFeedPrefetchOnActivity();
           })
           .catch((error) => {
             setLangBuildStatus("");
             setIntelMessage(`Language feed refresh failed: ${String(error?.message || error)}`, "error");
           });
-        refreshPokemonNews(false).catch(() => {});
+        pokemonNewsAutoRequested = false;
+        maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
       });
     }
 
@@ -499,6 +656,20 @@
       updateIntelAuthUi();
     }
 
+    function syncIntelAdminVisibility(showAdminPanel) {
+      const isAdmin = Boolean(showAdminPanel);
+      document.body.classList.toggle("intel-admin-mode", isAdmin);
+      document.querySelectorAll(".intel-user-hidden").forEach((el) => {
+        el.hidden = !isAdmin;
+        el.setAttribute("aria-hidden", isAdmin ? "false" : "true");
+      });
+      if (typeof window.syncProtectedIntelCategoryVisibility === "function") {
+        try {
+          window.syncProtectedIntelCategoryVisibility();
+        } catch (_error) {}
+      }
+    }
+
     function updateIntelAuthUi() {
       const statusEl = document.getElementById("intel-auth-status");
       const adminControls = document.getElementById("intel-admin-controls");
@@ -523,6 +694,7 @@
         && Boolean(intelAuthState.authConfigured)
         && Boolean(intelAuthState.authenticated);
       const showIntelControls = showAdminPanel;
+      syncIntelAdminVisibility(showAdminPanel);
 
       if (analyzeBtn) analyzeBtn.disabled = !editable;
       if (syncBtn) syncBtn.disabled = !editable;
@@ -554,6 +726,15 @@
         statusEl.textContent = "管理模式：檢查登入狀態中...";
         return;
       }
+      if (intelAuthState.mode === "auth-check-failed") {
+        statusEl.textContent = `管理模式：登入狀態讀取失敗（${intelAuthState.error || "auth API unavailable"}）。`;
+        statusEl.classList.add("is-error");
+        loginButtons.forEach((btn) => { btn.style.display = "inline-flex"; });
+        logoutButtons.forEach((btn) => { btn.style.display = "none"; });
+        if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminPipelineLink) adminPipelineLink.style.display = "none";
+        return;
+      }
       if (!intelAuthState.authRequired) {
         statusEl.textContent = "管理模式：目前為開放編輯（未啟用登入限制）。";
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
@@ -575,11 +756,9 @@
         statusEl.textContent = `管理模式：已登入 @${intelAuthState.user || "admin"}，可修改資料。`;
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "inline-flex"; });
-        applyUiLanguage().catch(() => {});
         return;
       }
       statusEl.textContent = "管理模式：唯讀。按 ⌘ + Shift + A 可開啟管理員登入。";
-      applyUiLanguage().catch(() => {});
     }
 
     async function fetchIntelAuthState() {
@@ -612,12 +791,13 @@
         }
       } catch (error) {
         intelAuthState.ready = true;
-        intelAuthState.authRequired = false;
+        intelAuthState.authRequired = true;
         intelAuthState.authConfigured = false;
-        intelAuthState.authenticated = true;
+        intelAuthState.authenticated = false;
         intelAuthState.user = "";
-        intelAuthState.mode = "fallback-open";
+        intelAuthState.mode = "auth-check-failed";
         intelAuthState.error = String(error?.message || "");
+        clearIntelAuthToken();
       } finally {
         intelAuthState.checking = false;
         updateIntelAuthUi();
@@ -670,7 +850,9 @@
         pokemon: uiLabel("pokemon"),
         collectibles: uiLabel("collectibles"),
         alpha: uiLabel("alpha"),
-        tools: uiLabel("tools"),
+        guides: uiLabel("guides"),
+        tools: uiLabel("guides"),
+        community: uiLabel("community"),
         other: uiLabel("other"),
       };
       return map[String(label || "").trim()] || "";
@@ -1307,6 +1489,31 @@
       resolveIntelFeedbackModal(value);
     }
 
+    const intelTopicLabelTextMap = {
+      events: "活動分區",
+      official: "官方近期更新",
+      sbt: "SBT 分區",
+      pokemon: "寶可夢分區",
+      collectibles: "收藏趨勢分區",
+      alpha: "未來規劃分區",
+      guides: "攻略分區",
+      community: "社群精選",
+      other: "無",
+    };
+
+    function intelTopicLabelName(label) {
+      const normalized = String(label || "").trim().toLowerCase();
+      return intelTopicLabelTextMap[normalized] || normalized || "--";
+    }
+
+    function setFeedbackTopicSelections(labels) {
+      const normalized = normalizeTopicLabels(labels);
+      const selected = new Set(normalized.includes("other") ? ["other"] : normalized);
+      document.querySelectorAll("[data-intel-feedback-section-option]").forEach((node) => {
+        node.checked = selected.has(String(node.value || "").trim().toLowerCase());
+      });
+    }
+
     function openIntelFeedbackModal(options = {}) {
       const modal = document.getElementById("intel-feedback-modal");
       const titleEl = document.getElementById("intel-feedback-title");
@@ -1314,35 +1521,46 @@
       const cardTypeField = document.getElementById("intel-feedback-card-type-field");
       const cardTypeEl = document.getElementById("intel-feedback-card-type");
       const sectionField = document.getElementById("intel-feedback-section-field");
-      const sectionEl = document.getElementById("intel-feedback-section");
+      const sectionCurrentEl = document.getElementById("intel-feedback-section-current");
       const reasonEl = document.getElementById("intel-feedback-reason");
-      if (!modal || !cardTypeEl || !sectionEl || !reasonEl) return Promise.resolve(null);
+      if (!modal || !cardTypeEl || !reasonEl) return Promise.resolve(null);
 
       const mode = String(options.mode || "feedback");
+      const card = options.card && typeof options.card === "object" ? options.card : {};
       const defaultLabel = String(options.defaultLabel || "insight").trim().toLowerCase();
       const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
-      const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other"]);
-      const defaultCardType = cardTypeLabels.has(defaultLabel) ? defaultLabel : "";
+      const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"]);
+      const cardTypeFromCard = String(options.cardType || card?.card_type || "").trim().toLowerCase();
+      const defaultCardType = cardTypeLabels.has(cardTypeFromCard)
+        ? cardTypeFromCard
+        : (cardTypeLabels.has(defaultLabel) ? defaultLabel : "");
       const defaultSection = sectionLabels.has(defaultLabel) ? defaultLabel : "";
+      const currentTopicLabels = normalizeTopicLabels(options.topicLabels || card?.topic_labels || []);
+      const selectedTopicLabels = currentTopicLabels.length
+        ? currentTopicLabels
+        : (defaultSection ? [defaultSection] : ["other"]);
       const isExclude = mode === "exclude";
       if (titleEl) titleEl.textContent = isExclude ? "排除這篇貼文" : "回饋分類";
       if (subEl) {
         subEl.textContent = isExclude
-          ? "請說明為什麼這篇不該出現在目前整理或活動時間軸。這會讓 AI 下次遇到類似內容時避開。"
-          : "請分別回饋卡片類型與分區（可只填其中一個），並說明為什麼要改。這會被存進 AI 分類記憶。";
+          ? "可直接排除這篇貼文。原因可選，填寫後才會讓 AI 下次遇到類似內容時避開。"
+          : "請確認卡片類型與最終分區。分區會以目前勾選結果完整覆蓋，避免多重分區被誤刪。";
       }
       modal.dataset.mode = mode;
       if (cardTypeField) cardTypeField.style.display = isExclude ? "none" : "";
       if (sectionField) sectionField.style.display = isExclude ? "none" : "";
       cardTypeEl.value = isExclude ? "" : defaultCardType;
-      sectionEl.value = isExclude ? "" : defaultSection;
+      setFeedbackTopicSelections(isExclude ? [] : selectedTopicLabels);
+      if (sectionCurrentEl) {
+        sectionCurrentEl.textContent = `目前分區：${selectedTopicLabels.map(intelTopicLabelName).join(" / ") || "--"}`;
+      }
       reasonEl.value = "";
       reasonEl.placeholder = isExclude
-        ? "例：這只是卡包 / 功能更新，不是需要放在活動主時間軸的活動。"
-        : "例：卡片類型應改為公告；分區應改到 SBT，因為主軸是取得方式。";
+        ? "可選填：例，這只是卡包 / 功能更新，不是需要放在活動主時間軸的活動。"
+        : "可選填：若希望 AI 下次學到規則，再補充為什麼要這樣分。";
       modal.classList.add("is-open");
       modal.setAttribute("aria-hidden", "false");
-      window.setTimeout(() => reasonEl.focus(), 0);
+      window.setTimeout(() => (isExclude ? reasonEl : cardTypeEl).focus(), 0);
 
       return new Promise((resolve) => {
         if (intelFeedbackModalResolver) resolveIntelFeedbackModal(null);
@@ -1350,11 +1568,94 @@
       });
     }
 
+    function renderIntelCategoryNow(category, context = intelLazyRenderContext) {
+      const ctx = context || intelLazyRenderContext;
+      if (!ctx || ctx.token !== intelLazyRenderToken) return false;
+      const name = normalizeIntelCategoryName(category);
+      if (intelLazyRenderedCategories.has(name)) return true;
+      const routed = ctx.routed || {};
+      const els = ctx.elements || {};
+      if (name === "events") {
+        renderSectionList(els.eventsList, cardsToSectionItems(ctx.eventsByPublished), uiLabel("noHighlights"));
+        renderSectionList(els.featuresList, cardsToSectionItems(ctx.alphaFutureCards), uiLabel("noHighlights"));
+        renderMasterTimeline({ cards: ctx.timelineCards });
+        renderCardGrid("intel-events-cards", "intel-events-empty", ctx.eventsByPublished, uiLabel("noHighlights"));
+      } else if (name === "official") {
+        renderSectionList(els.officialList, cardsToSectionItems(routed.official), uiLabel("noHighlights"));
+        renderSectionList(els.communityList, cardsToSectionItems(routed.community), uiLabel("noHighlights"));
+        renderAgendaList(els.growthList, ctx.agenda?.growth_signals, uiLabel("noHighlights"));
+        renderAgendaList(els.recentList, ctx.officialAgenda, uiLabel("noHighlights"));
+        renderCardGrid("intel-cards", "intel-empty", routed.official, uiLabel("noHighlights"));
+      } else if (name === "sbt") {
+        renderSbtAcquisitionSummary(routed.sbt, ctx.cards);
+        renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
+      } else if (name === "pokemon") {
+        renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
+        if (normalizeIntelCategoryName(getActiveIntelCategory()) === "pokemon") {
+          maybeRefreshPokemonNewsForCategory("pokemon");
+        }
+      } else if (name === "collectibles") {
+        renderCardGrid("intel-collectibles-cards", "intel-collectibles-empty", routed.collectibles, uiLabel("noHighlights"));
+      } else if (name === "alpha") {
+        renderCardGrid("intel-alpha-cards", "intel-alpha-empty", ctx.alphaFutureCards, uiLabel("noHighlights"));
+      } else if (name === "guides") {
+        renderCardGrid("intel-guides-cards", "intel-guides-empty", routed.guides, uiLabel("noHighlights"));
+      } else if (name === "community") {
+        renderCardGrid("intel-community-cards", "intel-community-empty", routed.community, uiLabel("noHighlights"));
+      } else if (name === "other") {
+        renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
+      }
+      intelLazyRenderedCategories.add(name);
+      intelDeferredCategoryQueue = intelDeferredCategoryQueue.filter((item) => item !== name);
+      markLocalizedDynamicRegions();
+      updateIntelAuthUi();
+      if (normalizeIntelCategoryName(getActiveIntelCategory()) === name) {
+        scheduleUiLanguageApply(90);
+      }
+      return true;
+    }
+
+    function renderIntelCategoryFromCurrentFeed(category) {
+      return renderIntelCategoryNow(category, intelLazyRenderContext);
+    }
+
+    function scheduleIntelDeferredCategoryRender(delay = 6200) {
+      if (!intelLazyRenderContext || !intelDeferredCategoryQueue.length || intelDeferredCategoryTimer) return;
+      intelDeferredCategoryTimer = window.setTimeout(() => {
+        intelDeferredCategoryTimer = null;
+        scheduleIdleTask(() => {
+          renderNextIntelDeferredCategory();
+        });
+      }, Math.max(0, Number(delay) || 0));
+    }
+
+    function renderNextIntelDeferredCategory() {
+      if (!intelLazyRenderContext || !intelDeferredCategoryQueue.length) return;
+      const next = intelDeferredCategoryQueue.shift();
+      if (next) renderIntelCategoryNow(next, intelLazyRenderContext);
+      if (intelDeferredCategoryQueue.length) {
+        scheduleIntelDeferredCategoryRender(3200);
+      }
+    }
+
+    function resetIntelCategoryRenderQueue(context, activeCategoryName) {
+      intelLazyRenderContext = context;
+      intelLazyRenderedCategories = new Set();
+      const activeName = normalizeIntelCategoryName(activeCategoryName);
+      intelDeferredCategoryQueue = INTEL_CATEGORY_RENDER_ORDER.filter((name) => name !== activeName);
+      if (intelDeferredCategoryTimer) {
+        window.clearTimeout(intelDeferredCategoryTimer);
+        intelDeferredCategoryTimer = null;
+      }
+      renderIntelCategoryNow(activeName, context);
+      scheduleIntelDeferredCategoryRender(6200);
+    }
+
     function renderIntelFeed(payload) {
       intelFeedCache = payload && typeof payload === "object" ? payload : null;
       const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
       const payloadMode = String(payload?._i18n?.mode || "");
-      const shouldPersistSnapshot = !(
+      const shouldPersistSnapshot = !payload?._recovered_from_snapshot && !(
         payloadLang !== "zh-Hant"
         && (payloadMode === "building" || payloadMode === "building-stale" || payloadMode === "base-fallback")
       );
@@ -1387,7 +1688,7 @@
 
       const cards = Array.isArray(payload?.cards) ? payload.cards : [];
       const routed = routeIntelCards(cards);
-      const alphaFutureCards = filterFutureAlphaCards(routed.alpha);
+      const alphaFutureCards = routed.alpha;
       syncIntelCardLookup(routed);
       const digest = payload?.digest || {};
       const stats = payload?.source_stats || {};
@@ -1551,10 +1852,6 @@
       }
 
       const eventsByPublished = sortCardsByTimeDesc(routed.events || []);
-      renderSectionList(officialList, cardsToSectionItems(routed.official), uiLabel("noHighlights"));
-      renderSectionList(eventsList, cardsToSectionItems(eventsByPublished), uiLabel("noHighlights"));
-      renderSectionList(featuresList, cardsToSectionItems(alphaFutureCards), uiLabel("noHighlights"));
-      renderSectionList(communityList, cardsToSectionItems(routed.other), uiLabel("noHighlights"));
       const timelineCards = [];
       const timelineSeen = new Set();
       eventsByPublished.forEach((card) => {
@@ -1563,8 +1860,6 @@
         timelineSeen.add(key);
         timelineCards.push(card);
       });
-      renderMasterTimeline({ cards: timelineCards });
-      renderAgendaList(growthList, agenda?.growth_signals, uiLabel("noHighlights"));
       const officialAgenda = routed.official.slice(0, 6).map((card) => ({
         label: uiLabel("official"),
         urgency: String(card?.card_type || "") === "announcement" ? "high" : "normal",
@@ -1574,31 +1869,43 @@
         url: String(card?.url || ""),
         published_at: card?.published_at,
       }));
-      renderAgendaList(recentList, officialAgenda, uiLabel("noHighlights"));
-
-      renderCardGrid("intel-events-cards", "intel-events-empty", eventsByPublished, uiLabel("noHighlights"));
-      renderCardGrid("intel-cards", "intel-empty", routed.official, uiLabel("noHighlights"));
-      renderSbtAcquisitionSummary(routed.sbt, cards);
-      renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
-      renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
-      renderCardGrid("intel-collectibles-cards", "intel-collectibles-empty", routed.collectibles, uiLabel("noHighlights"));
-      renderCardGrid("intel-alpha-cards", "intel-alpha-empty", alphaFutureCards, uiLabel("noHighlights"));
-      renderCardGrid("intel-tools-cards", "intel-tools-empty", routed.tools, uiLabel("noHighlights"));
-      renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
-      markLocalizedDynamicRegions();
-      updateIntelAuthUi();
-      applyUiLanguage().catch(() => {});
+      const context = {
+        token: ++intelLazyRenderToken,
+        payload,
+        cards,
+        routed,
+        alphaFutureCards,
+        eventsByPublished,
+        timelineCards,
+        agenda,
+        officialAgenda,
+        elements: {
+          officialList,
+          eventsList,
+          featuresList,
+          communityList,
+          growthList,
+          recentList,
+        },
+      };
+      resetIntelCategoryRenderQueue(context, getActiveIntelCategory());
+      if (payload?._recovered_from_snapshot) {
+        setIntelMessage(uiLabel("feedFailedUsingSnapshot"), "");
+      }
     }
 
-    async function fetchIntelFeed(langOverride = "") {
+    async function fetchIntelFeed(langOverride = "", options = {}) {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
+      const opts = options && typeof options === "object" ? options : {};
+      const allowSnapshot = opts.allowSnapshot !== false;
       const canUseApi = window.location.protocol !== "file:";
       let apiError = null;
       if (canUseApi) {
         try {
           const controller = new AbortController();
           const timeout = window.setTimeout(() => controller.abort(), 12000);
-          const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}`), {
+          const cacheBust = opts.cacheBust ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
+          const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}${cacheBust}`), {
             cache: "no-store",
             credentials: "include",
             signal: controller.signal,
@@ -1609,40 +1916,100 @@
             if (!payload.feed.lang) {
               payload.feed.lang = requestLang;
             }
-            return payload.feed;
+            if (isUsableIntelFeed(payload.feed)) {
+              return payload.feed;
+            }
+            apiError = new Error("empty_or_invalid_feed");
+          } else {
+            apiError = new Error(payload?.error || `HTTP ${response.status}`);
           }
-          apiError = new Error(payload?.error || `HTTP ${response.status}`);
         } catch (error) {
           apiError = error instanceof Error ? error : new Error(String(error || "api_fetch_failed"));
+        }
+      }
+      if (allowSnapshot) {
+        const snapshot = readCachedIntelFeed(requestLang, false);
+        if (snapshot) {
+          return {
+            ...snapshot,
+            _recovered_from_snapshot: true,
+            _recover_error: String(apiError?.message || "api_unavailable"),
+          };
         }
       }
       if (apiError) throw apiError;
       throw new Error(`intel_api_unavailable:${requestLang}`);
     }
 
-    async function refreshIntelFeedForCurrentLang() {
-      const payload = await fetchIntelFeed(currentUiLang);
+    async function refreshIntelFeedForCurrentLang(options = {}) {
+      const payload = await fetchIntelFeed(currentUiLang, options);
       renderIntelFeed(payload);
       scheduleLangFeedRefresh(payload);
       return payload;
     }
 
     function prefetchIntelFeeds() {
-      if (location.protocol === "file:") return;
+      if (location.protocol === "file:" || intelFeedPrefetchStarted) return;
+      intelFeedPrefetchStarted = true;
       const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
       langs.forEach((lang, index) => {
         window.setTimeout(() => {
-          if (intelFeedLangCache.has(lang)) return;
-          fetchIntelFeed(lang)
-            .then((payload) => {
-              const mode = String(payload?._i18n?.mode || "");
-              if (payload && mode !== "building") {
-                intelFeedLangCache.set(lang, payload);
-              }
-            })
-            .catch(() => {});
-        }, 900 + index * 900);
+          scheduleIdleTask(() => {
+            if (isUsableIntelFeed(intelFeedLangCache.get(lang))) return;
+            fetchIntelFeed(lang, { allowSnapshot: false })
+              .then((payload) => {
+                const mode = String(payload?._i18n?.mode || "");
+                if (isUsableIntelFeed(payload) && mode !== "building") {
+                  intelFeedLangCache.set(lang, payload);
+                  saveIntelFeedSnapshot(lang, payload);
+                }
+              })
+              .catch(() => {});
+          });
+        }, 1400 + index * 5600);
       });
+    }
+
+    function scheduleIntelFeedPrefetchOnActivity() {
+      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted) return;
+      intelFeedPrefetchArmed = true;
+      const events = ["scroll", "pointerdown", "keydown", "touchstart"];
+      let timeoutId = 0;
+      const cleanup = () => {
+        events.forEach((name) => window.removeEventListener(name, start));
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+          timeoutId = 0;
+        }
+      };
+      const start = () => {
+        cleanup();
+        scheduleIdleTask(() => {
+          prefetchIntelFeeds();
+        });
+      };
+      events.forEach((name) => window.addEventListener(name, start, { once: true, passive: true }));
+      timeoutId = window.setTimeout(() => {
+        scheduleIdleTask(start);
+      }, 18000);
+    }
+
+    async function attemptIntelAutoRepair(error) {
+      try {
+        const alreadyTried = sessionStorage.getItem(INTEL_AUTO_REPAIR_SESSION_KEY);
+        if (alreadyTried) return false;
+        await clearIntelAppState({ preserveLang: true, preserveApiBase: true, clearCacheStorage: false });
+        sessionStorage.setItem(INTEL_AUTO_REPAIR_SESSION_KEY, new Date().toISOString());
+        const payload = await fetchIntelFeed(currentUiLang, { cacheBust: true, allowSnapshot: false });
+        renderIntelFeed(payload);
+        scheduleLangFeedRefresh(payload);
+        setIntelMessage(uiLabel("feedAutoRepaired"), "ok");
+        scheduleIntelFeedPrefetchOnActivity();
+        return true;
+      } catch (_repairError) {
+        setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
+        return false;
+      }
     }
 
     async function postIntel(path, body) {
@@ -1690,6 +2057,42 @@
       return data?.restore || {};
     }
 
+    async function updateIntelXSource(action, account) {
+      const data = await postIntel("/api/intel/source-config", {
+        action: String(action || "").trim().toLowerCase(),
+        account: String(account || "").trim(),
+      });
+      return data?.source || data;
+    }
+
+    function renderIntelXSourceManager(status) {
+      const listEl = document.getElementById("intel-admin-x-source-list");
+      const metaEl = document.getElementById("intel-admin-x-source-meta");
+      if (!listEl && !metaEl) return;
+      const monitor = status?.monitors || {};
+      const xInfo = monitor?.x && typeof monitor.x === "object" ? monitor.x : {};
+      const accounts = Array.isArray(xInfo?.accounts) ? xInfo.accounts.map((x) => String(x || "").trim()).filter(Boolean) : [];
+      if (listEl) {
+        if (!accounts.length) {
+          listEl.textContent = "目前沒有追蹤 X 用戶。";
+        } else {
+          listEl.innerHTML = accounts.map((account) => `
+            <span class="intel-source-pill">
+              @${escapeHtml(account)}
+              <button type="button" class="intel-source-remove" data-intel-source-remove="${escapeHtml(account)}" aria-label="取消追蹤 @${escapeHtml(account)}">×</button>
+            </span>
+          `).join("");
+        }
+      }
+      if (metaEl) {
+        const defaultText = xInfo?.using_default ? "目前使用預設追蹤清單" : "目前使用管理員自訂追蹤清單";
+        const updated = toLocalTime(xInfo?.updated_at);
+        const stats = xInfo?.source_stats && typeof xInfo.source_stats === "object" ? xInfo.source_stats : {};
+        const countText = accounts.map((account) => `@${account}:${Number(stats?.[account] || 0)}`).join(" · ");
+        metaEl.textContent = `${defaultText} · 共 ${accounts.length} 個來源 · 更新 ${updated}${countText ? ` · ${countText}` : ""}`;
+      }
+    }
+
     function renderIntelAdminList(el, rows, emptyText) {
       if (!el) return;
       const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
@@ -1708,6 +2111,7 @@
       const news = status?.news || {};
       const memory = status?.memory || {};
       const monitor = status?.monitors || {};
+      const xMonitor = monitor?.x || {};
       const discord = monitor?.discord || {};
       const i18n = status?.i18n || {};
       const storage = status?.storage || {};
@@ -1907,11 +2311,16 @@
       if (!backup?.has_repo) backupRows.push("Next step：設定 WEBSITE_BACKUP_REPO 到 private backup repo。");
       if (!backup?.has_pat) backupRows.push("Next step：設定 WEBSITE_BACKUP_PAT，權限只需要 Contents read/write。");
       renderIntelAdminList(backupListEl, backupRows, "目前沒有備份狀態資料");
+      renderIntelXSourceManager(status);
 
       const monitorRows = [];
       const syncNext = toLocalTime(sync?.next_run_at);
       monitorRows.push(
         `X/Twitter sync：${String(sync?.status || "idle")} · interval ${Number(sync?.schedule_interval_hours || 0.5)}h · window ${Number(sync?.schedule_window_days || 30)}d · next ${syncNext}`
+      );
+      const xAccounts = Array.isArray(xMonitor?.accounts) ? xMonitor.accounts : [];
+      monitorRows.push(
+        `X tracked users：${xAccounts.length ? xAccounts.map((x) => `@${String(x)}`).join(", ") : "none"}`
       );
       monitorRows.push(
         `Discord monitor：${discord?.enabled ? "on" : "off"} · channel ${Array.isArray(discord?.channel_ids) ? discord.channel_ids.length : 0} · cards ${Number(discord?.cards_total || 0)}`
@@ -2065,6 +2474,16 @@
       }
     }
 
+    function maybeRefreshPokemonNewsForCategory(category) {
+      if (normalizeIntelCategoryName(category) !== "pokemon") return;
+      if (location.protocol === "file:" || pokemonNewsAutoRequested) return;
+      pokemonNewsAutoRequested = true;
+      refreshPokemonNews(false).catch((error) => {
+        const metaEl = document.getElementById("pokemon-news-meta");
+        if (metaEl) metaEl.textContent = `${uiLabel("source")}: MiniMax NewsAgent · ${String(error?.message || error)}`;
+      });
+    }
+
     function saveAnalyzeJobId(jobId) {
       try {
         if (!jobId) localStorage.removeItem(INTEL_ANALYZE_JOB_KEY);
@@ -2140,18 +2559,15 @@
     }
 
     async function submitIntelFeedback(id, defaultLabel = "insight") {
-      const result = await openIntelFeedbackModal({ mode: "feedback", defaultLabel });
+      const card = intelCardLookup.get(String(id || "").trim()) || {};
+      const result = await openIntelFeedbackModal({ mode: "feedback", defaultLabel, card });
       if (!result) return false;
       const cardType = String(result.cardType || "").trim().toLowerCase();
-      const section = String(result.section || "").trim().toLowerCase();
+      const topicLabels = normalizeTopicLabels(result.topicLabels || []);
       const reason = String(result.reason || "").trim();
-      if (!reason) {
-        setIntelMessage("請填寫原因，這樣 AI 才能學到為什麼要改。", "error");
-        return false;
-      }
       const labels = [];
       if (cardType) labels.push(cardType);
-      if (section) labels.push(section);
+      topicLabels.forEach((label) => labels.push(label));
       if (!labels.length) {
         setIntelMessage("請至少選擇一個分類（卡片類型或分區）。", "error");
         return false;
@@ -2163,9 +2579,11 @@
           return false;
         }
       }
-      for (const label of uniqueLabels) {
-        await postIntel("/api/intel/feedback", { id, label, reason });
+      if (!topicLabels.length) {
+        setIntelMessage("分區至少要保留一個；若不屬於任何分區請選「無」。", "error");
+        return false;
       }
+      await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
       await refreshIntelFeedForCurrentLang();
       return true;
     }
@@ -2217,13 +2635,9 @@
         const result = await openIntelFeedbackModal({ mode: "exclude", defaultLabel: "exclude" });
         if (!result) return false;
         const reason = String(result.reason || "").trim();
-        if (!reason) {
-          setIntelMessage("請填寫排除原因，這樣 AI 才能學到哪些內容不該出現。", "error");
-          return false;
-        }
-        setIntelMessage("已加入排除，正在寫入 AI 回饋記憶並重新整理...", "");
+        setIntelMessage(reason ? "已加入排除，正在寫入 AI 回饋記憶並重新整理..." : "已加入排除，正在重新整理...", "");
         await submitIntelPick(id, action, reason);
-        setIntelMessage("已排除這篇貼文，原因已寫入 AI 回饋記憶。", "ok");
+        setIntelMessage(reason ? "已排除這篇貼文，原因已寫入 AI 回饋記憶。" : "已排除這篇貼文。", "ok");
         return true;
       }
       if (action === "pin" || action === "unpin" || action === "bottom" || action === "unbottom") {
@@ -2234,7 +2648,7 @@
           unbottom: "取消置底",
         };
         const confirmTextMap = {
-          pin: "確定要頂選這篇嗎？頂選後可跨越兩週時間窗，並會優先出現在「社群精選」。",
+          pin: "確定要頂選這篇嗎？頂選後可跨越兩週時間窗，但不會改變原本分類。",
           unpin: "確定要取消頂選嗎？取消後會回到一般兩週視窗規則。",
           bottom: "確定要把這篇置底嗎？置底後會排序到該分類最下面。",
           unbottom: "確定要取消置底嗎？取消後會回到一般排序。",
@@ -2252,9 +2666,9 @@
         return true;
       }
       if (action === "feedback") {
-        setIntelMessage("正在提交分類回饋...", "");
+        setIntelMessage("正在套用分類回饋...", "");
         const ok = await submitIntelFeedback(id, hintLabel);
-        if (ok) setIntelMessage("已記錄分類回饋，並重新同步。", "ok");
+        if (ok) setIntelMessage("已套用分類回饋，並重新同步。", "ok");
         return ok;
       }
       if (action === "timeline-save") {
@@ -2428,16 +2842,9 @@
     async function renderIntelOnLoad() {
       try {
         await refreshIntelFeedForCurrentLang();
-        prefetchIntelFeeds();
+        scheduleIntelFeedPrefetchOnActivity();
       } catch (error) {
-        setIntelMessage(`Intel feed failed: ${error.message}`, "error");
+        await attemptIntelAutoRepair(error);
       }
-      if (location.protocol !== "file:") {
-        try {
-          await refreshPokemonNews(false);
-        } catch (error) {
-          const metaEl = document.getElementById("pokemon-news-meta");
-          if (metaEl) metaEl.textContent = `${uiLabel("source")}: MiniMax NewsAgent · ${error.message}`;
-        }
-      }
+      maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
     }

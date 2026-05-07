@@ -21,6 +21,9 @@
       const adminSyncNowBtn = document.getElementById("intel-admin-sync-now");
       const adminBackupRunBtn = document.getElementById("intel-admin-backup-run");
       const adminRestoreRunBtn = document.getElementById("intel-admin-restore-run");
+      const xSourceForm = document.getElementById("intel-admin-x-source-form");
+      const xSourceInput = document.getElementById("intel-admin-x-source-input");
+      const xSourceList = document.getElementById("intel-admin-x-source-list");
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
       const masterStage = document.getElementById("intel-master-stage");
@@ -48,6 +51,31 @@
           timeline_date: String(startEl?.value || "").trim(),
           timeline_end_date: String(endEl?.value || "").trim(),
         };
+      };
+
+      const readFeedbackTopicLabels = () => {
+        const checked = Array.from(document.querySelectorAll("[data-intel-feedback-section-option]:checked"))
+          .map((node) => String(node?.value || "").trim().toLowerCase())
+          .filter(Boolean);
+        const labels = Array.from(new Set(checked));
+        if (labels.includes("other")) return ["other"];
+        return labels;
+      };
+
+      const syncFeedbackOtherChoice = (changedNode) => {
+        const nodes = Array.from(document.querySelectorAll("[data-intel-feedback-section-option]"));
+        const changedValue = String(changedNode?.value || "").trim().toLowerCase();
+        if (changedValue === "other" && changedNode.checked) {
+          nodes.forEach((node) => {
+            if (String(node.value || "").trim().toLowerCase() !== "other") node.checked = false;
+          });
+          return;
+        }
+        if (changedValue && changedValue !== "other" && changedNode?.checked) {
+          nodes.forEach((node) => {
+            if (String(node.value || "").trim().toLowerCase() === "other") node.checked = false;
+          });
+        }
       };
 
       loginButtons.forEach((loginBtn) => {
@@ -195,22 +223,43 @@
         feedbackForm.dataset.boundFeedbackForm = "1";
         feedbackForm.addEventListener("submit", (event) => {
           event.preventDefault();
-          const labelEl = document.getElementById("intel-feedback-label");
+          const mode = String(feedbackModal?.dataset.mode || "feedback");
+          const cardTypeEl = document.getElementById("intel-feedback-card-type");
           const reasonEl = document.getElementById("intel-feedback-reason");
-          const label = String(labelEl?.value || "").trim().toLowerCase();
+          const cardType = String(cardTypeEl?.value || "").trim().toLowerCase();
+          const topicLabels = readFeedbackTopicLabels();
           const reason = String(reasonEl?.value || "").trim();
-          if (!label || !intelFeedbackLabels.has(label)) {
-            setIntelMessage("請選擇有效分類。", "error");
+          if (mode === "exclude") {
+            closeIntelFeedbackModal({ mode: "exclude", reason });
             return;
           }
-          if (!reason) {
-            setIntelMessage("請填寫原因，否則 AI 無法學習這次修正。", "error");
-            if (reasonEl) reasonEl.focus();
+          const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
+          const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"]);
+          if (!cardType && !topicLabels.length) {
+            setIntelMessage("請至少選擇卡片類型，並保留至少一個分區；若無法分類請選「無」。", "error");
             return;
           }
-          closeIntelFeedbackModal({ label, reason });
+          if (cardType && !cardTypeLabels.has(cardType)) {
+            setIntelMessage("卡片類型無效，請重新選擇。", "error");
+            return;
+          }
+          if (!topicLabels.length) {
+            setIntelMessage("分區至少要保留一個；若不屬於任何分區請選「無」。", "error");
+            return;
+          }
+          if (topicLabels.some((label) => !sectionLabels.has(label))) {
+            setIntelMessage("分區無效，請重新選擇。", "error");
+            return;
+          }
+          closeIntelFeedbackModal({ mode: "feedback", cardType, topicLabels, reason });
         });
       }
+
+      document.querySelectorAll("[data-intel-feedback-section-option]").forEach((node) => {
+        if (node.dataset.boundFeedbackSection) return;
+        node.dataset.boundFeedbackSection = "1";
+        node.addEventListener("change", () => syncFeedbackOtherChoice(node));
+      });
 
       if (authForm && !authForm.dataset.boundAuth) {
         authForm.dataset.boundAuth = "1";
@@ -308,6 +357,61 @@
         });
       }
 
+      if (xSourceForm && !xSourceForm.dataset.boundXSourceForm) {
+        xSourceForm.dataset.boundXSourceForm = "1";
+        xSourceForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!intelCanEdit()) {
+            openIntelAuthModal();
+            setIntelMessage("請先登入管理員帳號後再新增追蹤用戶。", "error");
+            return;
+          }
+          const account = String(xSourceInput?.value || "").trim();
+          if (!account) {
+            setIntelMessage("請輸入要追蹤的 X username 或個人頁 URL。", "error");
+            return;
+          }
+          const submitBtn = xSourceForm.querySelector('button[type="submit"]');
+          if (submitBtn) submitBtn.disabled = true;
+          try {
+            await updateIntelXSource("add", account);
+            if (xSourceInput) xSourceInput.value = "";
+            setIntelMessage(`已新增追蹤來源：${account}`, "ok");
+            await refreshIntelAdminStatus();
+          } catch (error) {
+            setIntelMessage(`新增追蹤來源失敗：${error.message}`, "error");
+          } finally {
+            if (submitBtn) submitBtn.disabled = false;
+          }
+        });
+      }
+
+      if (xSourceList && !xSourceList.dataset.boundXSourceRemove) {
+        xSourceList.dataset.boundXSourceRemove = "1";
+        xSourceList.addEventListener("click", async (event) => {
+          const btn = event.target.closest("[data-intel-source-remove]");
+          if (!btn) return;
+          if (!intelCanEdit()) {
+            openIntelAuthModal();
+            setIntelMessage("請先登入管理員帳號後再取消追蹤。", "error");
+            return;
+          }
+          const account = String(btn.dataset.intelSourceRemove || "").trim();
+          if (!account) return;
+          if (!window.confirm(`確定要取消追蹤 @${account} 嗎？這只影響下一次 sync 的抓取來源，不會刪除既有卡片。`)) return;
+          btn.disabled = true;
+          try {
+            await updateIntelXSource("remove", account);
+            setIntelMessage(`已取消追蹤：@${account}`, "ok");
+            await refreshIntelAdminStatus();
+          } catch (error) {
+            setIntelMessage(`取消追蹤失敗：${error.message}`, "error");
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      }
+
       fetchIntelAuthState().then(() => {
         if (intelFeedCache) renderIntelFeed(intelFeedCache);
         else updateIntelAuthUi();
@@ -325,7 +429,7 @@
           return;
         }
         analyzeBtn.disabled = true;
-        setIntelMessage("已送出背景分析工作，完成後會自動加入網站卡片（可直接刷新頁面）。", "");
+        setIntelMessage("已送出背景分析工作，會先進入貼文分析流程（可直接刷新頁面）。", "");
         try {
           const data = await postIntel("/api/intel/analyze-url", { url });
           const jobId = String(data?.job?.id || "").trim();
@@ -622,9 +726,10 @@
       sbt: "SBT",
       pokemon: "寶可夢相關資訊",
       collectibles: "收藏趨勢",
-      alpha: "未來 Alpha",
-      tools: "工具",
-      other: "社群精選",
+      alpha: "未來規劃",
+      guides: "攻略",
+      community: "社群精選",
+      other: "無",
     };
 
     function normalizeLangTag(raw) {
@@ -658,7 +763,8 @@
         pokemon: "category.pokemon",
         collectibles: "category.collectibles",
         alpha: "category.alpha",
-        tools: "category.tools",
+        guides: "category.guides",
+        community: "category.community",
         other: "category.other",
       };
       const prefix = getStaticI18nByKey("category.hintPrefix", "目前顯示：");
@@ -677,8 +783,9 @@
       pokemon: "pipeline",
       collectibles: "collectibles",
       alpha: "timeline",
-      tools: "ops",
-      other: "world",
+      guides: "ops",
+      community: "world",
+      other: "community",
     };
 
     const legacySectionToCategory = {
@@ -689,8 +796,9 @@
       pipeline: "pokemon",
       collectibles: "collectibles",
       timeline: "alpha",
-      ops: "tools",
-      world: "other",
+      ops: "guides",
+      tools: "guides",
+      world: "community",
       community: "other",
     };
 
@@ -698,13 +806,46 @@
     const categorySections = Array.from(document.querySelectorAll("[data-category-section]"));
     const categoryHint = document.getElementById("category-switcher-hint");
     const navCategoryLinks = Array.from(document.querySelectorAll("a[data-nav-category]"));
+    const adminOnlyCategories = new Set(["other"]);
     let activeCategory = "events";
+
+    function isAdminOnlyCategory(category) {
+      return adminOnlyCategories.has(String(category || "").trim().toLowerCase());
+    }
+
+    function canShowAdminOnlyCategories() {
+      return document.body.classList.contains("intel-admin-mode");
+    }
+
+    function syncProtectedCategoryVisibility() {
+      const canShow = canShowAdminOnlyCategories();
+      categoryTabs.forEach((tab) => {
+        if (!isAdminOnlyCategory(tab.dataset.categoryTab)) return;
+        tab.hidden = !canShow;
+        tab.setAttribute("aria-hidden", canShow ? "false" : "true");
+      });
+      categorySections.forEach((section) => {
+        const keys = String(section.dataset.categorySection || "")
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (!keys.some(isAdminOnlyCategory)) return;
+        section.hidden = !canShow;
+        section.setAttribute("aria-hidden", canShow ? "false" : "true");
+      });
+      if (!canShow && isAdminOnlyCategory(activeCategory)) {
+        setActiveCategory("events", { updateHash: true, smooth: false });
+      }
+    }
+
+    window.syncProtectedIntelCategoryVisibility = syncProtectedCategoryVisibility;
 
     function resolveCategoryFromHash(hashValue) {
       const raw = String(hashValue || "").replace(/^#/, "").trim();
       if (!raw) return null;
       if (/^cat-/i.test(raw)) {
-        const fromCat = raw.replace(/^cat-/i, "").toLowerCase();
+        const fromCatRaw = raw.replace(/^cat-/i, "").toLowerCase();
+        const fromCat = fromCatRaw === "tools" ? "guides" : (fromCatRaw === "none" ? "other" : fromCatRaw);
         return categoryTargets[fromCat] ? fromCat : null;
       }
       return legacySectionToCategory[raw] || null;
@@ -718,6 +859,7 @@
       };
       const nextCategory = categoryTargets[category] ? category : "events";
       activeCategory = nextCategory;
+      window.__intelActiveCategory = nextCategory;
       categoryTabs.forEach((tab) => {
         const isActive = tab.dataset.categoryTab === nextCategory;
         tab.classList.toggle("is-active", isActive);
@@ -735,6 +877,7 @@
         link.classList.toggle("is-active", link.dataset.navCategory === nextCategory);
       });
       if (categoryHint) {
+        categoryHint.removeAttribute("data-i18n-key");
         categoryHint.textContent = renderCategoryHint(nextCategory);
       }
       if (opts.updateHash) {
@@ -752,7 +895,34 @@
           updateScrollUi();
         }
       });
-      applyUiLanguage().catch(() => {});
+      if (typeof renderIntelCategoryFromCurrentFeed === "function") {
+        renderIntelCategoryFromCurrentFeed(nextCategory);
+      }
+      if (typeof scheduleIntelDeferredCategoryRender === "function") {
+        scheduleIntelDeferredCategoryRender(5200);
+      }
+      if (typeof maybeRefreshPokemonNewsForCategory === "function") {
+        maybeRefreshPokemonNewsForCategory(nextCategory);
+      }
+      const updateHintAfterLanguage = () => {
+        if (typeof scheduleUiLanguageApply === "function") {
+          scheduleUiLanguageApply(120);
+          window.setTimeout(() => {
+            if (categoryHint && activeCategory === nextCategory) {
+              categoryHint.textContent = renderCategoryHint(nextCategory);
+            }
+          }, 180);
+          return;
+        }
+        applyUiLanguage()
+          .then(() => {
+            if (categoryHint && activeCategory === nextCategory) {
+              categoryHint.textContent = renderCategoryHint(nextCategory);
+            }
+          })
+          .catch(() => {});
+      };
+      updateHintAfterLanguage();
     }
 
     function setupCategorySwitcher() {
@@ -775,6 +945,7 @@
         const fromHash = resolveCategoryFromHash(window.location.hash);
         if (fromHash && fromHash !== activeCategory) {
           setActiveCategory(fromHash, { updateHash: true, smooth: false });
+          syncProtectedCategoryVisibility();
         }
       });
       const initialFromHash = resolveCategoryFromHash(window.location.hash);
@@ -800,6 +971,10 @@
 
     renderSbtGroups();
     setupLanguageSwitcher();
+    setupCategorySwitcher();
+    if (typeof setupIntelLoadRepairButton === "function") {
+      setupIntelLoadRepairButton();
+    }
     applyUiLanguage().catch(() => {});
     renderIntelOnLoad();
     setupIntelActions();
@@ -825,13 +1000,15 @@
       scrollTicking = true;
       requestAnimationFrame(() => {
         updateScrollUi();
+        if (typeof scheduleIntelFeedPrefetchOnActivity === "function") {
+          scheduleIntelFeedPrefetchOnActivity();
+        }
         scrollTicking = false;
       });
     }
 
     window.addEventListener("scroll", onScrollUi, { passive: true });
     window.addEventListener("resize", onScrollUi);
-    setupCategorySwitcher();
     updateScrollUi();
 
     const observer = new IntersectionObserver(

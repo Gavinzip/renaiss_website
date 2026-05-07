@@ -6,12 +6,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import multiprocessing as mp
 import os
 import re
-import sys
 import time
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
@@ -24,13 +21,11 @@ FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 TRANSLATION_CACHE_PATH = DATA_ROOT / "i18n_text_cache.json"
 I18N_TRANSLATE_TRACE_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
-I18N_RUNTIME_LOG_PATH = DATA_ROOT / "i18n_runtime_log.jsonl"
 
 TRANSLATION_LOCK = Lock()
 I18N_LOCK = Lock()
 I18N_STATE_LOCK = Lock()
 I18N_TRACE_LOCK = Lock()
-I18N_RUNTIME_LOG_LOCK = Lock()
 TRANSLATION_CACHE: dict[str, str] = {}
 TRANSLATION_CACHE_DIRTY = False
 I18N_BUILD_STATE: dict[str, object] = {
@@ -79,15 +74,12 @@ I18N_FEED_LIST_KEYS = {
     "takeaways",
     "bullets",
     "detail_lines",
-    "tags",
-    "key_terms",
-    "sbt_names",
 }
 I18N_MAX_TARGET_TEXTS = int(os.getenv("I18N_MAX_TARGET_TEXTS", "0") or "0")
 I18N_MAX_LIST_ITEMS_PER_FIELD = int(os.getenv("I18N_MAX_LIST_ITEMS_PER_FIELD", "0") or "0")
+I18N_MIN_ACCEPTABLE_COVERAGE = float(os.getenv("I18N_MIN_ACCEPTABLE_COVERAGE", "0.98") or "0.98")
 I18N_FEED_CHUNK_SIZE = max(3, int(os.getenv("I18N_FEED_CHUNK_SIZE", "12") or "12"))
 I18N_FEED_FALLBACK_MODE = str(os.getenv("I18N_FEED_FALLBACK_MODE", "base") or "base").strip().lower()
-I18N_MINIMAX_HARD_TIMEOUT_SEC = float(os.getenv("I18N_MINIMAX_HARD_TIMEOUT_SEC", "300") or "300")
 I18N_SKIP_KEYS = {
     "id",
     "url",
@@ -109,8 +101,6 @@ I18N_CARD_TEXT_KEYS = (
     "glance",
     "detail_summary",
     "headline",
-    "sbt_name",
-    "sbt_acquisition",
 )
 I18N_CARD_FACT_TEXT_KEYS = (
     "schedule",
@@ -140,13 +130,12 @@ ENTRY_PATH_SEGMENT_RE = re.compile(r"^([^\[\]]+)(?:\[([^\]]+)\])?$")
 
 def configure_i18n_runtime(data_root: Path, feed_path: Path | None = None) -> None:
     """Point runtime caches at the mounted/active website data directory."""
-    global DATA_ROOT, FEED_PATH, I18N_FEED_PATH, TRANSLATION_CACHE_PATH, I18N_TRANSLATE_TRACE_PATH, I18N_RUNTIME_LOG_PATH
+    global DATA_ROOT, FEED_PATH, I18N_FEED_PATH, TRANSLATION_CACHE_PATH, I18N_TRANSLATE_TRACE_PATH
     DATA_ROOT = Path(data_root)
     FEED_PATH = Path(feed_path) if feed_path else DATA_ROOT / "x_intel_feed.json"
     I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
     TRANSLATION_CACHE_PATH = DATA_ROOT / "i18n_text_cache.json"
     I18N_TRANSLATE_TRACE_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
-    I18N_RUNTIME_LOG_PATH = DATA_ROOT / "i18n_runtime_log.jsonl"
 
 
 def _now_iso() -> str:
@@ -171,46 +160,6 @@ def _append_i18n_translate_trace(payload: dict[str, object]) -> None:
         return
 
 
-def _truncate_log_text(value: object, limit: int = 8000) -> str:
-    text = str(value or "")
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...(truncated)"
-
-
-def _append_i18n_runtime_log(
-    event: str,
-    payload: dict[str, object] | None = None,
-    *,
-    exc: BaseException | None = None,
-) -> None:
-    row: dict[str, object] = {
-        "ts": _now_iso(),
-        "event": str(event or "").strip() or "unknown",
-    }
-    if isinstance(payload, dict):
-        row.update(payload)
-    if exc is not None:
-        row["error_type"] = type(exc).__name__
-        row["error"] = _truncate_log_text(str(exc), limit=1200)
-        try:
-            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        except Exception:
-            tb = traceback.format_exc()
-        row["traceback"] = _truncate_log_text(tb, limit=12000)
-    try:
-        I18N_RUNTIME_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(row, ensure_ascii=False)
-    except Exception:
-        return
-    try:
-        with I18N_RUNTIME_LOG_LOCK:
-            with I18N_RUNTIME_LOG_PATH.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-    except Exception:
-        return
-
-
 def _normalize_lang_tag(lang: str | None) -> str:
     tag = str(lang or "zh-Hant").strip()
     normalized = tag.lower().replace("_", "-")
@@ -230,25 +179,6 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except Exception:
         return default
-
-
-def _i18n_progress_digest(progress: object) -> dict[str, dict[str, object]]:
-    out: dict[str, dict[str, object]] = {}
-    if not isinstance(progress, dict):
-        return out
-    for key, row in progress.items():
-        if not isinstance(row, dict):
-            continue
-        tag = _normalize_lang_tag(str(key))
-        out[tag] = {
-            "status": str(row.get("status") or ""),
-            "done": _safe_int(row.get("done"), 0),
-            "total": _safe_int(row.get("total"), 0),
-            "pending_count": _safe_int(row.get("pending_count"), 0),
-            "mode": str(row.get("mode") or ""),
-            "updated_at": str(row.get("updated_at") or ""),
-        }
-    return out
 
 
 def _read_feed_snapshot() -> dict:
@@ -770,7 +700,7 @@ def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str) -> 
         "4) 只輸出 JSON 字串陣列。\n\n"
         f"source={json.dumps(texts, ensure_ascii=False)}"
     )
-    raw = _minimax_chat_with_watchdog(prompt, api_key)
+    raw = minimax_chat(prompt, api_key)
     parsed = _parse_json_array(raw)
     if len(parsed) != len(texts):
         return list(texts)
@@ -1432,57 +1362,6 @@ def _entry_is_translated_for_lang(source: str, translated: str, lang: str) -> bo
     return bool(dst)
 
 
-def _minimax_chat_worker(queue: object, prompt: str, api_key: str) -> None:
-    q = queue
-    try:
-        content = minimax_chat(prompt, api_key)
-        q.put({"ok": True, "content": content})
-    except Exception as exc:
-        q.put({"ok": False, "error": str(exc)})
-
-
-def _minimax_chat_with_watchdog(prompt: str, api_key: str) -> str:
-    timeout_sec = float(I18N_MINIMAX_HARD_TIMEOUT_SEC or 0.0)
-    if timeout_sec <= 0:
-        timeout_sec = 300.0
-    start_methods = mp.get_all_start_methods()
-    if sys.platform == "darwin":
-        ctx_name = "spawn"
-    else:
-        ctx_name = "fork" if "fork" in start_methods else "spawn"
-    ctx = mp.get_context(ctx_name)
-    q = ctx.Queue(maxsize=1)
-    proc = ctx.Process(target=_minimax_chat_worker, args=(q, prompt, api_key), daemon=True)
-    proc.start()
-    proc.join(timeout=timeout_sec)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=2)
-        raise TimeoutError(f"MiniMax hard-timeout after {int(timeout_sec)}s")
-    try:
-        row = q.get_nowait()
-    except Exception:
-        raise RuntimeError(f"MiniMax worker exited without result (exitcode={proc.exitcode})")
-    if bool(row.get("ok")):
-        return str(row.get("content") or "")
-    raise RuntimeError(str(row.get("error") or "MiniMax worker failed"))
-
-
-def _is_timeout_like_error(exc: Exception | str) -> bool:
-    text = str(exc or "").lower()
-    if not text:
-        return False
-    markers = (
-        "timeout",
-        "timed out",
-        "hard-timeout",
-        "readtimeout",
-        "connecttimeout",
-        "deadline exceeded",
-    )
-    return any(marker in text for marker in markers)
-
-
 def _translate_chunk_agent(
     texts: list[str],
     lang: str,
@@ -1524,24 +1403,8 @@ def _translate_chunk_agent(
     }
     req_row.update(meta)
     _append_i18n_translate_trace(req_row)
-    _append_i18n_runtime_log(
-        "translate_chunk_request",
-        {
-            "lang": _normalize_lang_tag(lang),
-            "expected_len": len(texts),
-            "strict": bool(strict),
-            "attempt": int(meta.get("attempt", 1) or 1),
-            "stage": stage,
-            "chunk_index": meta.get("chunk_index"),
-            "chunk_total": meta.get("chunk_total"),
-            "chunk_size": meta.get("chunk_size"),
-            "card_id": meta.get("card_id"),
-            "chunk_card_ids": meta.get("chunk_card_ids"),
-            "chunk_entry_keys": meta.get("chunk_entry_keys"),
-        },
-    )
     try:
-        raw = _minimax_chat_with_watchdog(prompt, api_key)
+        raw = minimax_chat(prompt, api_key)
         parsed = _parse_json_array(raw)
         if len(parsed) != len(texts):
             raise ValueError(f"parsed_len_mismatch expected={len(texts)} actual={len(parsed)}")
@@ -1549,23 +1412,6 @@ def _translate_chunk_agent(
     except Exception as exc:
         status = "failed"
         error = str(exc)[:260]
-        _append_i18n_runtime_log(
-            "translate_chunk_exception",
-            {
-                "lang": _normalize_lang_tag(lang),
-                "expected_len": len(texts),
-                "strict": bool(strict),
-                "attempt": int(meta.get("attempt", 1) or 1),
-                "stage": stage,
-                "chunk_index": meta.get("chunk_index"),
-                "chunk_total": meta.get("chunk_total"),
-                "chunk_size": meta.get("chunk_size"),
-                "card_id": meta.get("card_id"),
-                "chunk_card_ids": meta.get("chunk_card_ids"),
-                "chunk_entry_keys": meta.get("chunk_entry_keys"),
-            },
-            exc=exc,
-        )
         raise
     finally:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -1585,28 +1431,6 @@ def _translate_chunk_agent(
             row["error"] = error
         row.update(meta)
         _append_i18n_translate_trace(row)
-        _append_i18n_runtime_log(
-            "translate_chunk_result",
-            {
-                "lang": _normalize_lang_tag(lang),
-                "expected_len": len(texts),
-                "strict": bool(strict),
-                "attempt": int(meta.get("attempt", 1) or 1),
-                "stage": stage,
-                "status": status,
-                "elapsed_ms": elapsed_ms,
-                "parsed_len": len(parsed),
-                "raw_len": len(raw),
-                "raw_prefix": str(raw or "")[:280],
-                "error": error,
-                "chunk_index": meta.get("chunk_index"),
-                "chunk_total": meta.get("chunk_total"),
-                "chunk_size": meta.get("chunk_size"),
-                "card_id": meta.get("card_id"),
-                "chunk_card_ids": meta.get("chunk_card_ids"),
-                "chunk_entry_keys": meta.get("chunk_entry_keys"),
-            },
-        )
 
 
 def _translate_feed_text_map(
@@ -1827,34 +1651,17 @@ def _translate_feed_text_map(
             )
         except Exception as chunk_error:
             chunk_errors.append(str(chunk_error)[:220])
-            timeout_like = _is_timeout_like_error(chunk_error)
             _append_i18n_translate_trace(
                 {
-                    "stage": "translate_chunk_skip_timeout" if timeout_like else "translate_chunk_retry_split",
+                    "stage": "translate_chunk_retry_split",
                     "lang": tag,
                     "chunk_index": chunk_index,
                     "chunk_total": chunk_total,
                     "chunk_size": len(chunk),
                     "error": str(chunk_error)[:220],
-                    "status": "skip" if timeout_like else "retry",
+                    "status": "retry",
                 }
             )
-            if timeout_like:
-                for source in chunk:
-                    single_keys = entry_keys_by_source.get(source, [])
-                    for entry_key in single_keys:
-                        state = entry_states.get(entry_key)
-                        if isinstance(state, dict):
-                            state["failed"] = True
-                done_count = sum(1 for state in entry_states.values() if bool(state.get("translated")))
-                _set_i18n_lang_progress(
-                    tag,
-                    total=len(normalized_entries),
-                    done=done_count,
-                    status="running",
-                    mode="live",
-                )
-                continue
             for source in chunk:
                 single_keys = entry_keys_by_source.get(source, [])
                 single_card_ids: list[str] = []
@@ -2349,9 +2156,9 @@ def _build_i18n_feed_bundle(
         cached = _load_i18n_feed_bundle()
         cache_version_ok = int(cached.get("version") or 0) == I18N_BUILD_VERSION if isinstance(cached, dict) else False
         cache_source_ok = bool(cache_version_ok and cached and str(cached.get("source_generated_at") or "").strip() == src_generated)
-        cached_langs = cached.get("langs") if cache_version_ok and isinstance(cached.get("langs"), dict) else {}
-        cached_qa = cached.get("qa") if cache_version_ok and isinstance(cached.get("qa"), dict) else {}
-        cached_card_progress = cached.get("card_progress") if cache_version_ok and isinstance(cached.get("card_progress"), dict) else {}
+        cached_langs = cached.get("langs") if cache_source_ok and isinstance(cached.get("langs"), dict) else {}
+        cached_qa = cached.get("qa") if cache_source_ok and isinstance(cached.get("qa"), dict) else {}
+        cached_card_progress = cached.get("card_progress") if cache_source_ok and isinstance(cached.get("card_progress"), dict) else {}
         cached_card_progress_langs = cached_card_progress.get("langs") if isinstance(cached_card_progress.get("langs"), dict) else {}
         if not isinstance(cached_langs, dict):
             cached_langs = {}
@@ -2359,35 +2166,8 @@ def _build_i18n_feed_bundle(
             cached_qa = {}
         if not isinstance(cached_card_progress_langs, dict):
             cached_card_progress_langs = {}
-        if not cache_source_ok and cached_langs:
-            seed_langs: dict[str, object] = {"zh-Hant": copy.deepcopy(feed)}
-            for key, localized in cached_langs.items():
-                tag = _normalize_lang_tag(str(key))
-                if tag == "zh-Hant" or not isinstance(localized, dict):
-                    continue
-                seed_langs[tag] = _align_lang_cards_to_base(base_feed=feed, localized_feed=localized, lang=tag)
-            aligned_langs, aligned_qa, aligned_cp_langs, _ = _recompute_bundle_alignment(
-                langs_map=seed_langs,
-                qa_map=dict(cached_qa),
-                card_progress_langs=dict(cached_card_progress_langs),
-            )
-            cached_langs = aligned_langs
-            cached_qa = aligned_qa
-            cached_card_progress_langs = aligned_cp_langs
         has_all_targets = all(isinstance(cached_langs.get(tag), dict) for tag in normalized_targets)
-        has_incomplete_targets = False
-        with I18N_STATE_LOCK:
-            progress_state = I18N_BUILD_STATE.get("lang_progress")
-            progress_map = progress_state if isinstance(progress_state, dict) else {}
-        for tag in normalized_targets:
-            if tag == "zh-Hant":
-                continue
-            row = progress_map.get(tag) if isinstance(progress_map.get(tag), dict) else {}
-            st = str(row.get("status") or "").strip().lower()
-            if st in {"queued", "pending", "running", "failed"}:
-                has_incomplete_targets = True
-                break
-        if not force and cache_source_ok and has_all_targets and not has_incomplete_targets:
+        if not force and cache_source_ok and has_all_targets:
             return cached
 
     entries = _collect_feed_i18n_entries(feed)
@@ -2519,14 +2299,6 @@ def _build_i18n_feed_bundle_async(
         target_tags.append(tag)
     if not target_tags:
         target_tags = list(I18N_TARGET_LANGS)
-    _append_i18n_runtime_log(
-        "i18n_async_enqueue",
-        {
-            "source_generated_at": src_generated,
-            "force": bool(force),
-            "target_langs": list(target_tags),
-        },
-    )
 
     with I18N_STATE_LOCK:
         status = str(I18N_BUILD_STATE.get("status") or "idle").strip().lower()
@@ -2557,15 +2329,6 @@ def _build_i18n_feed_bundle_async(
                     }
             I18N_BUILD_STATE["target_langs"] = merged_targets
             if worker_active:
-                _append_i18n_runtime_log(
-                    "i18n_async_merged_existing_worker",
-                    {
-                        "source_generated_at": src_generated,
-                        "target_langs": list(merged_targets),
-                        "status": status,
-                        "worker_active": True,
-                    },
-                )
                 return
             target_tags = list(merged_targets) if merged_targets else list(target_tags)
         I18N_BUILD_STATE.update(
@@ -2579,27 +2342,10 @@ def _build_i18n_feed_bundle_async(
                 "worker_active": True,
             }
         )
-        _append_i18n_runtime_log(
-            "i18n_worker_mark_running",
-            {
-                "source_generated_at": src_generated,
-                "target_langs": list(target_tags),
-                "force": bool(force),
-                "state_status": str(I18N_BUILD_STATE.get("status") or ""),
-            },
-        )
 
     def _worker() -> None:
         current_targets = list(target_tags)
         built_once = False
-        _append_i18n_runtime_log(
-            "i18n_worker_start",
-            {
-                "source_generated_at": src_generated,
-                "target_langs": list(current_targets),
-                "force": bool(force),
-            },
-        )
         try:
             # Briefly wait so near-simultaneous /retranslate calls can be merged
             # into the same build round and translated in parallel.
@@ -2607,13 +2353,6 @@ def _build_i18n_feed_bundle_async(
             while current_targets:
                 with I18N_STATE_LOCK:
                     if str(I18N_BUILD_STATE.get("source_generated_at") or "").strip() != src_generated:
-                        _append_i18n_runtime_log(
-                            "i18n_worker_source_changed_stop",
-                            {
-                                "source_generated_at": src_generated,
-                                "state_source_generated_at": str(I18N_BUILD_STATE.get("source_generated_at") or ""),
-                            },
-                        )
                         return
                     requested = [
                         str(x)
@@ -2645,16 +2384,6 @@ def _build_i18n_feed_bundle_async(
                                 "last_error": first_err,
                                 "source_generated_at": src_generated,
                             }
-                        )
-                        _append_i18n_runtime_log(
-                            "i18n_worker_failed_row",
-                            {
-                                "source_generated_at": src_generated,
-                                "first_failed_lang": first,
-                                "error": first_err,
-                                "requested": list(requested),
-                                "progress": _i18n_progress_digest(progress),
-                            },
                         )
                         return
 
@@ -2691,45 +2420,9 @@ def _build_i18n_feed_bundle_async(
                                 "langs": sorted(requested),
                             }
                         )
-                        _append_i18n_runtime_log(
-                            "i18n_worker_done",
-                            {
-                                "source_generated_at": src_generated,
-                                "requested": list(requested),
-                                "progress": _i18n_progress_digest(progress),
-                            },
-                        )
                         return
-                _append_i18n_runtime_log(
-                    "i18n_worker_round_plan",
-                    {
-                        "source_generated_at": src_generated,
-                        "current_targets": list(current_targets),
-                        "built_once": bool(built_once),
-                    },
-                )
 
-                try:
-                    _build_i18n_feed_bundle(feed, force=force, target_langs=current_targets)
-                except Exception as round_exc:
-                    _append_i18n_runtime_log(
-                        "i18n_worker_round_exception",
-                        {
-                            "source_generated_at": src_generated,
-                            "current_targets": list(current_targets),
-                            "built_once": bool(built_once),
-                        },
-                        exc=round_exc,
-                    )
-                    raise
-                _append_i18n_runtime_log(
-                    "i18n_worker_round_done",
-                    {
-                        "source_generated_at": src_generated,
-                        "current_targets": list(current_targets),
-                        "built_once": bool(built_once),
-                    },
-                )
+                _build_i18n_feed_bundle(feed, force=force, target_langs=current_targets)
                 built_once = True
         except Exception as exc:
             with I18N_STATE_LOCK:
@@ -2741,57 +2434,15 @@ def _build_i18n_feed_bundle_async(
                         "source_generated_at": src_generated,
                     }
                 )
-            _append_i18n_runtime_log(
-                "i18n_worker_exception",
-                {
-                    "source_generated_at": src_generated,
-                    "current_targets": list(current_targets),
-                    "built_once": bool(built_once),
-                },
-                exc=exc,
-            )
         finally:
             with I18N_STATE_LOCK:
                 I18N_BUILD_STATE["worker_active"] = False
-                final_status = str(I18N_BUILD_STATE.get("status") or "")
-                last_error = str(I18N_BUILD_STATE.get("last_error") or "")
-            _append_i18n_runtime_log(
-                "i18n_worker_exit",
-                {
-                    "source_generated_at": src_generated,
-                    "final_status": final_status,
-                    "last_error": last_error,
-                },
-            )
 
     Thread(target=_worker, daemon=True).start()
 
 
 def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str, object]:
     tag = _normalize_lang_tag(lang)
-    src_generated = str(feed.get("generated_at") or "").strip()
-    if tag != "zh-Hant" and src_generated:
-        with I18N_STATE_LOCK:
-            active_status = str(I18N_BUILD_STATE.get("status") or "").strip().lower()
-            active_source = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
-        if not (active_status == "running" and active_source == src_generated):
-            try:
-                targets = [x for x in ["en", "ko", "zh-Hans"] if x in I18N_TARGET_LANGS]
-                if tag in targets:
-                    targets = [tag] + [x for x in targets if x != tag]
-                _append_i18n_runtime_log(
-                    "i18n_auto_enqueue_from_feed_request",
-                    {
-                        "request_lang": tag,
-                        "source_generated_at": src_generated,
-                        "active_status": active_status,
-                        "active_source_generated_at": active_source,
-                        "target_langs": targets,
-                    },
-                )
-                _queue_i18n_retranslate(feed, target_langs=targets, force_full=False)
-            except Exception:
-                pass
     if tag == "zh-Hant":
         out = copy.deepcopy(feed)
         if isinstance(out, dict):
@@ -2820,9 +2471,11 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         return out
 
     bundle = _load_i18n_feed_bundle()
+    src_generated = str(feed.get("generated_at") or "").strip()
     bundle_generated = str(bundle.get("source_generated_at") or "").strip() if isinstance(bundle, dict) else ""
     bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION if isinstance(bundle, dict) else False
-    if not bundle or not bundle_version_ok:
+    if not bundle or bundle_generated != src_generated or not bundle_version_ok:
+        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _base_building_response("bundle_missing_or_outdated")
 
     langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
@@ -2831,11 +2484,11 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     card_progress_langs = card_progress_root.get("langs") if isinstance(card_progress_root.get("langs"), dict) else {}
     localized = langs.get(tag)
     qa_for_tag = qa_rows.get(tag) if isinstance(qa_rows.get(tag), dict) else {}
+    coverage = float(qa_for_tag.get("coverage") or 0.0) if isinstance(qa_for_tag, dict) else 0.0
+    acceptable = tag in {"zh-Hant", "zh-Hans"} or coverage >= I18N_MIN_ACCEPTABLE_COVERAGE
     if not isinstance(localized, dict):
+        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _base_building_response("lang_not_ready")
-
-    if bundle_generated != src_generated:
-        localized = _align_lang_cards_to_base(base_feed=feed, localized_feed=localized, lang=tag)
 
     out = copy.deepcopy(localized)
     if not isinstance(out, dict):
@@ -2850,11 +2503,6 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     card_progress_for_tag = card_progress_langs.get(tag) if isinstance(card_progress_langs.get(tag), dict) else {}
     card_progress_cards = card_progress_for_tag.get("cards") if isinstance(card_progress_for_tag.get("cards"), list) else []
     card_progress_summary = card_progress_for_tag.get("summary") if isinstance(card_progress_for_tag.get("summary"), dict) else {}
-    if bundle_generated != src_generated:
-        recomputed = _build_lang_card_progress(base_feed=feed, localized_feed=out, lang=tag, entry_states=None)
-        if isinstance(recomputed, dict):
-            card_progress_cards = recomputed.get("cards") if isinstance(recomputed.get("cards"), list) else []
-            card_progress_summary = recomputed.get("summary") if isinstance(recomputed.get("summary"), dict) else {}
     card_progress_map: dict[str, dict[str, object]] = {}
     for row in card_progress_cards:
         if not isinstance(row, dict):
@@ -2863,146 +2511,38 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         if key and key not in card_progress_map:
             card_progress_map[key] = row
 
-    def _compose_card_i18n_status(
-        card_key: str,
-        status_row: dict[str, object] | None,
-        default_ready_when_missing: bool,
-    ) -> tuple[dict[str, object], bool]:
-        row = status_row if isinstance(status_row, dict) else {}
-        translated_fields = _safe_int(row.get("translated_fields"), 0)
-        pending_fields = _safe_int(row.get("pending_fields"), 0)
-        failed_fields = _safe_int(row.get("failed_fields"), 0)
-        total_fields = _safe_int(row.get("total_fields"), 0)
-        status_raw = str(row.get("status") or "").strip().lower()
-        if not status_raw:
-            status_raw = "translated" if default_ready_when_missing else "pending"
-        ready_statuses = {"translated", "partial", "ready"}
-        is_ready_status = status_raw in ready_statuses
-        is_ready_fields = total_fields > 0 and pending_fields == 0 and failed_fields == 0
-        is_ready = bool(is_ready_status or is_ready_fields)
-        i18n_status = {
-            "lang": tag,
-            "id": card_key,
-            "status": status_raw,
-            "translated_fields": translated_fields,
-            "pending_fields": pending_fields,
-            "failed_fields": failed_fields,
-            "total_fields": total_fields,
-            "updated_at": str(row.get("updated_at") or ""),
-            "is_ready": is_ready,
-        }
-        return i18n_status, is_ready
-
-    base_cards_list = base_cards if isinstance(base_cards, list) else []
-    base_key_rows: list[tuple[str, dict[str, object]]] = []
-    base_key_set: set[str] = set()
-    for idx, raw in enumerate(base_cards_list):
-        if not isinstance(raw, dict):
-            continue
-        key = _card_lookup_key(raw, idx)
-        if not key or key in base_key_set:
-            continue
-        base_key_set.add(key)
-        base_key_rows.append((key, raw))
-    base_key_map: dict[str, dict[str, object]] = {key: raw for key, raw in base_key_rows}
-    fallback_mode = _resolve_card_fallback_mode(tag)
-
     annotated_cards: list[dict[str, object]] = []
-    visible_cards: list[dict[str, object]] = []
-    seen_base_keys: set[str] = set()
-    extra_keys: set[str] = set()
-    card_translated = 0
-    card_partial = 0
-    card_pending = 0
-    card_failed = 0
     for idx, raw in enumerate(safe_cards):
         if not isinstance(raw, dict):
             continue
-        card_key = _card_lookup_key(raw, idx)
-        if base_key_set and card_key not in base_key_set:
-            if card_key:
-                extra_keys.add(card_key)
-            continue
         row = copy.deepcopy(raw)
+        card_key = _card_lookup_key(raw, idx)
         status_row = card_progress_map.get(card_key) if card_key else {}
-        i18n_status, is_ready = _compose_card_i18n_status(card_key, status_row, default_ready_when_missing=True)
-        has_target_text = True if tag == "zh-Hant" else _card_has_target_text(row, tag)
-        using_base_fallback = False
-        visible_row = row
-        if has_target_text and tag != "zh-Hant":
-            is_ready = True
-            if str(i18n_status.get("status") or "").strip().lower() not in {"translated", "ready"}:
-                i18n_status["status"] = "partial"
-        else:
-            is_ready = False
-            if str(i18n_status.get("status") or "").strip().lower() in {"translated", "partial", "ready"}:
-                i18n_status["status"] = "pending"
-            if fallback_mode == "base" and card_key and isinstance(base_key_map.get(card_key), dict):
-                visible_row = copy.deepcopy(base_key_map[card_key])
-                using_base_fallback = True
-        i18n_status["is_ready"] = is_ready
-        i18n_status["using_base_fallback"] = using_base_fallback
-        if card_key:
-            seen_base_keys.add(card_key)
-        if i18n_status["status"] == "translated":
-            card_translated += 1
-        elif is_ready:
-            card_partial += 1
-        elif _safe_int(i18n_status["failed_fields"], 0) > 0 or i18n_status["status"] in {"failed", "error"}:
-            card_failed += 1
-        else:
-            card_pending += 1
+        i18n_status = {
+            "lang": tag,
+            "id": card_key,
+            "status": str((status_row or {}).get("status") or ("translated" if tag == "zh-Hant" else "pending")),
+            "translated_fields": _safe_int((status_row or {}).get("translated_fields"), 0),
+            "pending_fields": _safe_int((status_row or {}).get("pending_fields"), 0),
+            "failed_fields": _safe_int((status_row or {}).get("failed_fields"), 0),
+            "total_fields": _safe_int((status_row or {}).get("total_fields"), 0),
+            "updated_at": str((status_row or {}).get("updated_at") or ""),
+        }
         row["_i18n_status"] = i18n_status
         annotated_cards.append(row)
-        if using_base_fallback:
-            visible_row["_i18n_status"] = i18n_status
-            visible_cards.append(visible_row)
-        elif is_ready:
-            visible_cards.append(row)
 
-    missing_base_keys = [k for k, _ in base_key_rows if k not in seen_base_keys]
-    for missing_key in missing_base_keys:
-        base_row = next((raw for key, raw in base_key_rows if key == missing_key), None)
-        if not isinstance(base_row, dict):
-            continue
-        row = copy.deepcopy(base_row)
-        status_row = card_progress_map.get(missing_key)
-        i18n_status, is_ready = _compose_card_i18n_status(missing_key, status_row, default_ready_when_missing=False)
-        has_target_text = True if tag == "zh-Hant" else _card_has_target_text(row, tag)
-        using_base_fallback = False
-        if has_target_text and tag != "zh-Hant":
-            is_ready = True
-            if str(i18n_status.get("status") or "").strip().lower() not in {"translated", "ready"}:
-                i18n_status["status"] = "partial"
-        else:
-            is_ready = False
-            if str(i18n_status.get("status") or "").strip().lower() in {"translated", "partial", "ready"}:
-                i18n_status["status"] = "pending"
-            if fallback_mode == "base":
-                using_base_fallback = True
-        i18n_status["is_ready"] = is_ready
-        i18n_status["using_base_fallback"] = using_base_fallback
-        if i18n_status["status"] == "translated":
-            card_translated += 1
-        elif is_ready:
-            card_partial += 1
-        elif _safe_int(i18n_status["failed_fields"], 0) > 0 or i18n_status["status"] in {"failed", "error"}:
-            card_failed += 1
-        else:
-            card_pending += 1
-        row["_i18n_status"] = i18n_status
-        annotated_cards.append(row)
-        if using_base_fallback or is_ready:
-            visible_cards.append(row)
-
-    card_total = len(annotated_cards)
-    card_ready = card_translated + card_partial
-    card_hidden = max(0, card_total - len(visible_cards))
-    card_missing = len(missing_base_keys)
-    card_extra = len(extra_keys)
+    out["cards"] = annotated_cards
+    out["total_cards"] = len(annotated_cards)
+    card_total = _safe_int(card_progress_summary.get("total_cards"), len(annotated_cards))
+    card_translated = _safe_int(card_progress_summary.get("translated_cards"), len(annotated_cards))
+    card_partial = _safe_int(card_progress_summary.get("partial_cards"), 0)
+    card_ready = _safe_int(card_progress_summary.get("ready_cards"), card_translated + card_partial)
+    card_ready = min(card_total, max(0, card_ready))
+    card_pending = _safe_int(card_progress_summary.get("pending_cards"), 0)
+    card_failed = _safe_int(card_progress_summary.get("failed_cards"), 0)
+    card_missing = _safe_int(card_progress_summary.get("missing_cards"), 0)
+    card_extra = _safe_int(card_progress_summary.get("extra_cards"), 0)
     fallback_cards = max(0, card_total - card_translated)
-    out["cards"] = visible_cards
-    out["total_cards"] = card_total
     card_state = {
         "total": card_total,
         "ready": card_ready,
@@ -3013,18 +2553,16 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         "missing_cards": card_missing,
         "extra_cards": card_extra,
         "fallback": fallback_cards,
-        "hidden": card_hidden,
+        "hidden": 0,
     }
     qa_with_cards = dict(qa_for_tag or {})
     qa_with_cards["card_state"] = card_state
-    qa_with_cards["coverage"] = round((card_ready / card_total), 4) if card_total > 0 else 1.0
-    mode = "pretranslated"
-    if card_total > 0 and card_ready == 0:
-        mode = "building"
-    elif card_pending > 0 or card_failed > 0 or card_missing > 0 or card_extra > 0:
-        mode = "pretranslated-partial"
     out["_i18n"] = {
-        "mode": mode,
+        "mode": (
+            "pretranslated"
+            if acceptable and (card_pending + card_partial + card_failed + card_missing + card_extra) == 0
+            else "pretranslated-partial"
+        ),
         "source_generated_at": str(bundle.get("source_generated_at") or ""),
         "qa": qa_with_cards,
         "state": _i18n_state_snapshot(),
@@ -3115,6 +2653,7 @@ def _queue_i18n_retranslate(
     removed = 0
     if force_full:
         removed = _clear_translation_cache_for_langs(tags)
+        _drop_bundle_langs(tags)
         for tag in tags:
             _set_i18n_lang_progress(tag, total=0, done=0, status="pending", mode="manual-full")
     else:
@@ -3129,7 +2668,7 @@ def _queue_i18n_retranslate(
             done = min(total, max(0, _safe_int(row.get("done"), 0)))
             _set_i18n_lang_progress(tag, total=total, done=done, status="queued", mode="manual-incremental")
 
-    _build_i18n_feed_bundle_async(feed, force=bool(force_full), target_langs=tags)
+    _build_i18n_feed_bundle_async(feed, force=True, target_langs=tags)
     return {
         "langs": tags,
         "cache_removed": removed,

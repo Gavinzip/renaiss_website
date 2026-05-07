@@ -215,6 +215,10 @@
       display: none !important;
     }
 
+    [hidden].intel-user-hidden {
+      display: none !important;
+    }
+
     .lang-switcher {
       position: relative;
       display: inline-flex;
@@ -999,6 +1003,55 @@
       justify-content: space-between;
       gap: 0.5rem;
       margin-bottom: 0.2rem;
+    }
+
+    .sbt-item-badges {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 0.28rem;
+      flex: none;
+    }
+
+    .sbt-difficulty {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.24rem;
+      border: 1px solid rgba(238, 173, 88, 0.64);
+      border-radius: 999px;
+      background:
+        linear-gradient(135deg, rgba(255, 247, 221, 0.96), rgba(255, 231, 176, 0.66)),
+        radial-gradient(circle at 15% 15%, rgba(255, 255, 255, 0.95), transparent 38%);
+      color: #8a521a;
+      box-shadow: 0 5px 14px rgba(178, 114, 38, 0.13);
+      padding: 0.14rem 0.42rem;
+      font-size: 0.66rem;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .sbt-difficulty-label {
+      color: #8a521a;
+    }
+
+    .sbt-stars {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.02rem;
+      letter-spacing: -0.04em;
+      font-size: 0.74rem;
+    }
+
+    .sbt-stars .is-filled {
+      color: #f3a51d;
+      text-shadow: 0 1px 0 rgba(255, 255, 255, 0.92), 0 0 8px rgba(245, 173, 46, 0.28);
+    }
+
+    .sbt-stars .is-empty {
+      color: rgba(159, 111, 51, 0.3);
+      text-shadow: none;
     }
 
     .sbt-item-name {

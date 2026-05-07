@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import io
-import time
-
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 
@@ -13,41 +8,104 @@ globals().update(vars(_editorial))
 
 # Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
 
-
-def _is_dns_resolution_error(exc: Exception) -> bool:
-    msg = str(exc)
-    if not msg:
-        return False
-    markers = (
-        "NameResolutionError",
-        "Temporary failure in name resolution",
-        "nodename nor servname provided",
-        "Name or service not known",
-        "getaddrinfo failed",
-    )
-    return any(marker in msg for marker in markers)
+X_SOURCE_CONFIG_FILE = "x_intel_sources.json"
 
 
-def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    raw = str(os.getenv(name) or "").strip()
+def normalize_x_account(value: Any) -> str:
+    raw = str(value or "").strip()
     if not raw:
-        return max(minimum, min(maximum, int(default)))
-    try:
-        value = int(float(raw))
-    except Exception:
-        value = int(default)
-    return max(minimum, min(maximum, value))
+        return ""
+    if "://" in raw:
+        parsed = urlparse(raw)
+        parts = [x for x in str(parsed.path or "").split("/") if x]
+        raw = parts[0] if parts else ""
+    raw = raw.strip().lstrip("@").split("?")[0].split("#")[0].split("/")[0]
+    raw = re.sub(r"[^A-Za-z0-9_]", "", raw)
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", raw):
+        return ""
+    return raw
 
 
-def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
-    raw = str(os.getenv(name) or "").strip()
-    if not raw:
-        return max(minimum, min(maximum, float(default)))
-    try:
-        value = float(raw)
-    except Exception:
-        value = float(default)
-    return max(minimum, min(maximum, value))
+def normalize_x_accounts(values: Any) -> list[str]:
+    rows = values if isinstance(values, list) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in rows:
+        account = normalize_x_account(item)
+        key = account.lower()
+        if not account or key in seen:
+            continue
+        out.append(account)
+        seen.add(key)
+    return out
+
+
+def x_source_config_path() -> Path:
+    return data_dir() / X_SOURCE_CONFIG_FILE
+
+
+def read_x_source_config() -> dict[str, Any]:
+    path = x_source_config_path()
+    raw = read_json(path, {}) if path.exists() else {}
+    configured = isinstance(raw, dict) and isinstance(raw.get("x_accounts"), list)
+    accounts = normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS)
+    updated_at = str(raw.get("updated_at") or "") if isinstance(raw, dict) else ""
+    return {
+        "x_accounts": accounts,
+        "default_x_accounts": list(DEFAULT_ACCOUNTS),
+        "using_default": not configured,
+        "updated_at": updated_at,
+        "path": str(path),
+    }
+
+
+def write_x_source_config(accounts: list[str]) -> dict[str, Any]:
+    normalized = normalize_x_accounts(accounts)
+    payload = {
+        "x_accounts": normalized,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = x_source_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    result = read_x_source_config()
+    result["using_default"] = False
+    return result
+
+
+def resolve_tracked_x_accounts() -> list[str]:
+    return list(read_x_source_config().get("x_accounts") or [])
+
+
+def update_x_source_accounts(action: str, account: str = "", accounts: list[str] | None = None) -> dict[str, Any]:
+    op = str(action or "").strip().lower()
+    current = list(read_x_source_config().get("x_accounts") or [])
+    changed = False
+    normalized_account = normalize_x_account(account)
+
+    if op == "add":
+        if not normalized_account:
+            raise ValueError("invalid X username")
+        if normalized_account.lower() not in {x.lower() for x in current}:
+            current.append(normalized_account)
+            changed = True
+    elif op in {"remove", "delete", "cancel"}:
+        if not normalized_account:
+            raise ValueError("invalid X username")
+        next_rows = [x for x in current if x.lower() != normalized_account.lower()]
+        changed = len(next_rows) != len(current)
+        current = next_rows
+    elif op == "replace":
+        current = normalize_x_accounts(accounts or [])
+        changed = True
+    else:
+        raise ValueError("unsupported source config action")
+
+    config = write_x_source_config(current)
+    config["changed"] = changed
+    config["action"] = op
+    config["account"] = normalized_account
+    return config
 
 def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
     model_name = str(
@@ -76,7 +134,6 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     }
     connect_timeout = 15.0
     read_timeout = 120.0
-    dns_retry_limit = 3
     try:
         connect_timeout = float(os.getenv("MINIMAX_HTTP_CONNECT_TIMEOUT") or connect_timeout)
     except Exception:
@@ -85,37 +142,16 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
         read_timeout = float(os.getenv("MINIMAX_HTTP_READ_TIMEOUT") or read_timeout)
     except Exception:
         read_timeout = 120.0
-    try:
-        dns_retry_limit = int(os.getenv("MINIMAX_DNS_RETRY_LIMIT") or dns_retry_limit)
-    except Exception:
-        dns_retry_limit = 3
     if connect_timeout <= 0:
         connect_timeout = 15.0
     if read_timeout <= 0:
         read_timeout = 120.0
-    if dns_retry_limit < 0:
-        dns_retry_limit = 0
-    resp = None
-    for attempt in range(dns_retry_limit + 1):
-        try:
-            resp = requests.post(
-                MINIMAX_URL,
-                headers=headers,
-                json=payload,
-                timeout=(connect_timeout, read_timeout),
-            )
-            break
-        except requests.exceptions.RequestException as exc:
-            if (not _is_dns_resolution_error(exc)) or attempt >= dns_retry_limit:
-                raise
-            delay_sec = float(2**attempt)
-            print(
-                f"[minimax] dns resolution error; retry in {delay_sec:.1f}s "
-                f"({attempt + 1}/{dns_retry_limit})"
-            )
-            time.sleep(delay_sec)
-    if resp is None:
-        raise RuntimeError("MiniMax request failed before response was created")
+    resp = requests.post(
+        MINIMAX_URL,
+        headers=headers,
+        json=payload,
+        timeout=(connect_timeout, read_timeout),
+    )
     resp.raise_for_status()
     data = resp.json()
     choices = data.get("choices")
@@ -135,243 +171,19 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     raise RuntimeError(f"MiniMax response missing content; model={model_name}")
 
 
-def _resolve_minimax_image_url() -> str:
-    explicit = str(os.getenv("MINIMAX_IMAGE_URL") or "").strip()
-    if explicit:
-        return explicit
-    api_host = str(os.getenv("MINIMAX_API_HOST") or "https://api.minimax.io").strip().rstrip("/")
-    if not api_host:
-        api_host = "https://api.minimax.io"
-    return f"{api_host}/v1/image_generation"
-
-
-def _resolve_cover_reference_candidates() -> list[tuple[str, Path]]:
-    root = Path(__file__).resolve().parents[2]
-    logo_ref = str(os.getenv("INTEL_COVER_LOGO_REF") or "frontend_chain/assets/renaiss-logo-alpha-cropped.png").strip()
-    boss_ref = str(os.getenv("INTEL_COVER_BOSS_REF") or "boss.png").strip()
-    include_boss_raw = str(os.getenv("INTEL_COVER_INCLUDE_BOSS_REF") or "").strip().lower()
-    include_boss = include_boss_raw in {"1", "true", "yes", "on"}
-    candidates: list[tuple[str, str]] = [("logo", logo_ref)]
-    if include_boss:
-        candidates.append(("boss", boss_ref))
-    resolved: list[tuple[str, Path]] = []
-    for name, raw in candidates:
-        if not raw:
-            continue
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = root / path
-        if path.exists() and path.is_file():
-            resolved.append((name, path))
-    return resolved
-
-
-def _image_mime_type(path: Path) -> str:
-    ext = path.suffix.lower()
-    if ext in {".jpg", ".jpeg"}:
-        return "image/jpeg"
-    if ext == ".webp":
-        return "image/webp"
-    if ext == ".gif":
-        return "image/gif"
-    return "image/png"
-
-
-def _file_to_data_uri(path: Path) -> str:
-    raw = path.read_bytes()
-    mime = _image_mime_type(path)
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
-def _compose_reference_data_uri(candidates: list[tuple[str, Path]]) -> str:
-    if not candidates:
-        return ""
-    if len(candidates) == 1:
-        return _file_to_data_uri(candidates[0][1])
-    try:
-        from PIL import Image
-    except Exception:
-        return _file_to_data_uri(candidates[0][1])
-    prepared: list[Image.Image] = []
-    for _name, path in candidates[:2]:
-        with Image.open(path) as img:
-            prepared.append(img.convert("RGBA"))
-    target_h = max(320, min(640, max(img.height for img in prepared)))
-    resized: list[Image.Image] = []
-    for img in prepared:
-        ratio = float(target_h) / float(max(1, img.height))
-        target_w = max(120, int(round(img.width * ratio)))
-        resized.append(img.resize((target_w, target_h), Image.Resampling.LANCZOS))
-    gap = 24
-    total_w = sum(img.width for img in resized) + gap * (len(resized) - 1)
-    canvas = Image.new("RGBA", (total_w, target_h), (248, 250, 255, 255))
-    cursor_x = 0
-    for idx, img in enumerate(resized):
-        canvas.paste(img, (cursor_x, 0), img if img.mode == "RGBA" else None)
-        cursor_x += img.width
-        if idx < len(resized) - 1:
-            cursor_x += gap
-    buf = io.BytesIO()
-    canvas.save(buf, format="PNG", optimize=True)
-    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
-
-
-def _cover_subject_references() -> list[dict[str, str]]:
-    candidates = _resolve_cover_reference_candidates()
-    if not candidates:
-        return []
-    try:
-        composed_uri = _compose_reference_data_uri(candidates)
-    except Exception as exc:
-        print(f"[cover-image] compose references failed: {exc}")
-        composed_uri = _file_to_data_uri(candidates[0][1])
-    if not composed_uri:
-        return []
-    return [
-        {
-            "type": "character",
-            "image_file": composed_uri,
-        }
-    ]
-
-
-def _cover_prompt_text(card: StoryCard) -> str:
-    title = clean_text(str(card.title or "")).strip()[:120]
-    if not title:
-        title = "Renaiss community update"
-
-    prompt = (
-        f"Concept title: {title}. "
-        "Generate a premium abstract editorial cover image. "
-        "Use the reference only for color/style direction. "
-        "Strict rules: no humans, no faces, no body parts, no portraits. "
-        "Strict rules: no text, no letters, no numbers, no words, no logos, no watermark. "
-        "Strict rules: no UI panels, no labels, no signage, no caption blocks. "
-        "Use only symbolic objects, geometric composition, and cinematic lighting. "
-        "Single focal point, clean background, low clutter."
-    )
-    return prompt[:1800]
-
-
-def _image_extension_from_bytes(raw: bytes) -> str:
-    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if raw[:3] == b"\xff\xd8\xff":
-        return ".jpg"
-    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
-        return ".webp"
-    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
-        return ".gif"
-    return ".png"
-
-
-def _safe_cover_filename(card_id: str, ext: str) -> str:
-    safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(card_id or "").strip()).strip("_")
-    if not safe_id:
-        safe_id = hashlib.md5(str(card_id or "").encode("utf-8")).hexdigest()[:16]
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"{safe_id}_gen_{stamp}{ext}"
-
-
-def generate_minimax_cover_image(card: StoryCard, *, force: bool = False) -> dict[str, Any]:
-    card_id = str(card.id or "").strip()
-    if not card_id:
-        raise ValueError("card id is required")
-
-    existing = str(card.cover_image or "").strip()
-    if existing and not force:
-        return {
-            "ok": True,
-            "id": card_id,
-            "skipped": True,
-            "reason": "cover_exists",
-            "cover_image": existing,
-        }
-
-    api_key = str(resolve_minimax_key() or "").strip()
-    if not api_key:
-        raise RuntimeError("missing MiniMax key")
-
-    model = str(os.getenv("INTEL_COVER_IMAGE_MODEL") or os.getenv("MINIMAX_IMAGE_MODEL") or "image-01").strip() or "image-01"
-    aspect_ratio = str(os.getenv("INTEL_COVER_IMAGE_ASPECT_RATIO") or "16:9").strip() or "16:9"
-    connect_timeout = _env_float("INTEL_COVER_HTTP_CONNECT_TIMEOUT_SEC", default=20.0, minimum=5.0, maximum=120.0)
-    read_timeout = _env_float("INTEL_COVER_HTTP_READ_TIMEOUT_SEC", default=240.0, minimum=30.0, maximum=600.0)
-
-    prompt = _cover_prompt_text(card)
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "aspect_ratio": aspect_ratio,
-        "response_format": "base64",
-        "n": 1,
-    }
-    subject_refs = _cover_subject_references()
-    if subject_refs:
-        payload["subject_reference"] = subject_refs
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    image_url = _resolve_minimax_image_url()
-    resp = requests.post(image_url, headers=headers, json=payload, timeout=(connect_timeout, read_timeout))
-    resp.raise_for_status()
-    parsed = resp.json()
-    data = parsed if isinstance(parsed, dict) else {}
-    body = data.get("data") if isinstance(data.get("data"), dict) else {}
-    b64_list = body.get("image_base64") if isinstance(body.get("image_base64"), list) else []
-    if not b64_list:
-        raise RuntimeError(f"MiniMax image response missing image_base64; keys={sorted(list(data.keys()))}")
-    b64 = str(b64_list[0] or "").strip()
-    if not b64:
-        raise RuntimeError("MiniMax image response empty base64")
-    raw = base64.b64decode(b64)
-    if len(raw) < 128:
-        raise RuntimeError("MiniMax image decoded bytes too small")
-
-    ext = _image_extension_from_bytes(raw)
-    cache_dir = data_dir() / "generated_covers"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = _safe_cover_filename(card_id, ext)
-    target = cache_dir / filename
-    target.write_bytes(raw)
-    cover_path = _discord_cover_cache_relpath(filename)
-
-    return {
-        "ok": True,
-        "id": card_id,
-        "skipped": False,
-        "cover_image": cover_path,
-        "model": model,
-        "aspect_ratio": aspect_ratio,
-        "prompt": prompt,
-        "subject_reference_count": len(subject_refs),
-        "bytes": len(raw),
-        "path": str(target),
-    }
-
-
-def apply_minimax_story_refine(
-    cards: list[StoryCard],
-    api_key: str,
-    feedback_context: str = "",
-    progress_cb: Any = None,
-) -> None:
-    total_cards = len(cards)
-    for idx, card in enumerate(cards, start=1):
+def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_context: str = "") -> None:
+    for card in cards:
         prompt = (
             "你是TCG社群編輯。請先完整讀懂內容，再輸出『非抄寫』重整版本。"
             "輸出必須是 JSON，欄位固定為："
-            "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline/trend),"
+            "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline),"
             "confidence(0~1),tags(最多3),event_facts(可選，僅 event 使用: reward/participation/audience/location/schedule),"
-            "topic_labels(可多選: events/official/sbt/pokemon/alpha/tools/collectibles/other),"
-            "sbt_name(可選),sbt_names(可選陣列),sbt_acquisition(可選)。"
+            "topic_labels(可多選: events/official/sbt/pokemon/collectibles/alpha/guides/community/other)。"
             "限制："
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
             "3) bullets 每條都要是可行動或可追蹤的資訊；"
-            "4) card_type 只能是 event/feature/announcement/market/report/insight/trend；"
+            "4) card_type 只能是 event/feature/announcement/market/report/insight；"
             "5) 必須用語意判斷分類，不可只用關鍵字；"
             "6) 只有含明確活動訊號（時間/地點/報名/參與方式）才可標為 event；"
             "7) 產品進度、版本更新、開放計畫優先標為 feature 或 announcement，不算 event；"
@@ -388,12 +200,12 @@ def apply_minimax_story_refine(
             "18) 不可使用 Markdown code fence（```）；"
             "19) 長度限制：title<=40字、summary<=150字、每條bullet<=34字；"
             "20) 若使用者回饋記憶與原始推斷衝突，以使用者回饋記憶優先；"
-            "21) 收藏品新聞、拍賣、評級、IP 熱度、產業趨勢且非純價格數據時，優先用 trend；"
-            "22) 若 topic_labels 包含 sbt，只有在原文明確寫出 SBT 名稱時才填 sbt_name/sbt_names；"
-            "不要輸出『的 SBT』『2個 SBT』『此結果代表該波 SBT』這種片段或統計句；"
-            "23) 若原文明確寫出取得方式、資格、快照、領取或空投規則，才填 sbt_acquisition；"
-            "只是順帶提到 SBT 但沒有取得方式時留空，不要猜；"
-            "24) 整份 JSON 請控制在約 900 字元內。\n\n"
+            "21) pokemon 只放寶可夢/Pokemon/PoGo/PTCG 或明確寶可夢角色與卡牌市場，不能只因為出現 TCG、pack、卡包、PSA 就標 pokemon；"
+            "22) guides 只放教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊；一般心得、行情、公告、活動不能標 guides；"
+            "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
+            "24) official 只給 Renaiss 官方 X 或官方 Discord 公告來源；不要因為內文提到 @renaissxyz 就標 official；"
+            "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
+            "26) 整份 JSON 請控制在約 800 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
@@ -405,9 +217,8 @@ def apply_minimax_story_refine(
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,sbt_name,sbt_names,sbt_acquisition。"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
-                    "若不是明確 SBT 取得資訊，sbt_name/sbt_acquisition 留空；不可猜。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
@@ -428,9 +239,6 @@ def apply_minimax_story_refine(
             topic_labels = normalize_topic_labels(parsed.get("topic_labels"))
             detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
             detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
-            sbt_names = normalize_sbt_names(parsed.get("sbt_names") if parsed.get("sbt_names") is not None else parsed.get("sbt_name"))
-            sbt_acquisition = clean_text(str(parsed.get("sbt_acquisition") or ""))[:180]
-            sbt_acquisition = re.sub(r"^\s*SBT\s*取得方式\s*[:：]\s*", "", sbt_acquisition, flags=re.I).strip()
 
             if title:
                 card.title = title[:120]
@@ -438,9 +246,9 @@ def apply_minimax_story_refine(
                 card.summary = summary[:320]
             if bullets:
                 card.bullets = [clean_text(str(x))[:120] for x in bullets if str(x).strip()][:3] or card.bullets
-            if card_type in {"event", "market", "report", "announcement", "feature", "insight", "trend"}:
+            if card_type in {"event", "market", "report", "announcement", "feature", "insight"}:
                 card.card_type = card_type
-            if layout in {"poster", "brief", "data", "timeline", "trend"}:
+            if layout in {"poster", "brief", "data", "timeline"}:
                 card.layout = layout
             if tags:
                 card.tags = [clean_text(str(x))[:16] for x in tags if str(x).strip()][:3]
@@ -454,17 +262,6 @@ def apply_minimax_story_refine(
                 card.detail_summary = detail_summary
             if detail_lines:
                 card.detail_lines = detail_lines
-            if sbt_names:
-                card.sbt_names = sbt_names
-                card.sbt_name = sbt_names[0]
-                labels_for_sbt = normalize_topic_labels([*(card.topic_labels or []), "sbt"])
-                if labels_for_sbt:
-                    card.topic_labels = labels_for_sbt
-            if sbt_acquisition:
-                card.sbt_acquisition = sbt_acquisition[:180]
-                labels_for_sbt = normalize_topic_labels([*(card.topic_labels or []), "sbt"])
-                if labels_for_sbt:
-                    card.topic_labels = labels_for_sbt
             if (
                 similarity_ratio(card.summary, card.raw_text) > 0.92
                 or _summary_needs_rewrite(card.summary, card.raw_text)
@@ -481,13 +278,7 @@ def apply_minimax_story_refine(
             enrich_card_metadata(card)
             normalize_card_semantics(card, preserve_type=True)
         except Exception:
-            pass
-        finally:
-            if callable(progress_cb):
-                try:
-                    progress_cb(idx, total_cards, card)
-                except Exception:
-                    pass
+            continue
 
 
 def parse_json_block(text: str) -> dict[str, Any] | None:
@@ -560,26 +351,15 @@ def aggregate_digest(
 
 
 def fetch_status_with_twitter_cli(url: str) -> str | None:
-    enabled_raw = str(os.getenv("X_INTEL_ENABLE_TWITTER_CLI") or "").strip().lower()
-    enabled = enabled_raw in {"1", "true", "yes", "on"}
-    if not enabled:
-        return None
     if not shutil_which("twitter"):
         return None
-    timeout_sec = 8.0
-    try:
-        timeout_sec = float(os.getenv("X_INTEL_TWITTER_CLI_TIMEOUT") or timeout_sec)
-    except Exception:
-        timeout_sec = 8.0
-    if timeout_sec <= 0:
-        timeout_sec = 8.0
     try:
         proc = subprocess.run(
             ["twitter", "tweet", url, "--json"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_sec,
+            timeout=35,
             check=False,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
@@ -809,41 +589,24 @@ def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str
     url = f"https://x.com/{username}/status/{tweet_id}"
     meta = fetch_status_metadata(tweet_id)
 
+    twitter_cli_data = fetch_status_with_twitter_cli(url)
+    if twitter_cli_data:
+        return twitter_cli_data, "twitter-cli", meta
+
     if isinstance(meta, dict):
         owner = str(meta.get("account") or "").strip().lower().lstrip("@")
         wanted = str(username or "").strip().lower().lstrip("@")
         if owner == wanted and str(meta.get("text") or "").strip():
             return build_markdown_from_status_meta(meta, url), "tweet-result", meta
 
-    twitter_cli_data = fetch_status_with_twitter_cli(url)
-    if twitter_cli_data:
-        return twitter_cli_data, "twitter-cli", meta
-
-    status_timeout = _env_int(
-        "X_INTEL_STATUS_FETCH_TIMEOUT_SEC",
-        default=28,
-        minimum=8,
-        maximum=90,
-    )
     try:
-        return (
-            fetch_text(
-                f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}",
-                timeout=status_timeout,
-            ),
-            "r.jina.ai",
-            meta,
-        )
+        return fetch_text(f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}"), "r.jina.ai", meta
     except Exception:
         return None, "none", meta
 
 
 def resolve_discord_monitor_config() -> dict[str, Any]:
     token = str(os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN") or "").strip()
-    if token.lower().startswith("bot "):
-        token = token[4:].strip()
-    if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
-        token = token[1:-1].strip()
     raw_channels = str(
         os.getenv("DISCORD_MONITOR_CHANNEL_IDS")
         or os.getenv("DISCORD_MONITOR_CHANNEL_ID")
@@ -913,7 +676,7 @@ def _discord_first_image(item: dict[str, Any]) -> str:
         is_image = content_type.startswith("image/") or bool(att.get("width"))
         if not is_image:
             continue
-        url = str(att.get("url") or att.get("proxy_url") or "").strip()
+        url = str(att.get("proxy_url") or att.get("url") or "").strip()
         if url.startswith("http"):
             return url
     embeds = item.get("embeds") if isinstance(item.get("embeds"), list) else []
@@ -923,64 +686,10 @@ def _discord_first_image(item: dict[str, Any]) -> str:
         image = embed.get("image") if isinstance(embed.get("image"), dict) else {}
         thumbnail = embed.get("thumbnail") if isinstance(embed.get("thumbnail"), dict) else {}
         for source in (image, thumbnail):
-            url = str(source.get("url") or source.get("proxy_url") or "").strip()
+            url = str(source.get("proxy_url") or source.get("url") or "").strip()
             if url.startswith("http"):
                 return url
     return ""
-
-
-def _discord_cover_extension(url: str, content_type: str) -> str:
-    ext = Path(urlparse(str(url or "")).path).suffix.lower()
-    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        return ext
-    ctype = str(content_type or "").split(";", 1)[0].strip().lower()
-    mapping = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }
-    return mapping.get(ctype, ".jpg")
-
-
-def _discord_cover_cache_relpath(filename: str) -> str:
-    return f"/data/generated_covers/{filename}"
-
-
-def _cache_discord_cover_image(card_id: str, cover_image: str) -> str:
-    raw = str(cover_image or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("/data/generated_covers/"):
-        return raw
-    if raw.startswith("data/generated_covers/"):
-        return f"/{raw}"
-    if not raw.startswith("http"):
-        return raw
-
-    cache_dir = data_dir() / "generated_covers"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(card_id or "").strip()).strip("_")[:180] or hashlib.md5(raw.encode("utf-8")).hexdigest()
-
-    timeout_sec = _env_float("DISCORD_COVER_FETCH_TIMEOUT_SEC", default=25.0, minimum=5.0, maximum=120.0)
-    try:
-        resp = requests.get(raw, timeout=(8.0, timeout_sec), allow_redirects=True)
-        if int(resp.status_code) != 200:
-            return raw
-        ctype = str(resp.headers.get("content-type") or "").lower()
-        if ctype and not ctype.startswith("image/"):
-            return raw
-        body = resp.content or b""
-        if len(body) < 64:
-            return raw
-        ext = _discord_cover_extension(raw, ctype)
-        filename = f"{safe_id}{ext}"
-        target = cache_dir / filename
-        target.write_bytes(body)
-        return _discord_cover_cache_relpath(filename)
-    except Exception:
-        return raw
 
 
 def _discord_message_url(item: dict[str, Any], channel_id: str, message_id: str) -> str:
@@ -1007,51 +716,6 @@ def fetch_discord_channel_messages(channel_id: str, token: str, limit: int = DEF
     return [x for x in data if isinstance(x, dict)]
 
 
-def is_collectibles_discord_channel(channel_id: str) -> bool:
-    import os
-
-    cid = str(channel_id or "").strip()
-    if not cid:
-        return False
-    raw = (
-        os.getenv("DISCORD_COLLECTIBLES_CHANNEL_IDS")
-        or os.getenv("DISCORD_COLLECTIBLES_CHANNEL_ID")
-        or ""
-    )
-    if not raw:
-        return False
-    allow = {
-        part.strip()
-        for token in raw.split(",")
-        for part in token.split()
-        if part.strip()
-    }
-    return cid in allow
-
-
-def apply_discord_channel_context(
-    channel_id: str,
-    card_type: str,
-    layout: str,
-    tags: list[str],
-) -> tuple[str, str, list[str], list[str]]:
-    topic_labels: list[str] = []
-    next_type = str(card_type or "insight").strip().lower() or "insight"
-    next_layout = str(layout or "brief").strip().lower() or "brief"
-    next_tags = [clean_text(str(x)) for x in (tags or []) if clean_text(str(x))]
-
-    if is_collectibles_discord_channel(channel_id):
-        topic_labels.append("collectibles")
-        if next_type not in {"event", "market"}:
-            next_type = "trend"
-            next_layout = "trend"
-        for label in ("收藏", "趨勢"):
-            if label not in next_tags:
-                next_tags.insert(0, label)
-
-    return next_type, next_layout, next_tags[:3], normalize_topic_labels(topic_labels)
-
-
 def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) -> StoryCard | None:
     mid = str(item.get("id") or "").strip()
     if not mid:
@@ -1074,7 +738,6 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         reply_to_id = str(referenced.get("id") or "").strip()
 
     card_type, layout, tags = classify_story(text)
-    card_type, layout, tags, topic_labels = apply_discord_channel_context(channel_id, card_type, layout, tags)
     shaped = build_editorial_copy(text, card_type, account)
     card = StoryCard(
         id=f"discord-{channel_id}-{mid}",
@@ -1092,7 +755,6 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         provider="discord-rest",
         cover_image=_discord_first_image(item),
         metrics={},
-        topic_labels=topic_labels,
         reply_to_id=reply_to_id,
     )
     card.importance = score_card(card)
@@ -1125,20 +787,9 @@ def collect_discord_cards(
             created_dt = parse_datetime_guess(created_raw)
             if created_dt and created_dt < since_dt:
                 continue
-            try:
-                card = build_storycard_from_discord_message(item, channel_id=cid)
-            except Exception as exc:
-                message_id = str(item.get("id") or "").strip()
-                err = clean_text(str(exc))[:120] or "build_card_failed"
-                if message_id:
-                    errors.append(f"{cid}:{message_id}: {err}")
-                else:
-                    errors.append(f"{cid}: {err}")
-                continue
+            card = build_storycard_from_discord_message(item, channel_id=cid)
             if not card:
                 continue
-            if card.cover_image:
-                card.cover_image = _cache_discord_cover_image(card.id, card.cover_image)
             cards.append(card)
             produced += 1
         stats[cid] = produced
@@ -1152,17 +803,6 @@ def collect_discord_cards(
 
 
 def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DEFAULT_MAX_POSTS_PER_ACCOUNT) -> list[StoryCard]:
-    account_fetch_budget_sec = _env_float(
-        "X_INTEL_ACCOUNT_FETCH_BUDGET_SEC",
-        default=210.0,
-        minimum=60.0,
-        maximum=1200.0,
-    )
-    account_started_at = time.monotonic()
-
-    def _budget_exhausted() -> bool:
-        return (time.monotonic() - account_started_at) >= account_fetch_budget_sec
-
     cached_payload = read_json(data_dir() / "x_intel_feed.json", {})
     cached_cards_raw = cached_payload.get("cards") if isinstance(cached_payload, dict) else []
     cached_cards: list[StoryCard] = []
@@ -1209,9 +849,6 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
                         topic_labels=normalize_topic_labels(item.get("topic_labels")),
                         detail_summary=str(item.get("detail_summary") or ""),
                         detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
-                        sbt_name=str(item.get("sbt_name") or ""),
-                        sbt_names=normalize_sbt_names(item.get("sbt_names") if item.get("sbt_names") is not None else item.get("sbt_name")),
-                        sbt_acquisition=str(item.get("sbt_acquisition") or ""),
                         reply_to_id=str(item.get("reply_to_id") or ""),
                     )
                 )
@@ -1226,14 +863,12 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
 
     ids: list[str] = []
     for _ in range(3):
-        if _budget_exhausted():
-            break
         profile_text = fetch_profile_page(username)
         ids = extract_status_ids(profile_text, username)
         if ids:
             break
 
-    if len(ids) < max_posts and not _budget_exhausted():
+    if len(ids) < max_posts:
         rss_ids = fetch_account_status_ids_from_nitter_rss(
             username,
             limit=max(max_posts * 10, 60),
@@ -1282,8 +917,6 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
     max_fetch_rounds = max(max_posts * 8, 48)
     max_collected = max(max_posts * 3, 24)
     while queue and len(processed) < max_fetch_rounds:
-        if _budget_exhausted():
-            break
         tweet_id = queue.pop(0)
         if tweet_id in processed:
             continue

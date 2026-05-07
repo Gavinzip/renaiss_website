@@ -70,12 +70,24 @@ To keep backend cards and translations consistent across restarts:
 
 ## 3) Frontend deployment (Walrus / chain)
 
-Frontend package location:
+Frontend source of truth:
+- `website/`
+
+Frontend package location generated for chain publishing:
 - `frontend_chain/index.html`
 - `frontend_chain/game.html`
 - `frontend_chain/assets/`
 - `frontend_chain/sbt_icons.json`
+- `frontend_chain/image.png`
 - `frontend_chain/data/i18n_text_cache.json`
+
+`frontend_chain/` is synced from `website/` by whitelist before every chain update. Backend folders and `website/scripts` are not copied.
+
+Manual sync only:
+
+```bash
+./scripts/sync_frontend_chain.sh
+```
 
 Update command example (use this for daily deploy, do not create a new site):
 

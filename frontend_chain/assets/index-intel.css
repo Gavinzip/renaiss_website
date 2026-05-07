@@ -1299,6 +1299,41 @@
       font-weight: 900;
     }
 
+    .intel-masterline-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.24rem;
+      margin-left: 0.48rem;
+      padding: 0.12rem 0.42rem;
+      border: 1px solid rgba(217, 166, 61, 0.58);
+      border-radius: 999px;
+      background:
+        linear-gradient(128deg, rgba(255, 251, 226, 0.96), rgba(237, 196, 91, 0.46) 36%, rgba(255, 255, 255, 0.92) 50%, rgba(199, 134, 31, 0.35) 76%, rgba(255, 244, 201, 0.92)),
+        radial-gradient(circle at 16% 16%, rgba(255, 255, 255, 0.98), transparent 34%);
+      color: #81540f;
+      font-size: 0.66rem;
+      font-weight: 900;
+      white-space: nowrap;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        inset 0 -1px 0 rgba(146, 94, 21, 0.14),
+        0 8px 16px rgba(147, 94, 22, 0.12);
+      text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+    }
+
+    .intel-masterline-legend-swatch {
+      width: 0.46rem;
+      height: 0.46rem;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.96), rgba(255, 229, 137, 0.82) 30%, rgba(206, 139, 28, 0.96) 72%, rgba(126, 78, 14, 0.96));
+      box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.76),
+        0 0 0 2px rgba(216, 166, 59, 0.2),
+        0 0 12px rgba(222, 167, 45, 0.36);
+      flex: 0 0 auto;
+    }
+
     .intel-masterline-rail {
       margin-top: 0.56rem;
       display: grid;
@@ -1346,6 +1381,37 @@
       box-shadow: 0 8px 16px rgba(74, 123, 173, 0.17);
     }
 
+    .intel-masterline-chip.is-official-event {
+      border-color: rgba(225, 174, 62, 0.8);
+      background:
+        linear-gradient(128deg, rgba(255, 253, 236, 0.96), rgba(243, 209, 118, 0.66) 34%, rgba(255, 255, 255, 0.95) 50%, rgba(219, 159, 46, 0.58) 72%, rgba(255, 244, 204, 0.92)),
+        radial-gradient(circle at 16% 12%, rgba(255, 255, 255, 0.96), transparent 32%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        inset 0 -1px 0 rgba(134, 85, 15, 0.12),
+        0 9px 18px rgba(147, 96, 22, 0.14);
+      overflow: hidden;
+    }
+
+    .intel-masterline-chip.is-official-event::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(105deg, transparent 0 28%, rgba(255, 255, 255, 0.62) 42%, transparent 56% 100%);
+      opacity: 0.55;
+      pointer-events: none;
+      mix-blend-mode: screen;
+    }
+
+    .intel-masterline-chip.is-official-event:hover {
+      border-color: rgba(232, 181, 70, 0.92);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.92),
+        inset 0 -1px 0 rgba(134, 85, 15, 0.14),
+        0 11px 20px rgba(147, 96, 22, 0.2);
+    }
+
     .intel-masterline-chip::before {
       content: "";
       position: absolute;
@@ -1356,6 +1422,13 @@
       border-radius: 50%;
       background: #6b99c8;
       box-shadow: 0 0 0 3px rgba(107, 153, 200, 0.2);
+    }
+
+    .intel-masterline-chip.is-official-event::before {
+      background: radial-gradient(circle at 30% 24%, #fff9d9, #f5c453 42%, #b77918 78%);
+      box-shadow:
+        0 0 0 3px rgba(220, 167, 50, 0.2),
+        0 0 14px rgba(222, 166, 44, 0.42);
     }
 
     .intel-masterline-date {
@@ -1409,14 +1482,42 @@
       transform: translateY(-2px);
     }
 
+    .intel-masterline-chip.is-official-event.is-active {
+      border-color: rgba(237, 184, 69, 0.96);
+      color: #6d4710;
+      background:
+        linear-gradient(128deg, rgba(255, 251, 225, 0.98), rgba(241, 202, 96, 0.78) 33%, rgba(255, 255, 255, 0.98) 50%, rgba(211, 145, 35, 0.66) 73%, rgba(255, 240, 190, 0.96)),
+        radial-gradient(circle at 15% 10%, rgba(255, 255, 255, 0.98), transparent 33%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.94),
+        inset 0 -1px 0 rgba(138, 87, 13, 0.16),
+        0 0 0 3px rgba(230, 176, 55, 0.24),
+        0 13px 24px rgba(147, 96, 22, 0.24);
+    }
+
     .intel-masterline-chip.is-active .intel-masterline-date,
     .intel-masterline-chip.is-active .intel-masterline-topic {
       color: #163f67;
     }
 
+    .intel-masterline-chip.is-official-event .intel-masterline-date,
+    .intel-masterline-chip.is-official-event .intel-masterline-topic,
+    .intel-masterline-chip.is-official-event.is-active .intel-masterline-date,
+    .intel-masterline-chip.is-official-event.is-active .intel-masterline-topic {
+      color: #6f4911;
+      text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+    }
+
     .intel-masterline-chip.is-active::before {
       background: #2f7df7;
       box-shadow: 0 0 0 4px rgba(47, 125, 247, 0.2);
+    }
+
+    .intel-masterline-chip.is-official-event.is-active::before {
+      background: radial-gradient(circle at 30% 24%, #fffce1, #f8c95a 42%, #a96d12 78%);
+      box-shadow:
+        0 0 0 4px rgba(224, 169, 48, 0.25),
+        0 0 16px rgba(228, 170, 46, 0.48);
     }
 
     .intel-masterline-stage {
@@ -2430,6 +2531,60 @@
       outline-offset: 1px;
     }
 
+    .intel-feedback-current,
+    .intel-feedback-help {
+      color: #5e7ea2;
+      font-size: 0.72rem;
+      line-height: 1.42;
+    }
+
+    .intel-feedback-checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.34rem;
+    }
+
+    .intel-feedback-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      border: 1px solid rgba(186, 217, 247, 0.95);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
+      color: #2d5a82;
+      font-size: 0.75rem;
+      font-weight: 800;
+      line-height: 1;
+      padding: 0.42rem 0.56rem;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .intel-feedback-check:has(input:checked) {
+      border-color: rgba(71, 145, 241, 0.7);
+      background: linear-gradient(135deg, rgba(223, 240, 255, 0.98), rgba(246, 251, 255, 0.96));
+      color: #174b7c;
+      box-shadow: 0 8px 18px rgba(69, 135, 213, 0.12);
+    }
+
+    .intel-feedback-check.is-other:has(input:checked) {
+      border-color: rgba(128, 143, 164, 0.72);
+      background: rgba(241, 245, 249, 0.96);
+      color: #475569;
+    }
+
+    .intel-feedback-check input {
+      width: 0.86rem;
+      height: 0.86rem;
+      border: 0;
+      border-radius: 3px;
+      background: transparent;
+      box-shadow: none;
+      margin: 0;
+      padding: 0;
+      accent-color: #2b78d0;
+    }
+
     .intel-auth-form-actions {
       margin-top: 0.2rem;
       display: flex;
@@ -2517,6 +2672,62 @@
       font-size: 0.73rem;
       color: #335a82;
       line-height: 1.4;
+    }
+
+    .intel-source-manager {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.42rem;
+      align-items: center;
+    }
+
+    .intel-source-manager input {
+      flex: 1 1 220px;
+      border: 1px solid rgba(186, 217, 247, 0.95);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.95);
+      color: #22496d;
+      font-size: 0.86rem;
+      padding: 0.56rem 0.62rem;
+      font-family: var(--body-font);
+    }
+
+    .intel-source-pill-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.34rem;
+      min-height: 2rem;
+    }
+
+    .intel-source-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.28rem;
+      border: 1px solid rgba(190, 219, 247, 0.8);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #2d5a82;
+      font-size: 0.75rem;
+      font-weight: 800;
+      padding: 0.34rem 0.42rem 0.34rem 0.58rem;
+    }
+
+    .intel-source-remove {
+      border: 0;
+      border-radius: 999px;
+      background: rgba(226, 238, 249, 0.9);
+      color: #2f5d86;
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.72rem;
+      font-weight: 900;
+      line-height: 1;
+      padding: 0.22rem 0.36rem;
+    }
+
+    .intel-source-remove:hover {
+      background: rgba(255, 224, 224, 0.95);
+      color: #9f2d2d;
     }
 
     .intel-admin-actions-row {

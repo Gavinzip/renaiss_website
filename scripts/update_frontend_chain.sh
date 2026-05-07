@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SITE_DIR="${ROOT_DIR}/frontend_chain"
 WS_RESOURCES="${SITE_DIR}/ws-resources.json"
+SYNC_SCRIPT="${ROOT_DIR}/scripts/sync_frontend_chain.sh"
+
+if [[ "${SKIP_FRONTEND_SYNC:-0}" != "1" ]]; then
+  "${SYNC_SCRIPT}"
+fi
 
 if [[ ! -f "${WS_RESOURCES}" ]]; then
   echo "missing ${WS_RESOURCES}" >&2

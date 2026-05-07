@@ -82,6 +82,18 @@
     return `<figure class="${className}"><img loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(alt || "Renaiss guide")}" /></figure>`;
   }
 
+  function sbtDifficultyStars(difficulty) {
+    return Array.from({ length: 5 }, (_, index) => {
+      const filled = index < difficulty;
+      return `<span class="${filled ? "is-filled" : "is-empty"}" aria-hidden="true">${filled ? "★" : "☆"}</span>`;
+    }).join("");
+  }
+
+  function sbtIconSrc(file, base) {
+    if (/^(?:https?:)?\/\//i.test(file)) return file;
+    return `${base}${file}`;
+  }
+
   function renderSbtChecklistInner(lang) {
     const labels = labelsFor(lang);
     const rows = typeof sbtRows !== "undefined" && Array.isArray(sbtRows)
@@ -89,9 +101,14 @@
       : [];
     const base = typeof sbtIconBase !== "undefined" ? sbtIconBase : "";
     const reqMap = data.sbtRequirements && (data.sbtRequirements[lang] || {}) || {};
+    const difficultyLabel = labels.difficultyLabel || "難度";
     const items = rows.map((row) => {
+      const difficulty = Math.max(0, Math.min(5, Number(row.difficulty) || 0));
+      const difficultyHtml = difficulty
+        ? `<span class="sbt-difficulty" aria-label="${escapeHtml(difficultyLabel)} ${difficulty} / 5"><span class="sbt-difficulty-label">${escapeHtml(difficultyLabel)}</span><span class="sbt-stars">${sbtDifficultyStars(difficulty)}</span></span>`
+        : "";
       const iconsHtml = (row.icons || []).map((file) => {
-        const src = `${base}${file}`;
+        const src = sbtIconSrc(file, base);
         return `<a class="sbt-thumb" href="${escapeHtml(src)}" target="_blank" rel="noreferrer"><img loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(row.name)}" /></a>`;
       }).join("");
       return `
@@ -100,7 +117,10 @@
           <div class="sbt-item-main">
             <div class="sbt-item-top">
               <div class="sbt-item-name">${escapeHtml(row.name)}</div>
-              <span class="status s-on">✅ Available</span>
+              <div class="sbt-item-badges">
+                ${difficultyHtml}
+                <span class="status s-on">✅ Available</span>
+              </div>
             </div>
             <p class="sbt-item-req">${escapeHtml(reqMap[row.name] || row.requirement || "")}</p>
           </div>

@@ -33,18 +33,24 @@ DEFAULT_ACCOUNTS = ["TCGRWA", "ChenYichiao", "renaissxyz", "davidcheang99"]
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_MAX_POSTS_PER_ACCOUNT = 20
 DEFAULT_DISCORD_MONITOR_LIMIT = 80
-DEFAULT_CURATED_MAX_CARDS = 30
-DEFAULT_INTEL_DEDUPE_EMBED_MODEL = "text-embedding-3-small"
-DEFAULT_INTEL_DEDUPE_EMBED_TOP_K = 8
-DEFAULT_INTEL_DEDUPE_EMBED_SIM_THRESHOLD = 0.50
-DEFAULT_INTEL_DEDUPE_EMBED_CACHE_MAX = 8000
+DEFAULT_CURATED_MAX_CARDS = 24
 MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
-COLLECTIBLES_DISCORD_CHANNEL_IDS = {"1480867987270402149"}
-ALLOWED_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight", "trend"}
-ALLOWED_TOPIC_LABELS = {"events", "official", "sbt", "pokemon", "alpha", "tools", "collectibles", "other"}
+ALLOWED_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight"}
+ALLOWED_TOPIC_LABELS = {"events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"}
 ALLOWED_FEEDBACK_LABELS = ALLOWED_CARD_TYPES | ALLOWED_TOPIC_LABELS | {"exclude"}
+TOPIC_LABEL_ALIASES = {
+    "tool": "guides",
+    "tools": "guides",
+    "guide": "guides",
+    "community_picks": "community",
+    "community-picks": "community",
+    "none": "other",
+    "uncategorized": "other",
+    "unclassified": "other",
+    "5": "other",
+}
 JINA_HOST = "r.jina.ai"
 JINA_MIN_INTERVAL_SECONDS = 6.0
 JINA_MAX_RETRIES = 3
@@ -53,8 +59,6 @@ JINA_RATE_LOCK = Lock()
 JINA_LAST_REQUEST_AT = 0.0
 
 STATUS_RE = re.compile(r"https?://x\.com/([A-Za-z0-9_]+)/status/(\d+)", re.I)
-DISCORD_CARD_ID_RE = re.compile(r"^discord-(\d+)-\d+$", re.I)
-DISCORD_MESSAGE_URL_RE = re.compile(r"discord\.com/channels/[^/\s]+/(\d+)/\d+", re.I)
 TITLE_RE = re.compile(r"^Title:\s*(.+?)\s*/\s*X\s*$", re.M | re.S)
 PUBLISHED_RE = re.compile(r"^Published Time:\s*(.+)$", re.M)
 MARKDOWN_RE = re.compile(r"Markdown Content:\s*(.*)$", re.S)
@@ -73,6 +77,28 @@ GUIDE_SIGNAL_RE = re.compile(
     r"攻略|教學|教程|指南|心得|介紹|介绍|怎麼|怎么|如何|運費|运费|價格|价格|優點|缺點|集運|集运|buy and ship|分享",
     re.I,
 )
+STRICT_GUIDE_SIGNAL_RE = re.compile(
+    r"攻略|教學|教学|教程|指南|how\s*to|step(?:s)?|walkthrough|checklist|操作|使用方式|流程|步驟|步骤|"
+    r"怎麼|怎么|如何|註冊|注册|綁定|绑定|claim|redeem|領取|领取|參與方式|参与方式|集運|集运|buy\s*and\s*ship|"
+    r"套利工具|查價工具|price\s*check|price\s*compare|工具",
+    re.I,
+)
+GUIDE_CONTEXT_RE = re.compile(
+    r"取得|获取|拿到|完成|設定|设置|提交|填寫|填写|地址|運費|运费|價格|价格|比較|对比|比價|比价|"
+    r"rank|排名|sbt|pack|卡機|卡机|抽卡|redeem|claim|shipping|warehouse|address",
+    re.I,
+)
+POKEMON_TOPIC_RE = re.compile(
+    r"pokemon|pok[eé]mon|寶可夢|宝可梦|口袋妖怪|ptcg|pokémon\s*go|pokemon\s*go|pogo|"
+    r"皮卡丘|噴火龍|喷火龙|超夢|超梦|固拉多|伊布|鯉魚王|鲤鱼王|暴鯉龍|暴鲤龙|妙蛙花|水箭龜|水箭龟|百變怪|百变怪|"
+    r"pikachu|charizard|mewtwo|groudon|eevee|magikarp|gyarados|venusaur|blastoise|ditto",
+    re.I,
+)
+COMMUNITY_TAG_RE = re.compile(r"(?<![A-Za-z0-9_])(?:#renaiss|@renaissxyz)(?![A-Za-z0-9_])", re.I)
+X_SOURCE_URL_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/", re.I)
+OFFICIAL_ACCOUNT_RE = re.compile(r"^renaiss(?:_|cn|xyz|official)?", re.I)
+OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
+DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
 LIVE_REWARD_RE = re.compile(
     r"((?:直播|live\s+(?:attendees?|session|stream)|ama|community\s*session).{0,42}(?:sbt|积分|積分|reward|rewards|奖励|獎勵|merch|周邊|周边))|"
     r"((?:sbt|积分|積分|reward|rewards|奖励|獎勵|merch|周邊|周边).{0,42}(?:直播|live\s+(?:attendees?|session|stream)|ama|community\s*session))",
@@ -96,12 +122,6 @@ ANNOUNCE_SIGNAL_RE = re.compile(
 )
 REPORT_SIGNAL_RE = re.compile(
     r"分析|report|投研|guide|教程|教學|教学|指南|策略|总结|總結|整理|懶人包|懒人包",
-    re.I,
-)
-COLLECTIBLES_SIGNAL_RE = re.compile(
-    r"collectibles?|collectible\s+market|trading\s*cards?|card\s*hobby|graded\s*cards?|grading|psa|bgs|cgc|"
-    r"auction|拍賣|拍卖|收藏品|收藏市場|收藏市场|收藏趨勢|收藏趋势|卡牌市場|卡牌市场|二級市場|二级市场|"
-    r"寶可夢卡|宝可梦卡|pokemon\s+cards?|one\s*piece\s+cards?|sports\s+cards?",
     re.I,
 )
 REWARD_SIGNAL_RE = re.compile(
@@ -163,7 +183,7 @@ class StoryCard:
     glance: str = ""
     timeline_date: str = ""
     timeline_end_date: str = ""
-    event_wall: bool | None = None
+    event_wall: bool = False
     urgency: str = "normal"
     manual_pick: bool = False
     manual_pin: bool = False
@@ -176,6 +196,15 @@ class StoryCard:
     sbt_names: list[str] | None = None
     sbt_acquisition: str = ""
     reply_to_id: str = ""
+    dedupe_status: str = ""
+    dedupe_checked: bool = False
+    dedupe_checked_at: str = ""
+    dedupe_version: str = ""
+    dedupe_reason_code: str = ""
+    dedupe_reason: str = ""
+    dedupe_winner_post_id: str = ""
+    dedupe_winner_url: str = ""
+    dedupe_winner_title: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,7 +228,7 @@ class StoryCard:
             "glance": self.glance,
             "timeline_date": self.timeline_date,
             "timeline_end_date": self.timeline_end_date,
-            "event_wall": self.event_wall if isinstance(self.event_wall, bool) else None,
+            "event_wall": self.event_wall,
             "urgency": self.urgency,
             "manual_pick": self.manual_pick,
             "manual_pin": self.manual_pin,
@@ -212,6 +241,15 @@ class StoryCard:
             "sbt_names": self.sbt_names or [],
             "sbt_acquisition": self.sbt_acquisition,
             "reply_to_id": self.reply_to_id,
+            "dedupe_status": self.dedupe_status,
+            "dedupe_checked": self.dedupe_checked,
+            "dedupe_checked_at": self.dedupe_checked_at,
+            "dedupe_version": self.dedupe_version,
+            "dedupe_reason_code": self.dedupe_reason_code,
+            "dedupe_reason": self.dedupe_reason,
+            "dedupe_winner_post_id": self.dedupe_winner_post_id,
+            "dedupe_winner_url": self.dedupe_winner_url,
+            "dedupe_winner_title": self.dedupe_winner_title,
         }
 
 
@@ -219,10 +257,7 @@ SYNDICATION_META_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def project_root() -> Path:
-    root = Path(__file__).resolve().parents[3]
-    if root.name == ".deploy":
-        return root.parent
-    return root
+    return Path(__file__).resolve().parents[3]
 
 
 def website_root() -> Path:
@@ -233,23 +268,6 @@ def data_dir() -> Path:
     path = get_website_data_dir(website_root())
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def is_collectibles_discord_channel(channel_id: str) -> bool:
-    return str(channel_id or "").strip() in COLLECTIBLES_DISCORD_CHANNEL_IDS
-
-
-def is_collectibles_source_id(value: str) -> bool:
-    raw = str(value or "").strip()
-    if not raw:
-        return False
-    card_match = DISCORD_CARD_ID_RE.match(raw)
-    if card_match and is_collectibles_discord_channel(card_match.group(1)):
-        return True
-    url_match = DISCORD_MESSAGE_URL_RE.search(raw)
-    if url_match and is_collectibles_discord_channel(url_match.group(1)):
-        return True
-    return False
 
 
 def load_environment() -> None:
@@ -557,15 +575,6 @@ def fetch_text(url: str, timeout: int = 45) -> str:
 
 
 def fetch_profile_page(username: str) -> str:
-    profile_timeout = 25
-    try:
-        profile_timeout = int(float(os.getenv("X_INTEL_PROFILE_FETCH_TIMEOUT_SEC") or profile_timeout))
-    except Exception:
-        profile_timeout = 25
-    if profile_timeout < 8:
-        profile_timeout = 8
-    if profile_timeout > 90:
-        profile_timeout = 90
     variants = [
         f"https://r.jina.ai/http://x.com/{username}",
         f"https://r.jina.ai/http://x.com/{username}?mx=1",
@@ -573,7 +582,7 @@ def fetch_profile_page(username: str) -> str:
     combined: list[str] = []
     for url in variants:
         try:
-            combined.append(fetch_text(url, timeout=profile_timeout))
+            combined.append(fetch_text(url))
         except Exception:
             continue
     return "\n\n".join(combined)
@@ -838,7 +847,6 @@ def choose_template_id(card_type: str) -> str:
     mapping = {
         "event": "event_poster",
         "market": "market_signal",
-        "trend": "collectibles_trend",
         "announcement": "announcement_timeline",
         "feature": "announcement_timeline",
         "report": "community_brief",
@@ -1178,7 +1186,6 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
     has_announce = bool(ANNOUNCE_SIGNAL_RE.search(plain))
     has_market = bool(MARKET_SIGNAL_RE.search(plain))
     has_report = bool(REPORT_SIGNAL_RE.search(plain))
-    has_collectibles = bool(COLLECTIBLES_SIGNAL_RE.search(plain))
     has_numbers = bool(re.search(r"\d", plain))
     has_sbt_feature = bool(
         re.search(
@@ -1215,10 +1222,6 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
     if has_market and has_numbers:
         return "market", "data", ["市場", "數據"]
 
-    # 收藏品新聞/產業動態用獨立趨勢卡，避免混進純市場數字或泛社群觀點。
-    if has_collectibles and not has_feature and not has_announce:
-        return "trend", "trend", ["收藏", "趨勢"]
-
     # 功能進度與公告分流：產品/版本/開放屬 feature，制度公告屬 announcement。
     if has_feature and not has_guide:
         return "feature", "timeline", ["功能", "即將開放"]
@@ -1239,7 +1242,6 @@ def default_style_for_type(card_type: str) -> tuple[str, list[str]]:
         "event": ("poster", ["活動", "參與"]),
         "feature": ("timeline", ["功能", "即將開放"]),
         "market": ("data", ["市場", "數據"]),
-        "trend": ("trend", ["收藏", "趨勢"]),
         "report": ("brief", ["分析", "內容"]),
         "announcement": ("timeline", ["更新", "公告"]),
         "insight": ("brief", ["觀點"]),
@@ -1256,7 +1258,6 @@ def score_card(card: StoryCard) -> float:
         "feature": 4.2,
         "announcement": 3.8,
         "market": 3.4,
-        "trend": 3.2,
         "report": 3.0,
         "insight": 1.5,
     }
@@ -1313,7 +1314,6 @@ def _headline_prefix(card_type: str) -> str:
     mapping = {
         "event": "活動重點",
         "market": "市場訊號",
-        "trend": "收藏趨勢",
         "announcement": "官方公告",
         "feature": "功能進度",
         "report": "重點分析",
@@ -1371,6 +1371,57 @@ def normalize_event_facts(value: Any) -> dict[str, str]:
     return out
 
 
+def normalize_account_handle(account: Any) -> str:
+    return str(account or "").strip().lower().lstrip("@")
+
+
+def is_official_account_handle(account: Any) -> bool:
+    return bool(OFFICIAL_ACCOUNT_RE.match(normalize_account_handle(account)))
+
+
+def extract_discord_channel_id_from_url(url: Any) -> str:
+    match = DISCORD_CHANNEL_RE.search(str(url or ""))
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def is_official_source_card(card: StoryCard) -> bool:
+    return is_official_account_handle(card.account) or extract_discord_channel_id_from_url(card.url) in OFFICIAL_DISCORD_CHANNEL_IDS
+
+
+def is_x_source_url(url: Any) -> bool:
+    return bool(X_SOURCE_URL_RE.search(str(url or "")))
+
+
+def has_renaiss_community_tag_raw(raw_text: Any) -> bool:
+    # Must run on raw text before mention/hashtag stripping, otherwise #/@ evidence is lost.
+    return bool(COMMUNITY_TAG_RE.search(str(raw_text or "")))
+
+
+def is_community_pick_source_card(card: StoryCard) -> bool:
+    return (
+        is_x_source_url(card.url)
+        and not is_official_account_handle(card.account)
+        and has_renaiss_community_tag_raw(card.raw_text)
+    )
+
+
+def has_pokemon_topic_evidence(text: Any) -> bool:
+    return bool(POKEMON_TOPIC_RE.search(str(text or "")))
+
+
+def has_guide_topic_evidence(text: Any, card_type: str = "") -> bool:
+    src = clean_text(str(text or ""))
+    if not src:
+        return False
+    strict = bool(STRICT_GUIDE_SIGNAL_RE.search(src))
+    context = bool(GUIDE_CONTEXT_RE.search(src))
+    if strict and context:
+        return True
+    if str(card_type or "").strip().lower() == "report" and strict:
+        return True
+    return False
+
+
 def normalize_topic_labels(value: Any) -> list[str]:
     if isinstance(value, str):
         raw_items = re.split(r"[,，/|\\\s]+", value)
@@ -1382,51 +1433,14 @@ def normalize_topic_labels(value: Any) -> list[str]:
     seen: set[str] = set()
     for raw in raw_items:
         label = str(raw or "").strip().lower()
+        label = TOPIC_LABEL_ALIASES.get(label, label)
         if not label or label in seen:
             continue
         if label not in ALLOWED_TOPIC_LABELS:
             continue
         seen.add(label)
         out.append(label)
-        if len(out) >= 6:
-            break
-    return out
-
-
-def normalize_sbt_names(value: Any) -> list[str]:
-    if isinstance(value, str):
-        raw_items = re.split(r"[,，/|、\n]+", value)
-    elif isinstance(value, list):
-        raw_items = [str(x) for x in value]
-    else:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    bad_patterns = (
-        r"^[#\d\s個个]+sbt$",
-        r"^的\s*sbt$",
-        r"^此結果代表.*sbt$",
-        r"^目前共有.*sbt$",
-        r"^同步釋出\s*sbt$",
-        r"^對應\s*sbt$",
-        r"^已結束的\s*sbt$",
-    )
-    for raw in raw_items:
-        name = _clean_fact_value(str(raw or ""), max_len=64)
-        if not name:
-            continue
-        normalized = dedupe_key(name)
-        if len(normalized) < 4:
-            continue
-        if not re.search(r"\bsbt\b|soulbound|認證|认证|徽章|badge", name, re.I):
-            continue
-        if any(re.search(pat, name, re.I) for pat in bad_patterns):
-            continue
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        out.append(name)
-        if len(out) >= 5:
+        if len(out) >= 8:
             break
     return out
 

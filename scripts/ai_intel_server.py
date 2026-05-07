@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import copy
 import hashlib
 import hmac
 import json
@@ -13,7 +11,7 @@ import os
 import re
 import secrets
 import time
-from collections import deque
+from http.cookies import SimpleCookie
 from datetime import timedelta
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -22,28 +20,13 @@ from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
-from urllib.request import Request
-from urllib.request import urlopen
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
-from x_intel_core import (
-    StoryCard,
-    add_classification_feedback,
-    add_manual_tweet,
-    feedback_memory_stats,
-    generate_minimax_cover_image,
-    load_environment,
-    set_manual_selection,
-    sync_accounts,
-    update_card_cover_image,
-    update_card_event_wall_field,
-    update_card_sbt_fields,
-    update_card_timeline_fields,
-)
+from x_intel_core import add_classification_feedback, add_classification_feedback_fields, add_manual_tweet, feedback_memory_stats, load_environment, read_x_source_config, set_manual_selection, sync_accounts, update_card_event_wall_field, update_card_sbt_fields, update_card_timeline_fields, update_x_source_accounts
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
-from website_i18n_runtime import configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
+from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,21 +40,15 @@ FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
-BEGINNER_GUIDE_CACHE_PATH = DATA_ROOT / "beginner_guide_cache.json"
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
-PIPELINE_RUNTIME_LOG_PATH = DATA_ROOT / "intel_runtime_log.jsonl"
-RUNTIME_LOG_PATHS: dict[str, Path] = {
-    "pipeline": PIPELINE_RUNTIME_LOG_PATH,
-    "i18n_runtime": DATA_ROOT / "i18n_runtime_log.jsonl",
-    "i18n_trace": DATA_ROOT / "i18n_translate_trace.jsonl",
-}
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
+SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
-RESTORE_STATE_LOCK = Lock()
+SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -85,7 +62,6 @@ SYNC_STATE: dict[str, object] = {
     "schedule_window_days": 30,
     "next_run_at": "",
     "last_scheduled_at": "",
-    "sync_pipeline": {},
 }
 BACKUP_STATE: dict[str, object] = {
     "status": "idle",
@@ -108,13 +84,11 @@ DEFAULT_X_SYNC_WINDOW_DAYS = 30
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
-DEFAULT_TOKEN_TTL_SECONDS = 8 * 60 * 60
-AUTH_TOKEN_PREFIX = "iat1"
+AUTH_COOKIE_NAME = "intel_admin_session"
+DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
-    "http://127.0.0.1:18787",
-    "http://localhost:18787",
     "http://127.0.0.1:3000",
     "http://localhost:3000",
 }
@@ -124,50 +98,12 @@ PROTECTED_POST_PATHS = {
     "/api/intel/pick",
     "/api/intel/timeline",
     "/api/intel/event-wall",
-    "/api/intel/generate-cover",
     "/api/intel/sbt-fields",
     "/api/intel/feedback",
+    "/api/intel/source-config",
     "/api/intel/job-status",
     "/api/intel/backup",
-    "/api/intel/restore",
     "/api/intel/retranslate",
-}
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return int(default)
-    try:
-        return int(raw)
-    except Exception:
-        return int(default)
-
-
-BEGINNER_GUIDE_SOURCE_URL = str(
-    os.getenv(
-        "BEGINNER_GUIDE_SOURCE_URL",
-        "https://www.notion.so/Renaiss-bfbbc705aae04129aee2b619f8cb2b0e",
-    )
-).strip()
-BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS = max(
-    6,
-    _env_int("BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS", 26),
-)
-BEGINNER_GUIDE_CACHE_TTL_SECONDS = max(
-    30,
-    _env_int("BEGINNER_GUIDE_CACHE_TTL_SECONDS", 900),
-)
-BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS = max(
-    3600,
-    _env_int("BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS", 24 * 60 * 60),
-)
-BEGINNER_GUIDE_LOCK = Lock()
-BEGINNER_GUIDE_CACHE: dict[str, object] = {
-    "fetched_at": "",
-    "expires_at": 0.0,
-    "payload": {},
-    "error": "",
 }
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -177,8 +113,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
-BEGINNER_GUIDE_SYNC_ENABLED = _env_flag("BEGINNER_GUIDE_SYNC_ENABLED", False)
-BEGINNER_GUIDE_RUN_ON_STARTUP = _env_flag("BEGINNER_GUIDE_RUN_ON_STARTUP", False)
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 
 
@@ -202,11 +136,11 @@ AUTH_USERNAME = str(os.getenv("INTEL_ADMIN_USER", "")).strip()
 AUTH_PASSWORD_HASH = str(os.getenv("INTEL_ADMIN_PASS_HASH", "")).strip()
 AUTH_PASSWORD_PLAIN = str(os.getenv("INTEL_ADMIN_PASS", "")).strip()
 AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN))
-TOKEN_TTL_SECONDS = max(300, int(os.getenv("INTEL_AUTH_TOKEN_TTL_SECONDS", str(DEFAULT_TOKEN_TTL_SECONDS)) or DEFAULT_TOKEN_TTL_SECONDS))
-TOKEN_SECRET_ENV = str(os.getenv("INTEL_AUTH_TOKEN_SECRET", "")).strip()
+SESSION_TTL_SECONDS = max(300, int(os.getenv("INTEL_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL_SECONDS)) or DEFAULT_SESSION_TTL_SECONDS))
+COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
+COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
+COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("INTEL_ALLOWED_ORIGINS", ""))
-FRONTEND_INTEL_API_BASE_ENV = str(os.getenv("INTEL_FRONTEND_API_BASE", "")).strip()
-FRONTEND_USE_LOCAL_API = _env_flag("INTEL_FRONTEND_USE_LOCAL_API", False)
 
 TRANSLATE_MAX_ITEMS = 220
 TRANSLATE_MAX_CHARS = 320
@@ -214,77 +148,6 @@ TRANSLATE_MAX_CHARS = 320
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-
-
-def _b64url_decode(raw: str) -> bytes:
-    text = str(raw or "").strip()
-    if not text:
-        return b""
-    padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(f"{text}{padding}".encode("utf-8"))
-
-
-def _auth_token_secret() -> str:
-    if TOKEN_SECRET_ENV:
-        return TOKEN_SECRET_ENV
-    seed = f"{AUTH_USERNAME}|{AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN}|renaiss-intel-token-v1"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-
-def _create_auth_token(username: str) -> str:
-    now_ts = int(time.time())
-    payload = {
-        "v": 1,
-        "u": str(username or "").strip(),
-        "iat": now_ts,
-        "exp": now_ts + TOKEN_TTL_SECONDS,
-    }
-    payload_raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    payload_b64 = _b64url_encode(payload_raw)
-    signature = hmac.new(_auth_token_secret().encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
-    return f"{AUTH_TOKEN_PREFIX}.{payload_b64}.{_b64url_encode(signature)}"
-
-
-def _verify_auth_token(token: str) -> str:
-    raw = str(token or "").strip()
-    if not raw:
-        return ""
-    parts = raw.split(".")
-    if len(parts) != 3:
-        return ""
-    prefix, payload_b64, signature_b64 = parts
-    if prefix != AUTH_TOKEN_PREFIX:
-        return ""
-    try:
-        expected_sig = hmac.new(
-            _auth_token_secret().encode("utf-8"),
-            payload_b64.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-        actual_sig = _b64url_decode(signature_b64)
-        if not hmac.compare_digest(expected_sig, actual_sig):
-            return ""
-        payload_raw = _b64url_decode(payload_b64)
-        payload = json.loads(payload_raw.decode("utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    if int(payload.get("v") or 0) != 1:
-        return ""
-    expires_at = int(payload.get("exp") or 0)
-    if expires_at <= int(time.time()):
-        return ""
-    username = str(payload.get("u") or "").strip()
-    if not username:
-        return ""
-    if AUTH_USERNAME and username != AUTH_USERNAME:
-        return ""
-    return username
 
 
 def _verify_password(raw_password: str) -> bool:
@@ -327,6 +190,51 @@ def _parse_iso_utc(raw: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
+    now_dt = _parse_iso_utc(now_iso) if now_iso else datetime.now(timezone.utc)
+    stale = []
+    for sid, data in SESSIONS.items():
+        exp = _parse_iso_utc(str(data.get("expires_at") or ""))
+        if not exp or exp <= now_dt:
+            stale.append(sid)
+    for sid in stale:
+        SESSIONS.pop(sid, None)
+
+
+def _create_session(username: str) -> str:
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=SESSION_TTL_SECONDS)
+    token = secrets.token_urlsafe(32)
+    with SESSIONS_LOCK:
+        _purge_sessions_unlocked(now.isoformat())
+        SESSIONS[token] = {
+            "username": username,
+            "created_at": now.isoformat(),
+            "expires_at": expires.isoformat(),
+        }
+    return token
+
+
+def _get_session(session_id: str) -> dict | None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    with SESSIONS_LOCK:
+        _purge_sessions_unlocked()
+        state = SESSIONS.get(sid)
+        if not isinstance(state, dict):
+            return None
+        return dict(state)
+
+
+def _delete_session(session_id: str) -> None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    with SESSIONS_LOCK:
+        SESSIONS.pop(sid, None)
 
 
 def _read_jobs_unlocked() -> dict:
@@ -428,878 +336,6 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except Exception:
         return int(default)
-
-
-def _safe_limit(value: object, default: int = 200, min_value: int = 1, max_value: int = 1000) -> int:
-    raw = _safe_int(value, default)
-    return max(min_value, min(max_value, raw))
-
-
-def _strip_rjina_envelope(text: str) -> str:
-    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    marker = "Markdown Content:"
-    idx = raw.find(marker)
-    if idx >= 0:
-        raw = raw[idx + len(marker):]
-    return raw.strip()
-
-
-def _markdown_table_cells(line: str) -> list[str]:
-    text = str(line or "").strip()
-    if not (text.startswith("|") and text.endswith("|")):
-        return []
-    return [cell.strip() for cell in text.strip("|").split("|")]
-
-
-def _strip_sbt_table(markdown: str) -> tuple[str, list[dict[str, str]]]:
-    lines = str(markdown or "").split("\n")
-    out: list[str] = []
-    rows: list[dict[str, str]] = []
-    i = 0
-    while i < len(lines):
-        current = str(lines[i] or "").strip()
-        next_line = str(lines[i + 1] or "").strip() if i + 1 < len(lines) else ""
-        is_table_start = bool(current.startswith("|") and current.endswith("|") and next_line.startswith("|"))
-        if not is_table_start:
-            out.append(lines[i])
-            i += 1
-            continue
-
-        block: list[str] = [lines[i], lines[i + 1]]
-        j = i + 2
-        while j < len(lines):
-            row = str(lines[j] or "").strip()
-            if not (row.startswith("|") and row.endswith("|")):
-                break
-            block.append(lines[j])
-            j += 1
-
-        header_cells = _markdown_table_cells(block[0])
-        looks_like_sbt_table = len(header_cells) >= 3 and (
-            "sbt" in " ".join(header_cells).lower() or "徽章" in "".join(header_cells)
-        )
-        if looks_like_sbt_table and len(block) >= 3:
-            for row_line in block[2:]:
-                cells = _markdown_table_cells(row_line)
-                if len(cells) < 3:
-                    continue
-                name = str(cells[0] or "").strip()
-                status = str(cells[1] or "").strip()
-                requirement = str(cells[2] or "").strip()
-                if not name:
-                    continue
-                if status == "✅":
-                    status = "✅ Available"
-                rows.append(
-                    {
-                        "name": name,
-                        "status": status,
-                        "requirement": requirement,
-                    }
-                )
-            i = j
-            continue
-
-        out.extend(block)
-        i = j
-
-    clean = "\n".join(out).strip()
-    return clean, rows
-
-
-def _extract_markdown_images(markdown: str) -> list[str]:
-    pattern = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
-    seen: set[str] = set()
-    out: list[str] = []
-    for match in pattern.finditer(str(markdown or "")):
-        url = str(match.group(1) or "").strip()
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        out.append(url)
-    return out
-
-
-def _extract_tools_from_markdown(markdown: str) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    seen_names: set[str] = set()
-    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
-    author_pattern = re.compile(r"作者[：:]\s*([^)）\n]+)")
-    for raw_line in str(markdown or "").split("\n"):
-        line = str(raw_line or "").strip()
-        if not line:
-            continue
-        if "作者" not in line:
-            continue
-        link_pos = line.find("[")
-        prefix = line[:link_pos] if link_pos >= 0 else line
-        name = re.sub(r"[:：]\s*$", "", str(prefix or "").strip()).strip()
-        if not name:
-            continue
-        link_match = link_pattern.search(line)
-        link_url = str(link_match.group(2) or "").strip() if link_match else ""
-        link_label = str(link_match.group(1) or "").strip() if link_match else ""
-        author_match = author_pattern.search(line)
-        author_text = str(author_match.group(1) or "").strip() if author_match else ""
-        authors = [
-            part.strip()
-            for part in re.split(r"[、,，/]+", author_text)
-            if part.strip()
-        ]
-        key = name.lower()
-        if key in seen_names:
-            continue
-        seen_names.add(key)
-        rows.append(
-            {
-                "name": name,
-                "link": link_url,
-                "link_label": link_label or "連結",
-                "authors": authors,
-                "raw": line,
-            }
-        )
-    return rows
-
-
-def _extract_faq_from_markdown(markdown: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    seen_q: set[str] = set()
-    single_line_pattern = re.compile(r"^\s*Q[:：]\s*(.*?)\s*A[:：]\s*(.+)\s*$")
-    for raw_line in str(markdown or "").split("\n"):
-        line = str(raw_line or "").strip()
-        if not line:
-            continue
-        m = single_line_pattern.match(line)
-        if not m:
-            continue
-        question = str(m.group(1) or "").strip()
-        answer = str(m.group(2) or "").strip()
-        if not question or not answer:
-            continue
-        key = question.lower()
-        if key in seen_q:
-            continue
-        seen_q.add(key)
-        rows.append({"q": question, "a": answer})
-    return rows
-
-
-def _build_beginner_guide_payload(source_url: str, relay_url: str, relay_text: str) -> dict[str, object]:
-    source = str(source_url or "").strip()
-    markdown = _strip_rjina_envelope(relay_text)
-    markdown_no_table, sbt_rows = _strip_sbt_table(markdown)
-    images = _extract_markdown_images(markdown_no_table)
-    tools = _extract_tools_from_markdown(markdown_no_table)
-    faq = _extract_faq_from_markdown(markdown_no_table)
-    return {
-        "source_url": source,
-        "relay_url": relay_url,
-        "fetched_at": _now_iso(),
-        "markdown": markdown_no_table,
-        "images": images,
-        "tools": tools,
-        "faq": faq,
-        "sbt_rows": sbt_rows,
-    }
-
-
-def _read_beginner_guide_cache_unlocked() -> dict[str, object]:
-    if not BEGINNER_GUIDE_CACHE_PATH.exists():
-        return {}
-    try:
-        raw = json.loads(BEGINNER_GUIDE_CACHE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _write_beginner_guide_cache_unlocked(payload: dict[str, object]) -> None:
-    BEGINNER_GUIDE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BEGINNER_GUIDE_CACHE_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _beginner_guide_signature(guide: dict[str, object]) -> str:
-    core = {
-        "markdown": guide.get("markdown"),
-        "images": guide.get("images"),
-        "tools": guide.get("tools"),
-        "faq": guide.get("faq"),
-        "sbt_rows": guide.get("sbt_rows"),
-    }
-    encoded = json.dumps(core, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _remember_beginner_guide_in_memory(guide: dict[str, object], *, error: str = "") -> None:
-    payload = dict(guide) if isinstance(guide, dict) else {}
-    BEGINNER_GUIDE_CACHE["payload"] = payload
-    BEGINNER_GUIDE_CACHE["fetched_at"] = str(payload.get("fetched_at") or "")
-    BEGINNER_GUIDE_CACHE["expires_at"] = float(time.time()) + float(BEGINNER_GUIDE_CACHE_TTL_SECONDS)
-    BEGINNER_GUIDE_CACHE["error"] = str(error or "")
-
-
-def _beginner_cache_timestamp(cache: dict[str, object]) -> datetime | None:
-    for key in ("last_checked_at", "updated_at"):
-        dt = _parse_iso_utc(str(cache.get(key) or ""))
-        if dt is not None:
-            return dt
-    guide = cache.get("guide")
-    if isinstance(guide, dict):
-        dt = _parse_iso_utc(str(guide.get("fetched_at") or ""))
-        if dt is not None:
-            return dt
-    return None
-
-
-def _is_beginner_cache_fresh(cache: dict[str, object], max_age_seconds: int = BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS) -> bool:
-    dt = _beginner_cache_timestamp(cache)
-    if dt is None:
-        return False
-    age = datetime.now(timezone.utc) - dt
-    return age <= timedelta(seconds=max(1, int(max_age_seconds)))
-
-
-def _fetch_beginner_guide(force: bool = False, reason: str = "request") -> dict[str, object]:
-    now_ts = float(time.time())
-    now_iso = _now_iso()
-    with BEGINNER_GUIDE_LOCK:
-        mem_payload = BEGINNER_GUIDE_CACHE.get("payload")
-        mem_expires_at = float(BEGINNER_GUIDE_CACHE.get("expires_at") or 0.0)
-        if not force and isinstance(mem_payload, dict) and mem_payload and now_ts < mem_expires_at:
-            return {
-                "ok": True,
-                "cached": True,
-                "stale": False,
-                "guide": mem_payload,
-                "source": "memory",
-            }
-        disk_cache = _read_beginner_guide_cache_unlocked()
-        disk_guide = disk_cache.get("guide") if isinstance(disk_cache.get("guide"), dict) else {}
-        if isinstance(disk_guide, dict) and disk_guide:
-            _remember_beginner_guide_in_memory(disk_guide)
-            if not force and _is_beginner_cache_fresh(disk_cache):
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "stale": False,
-                    "guide": disk_guide,
-                    "source": "disk",
-                    "unchanged": True,
-                }
-
-    source_url = str(BEGINNER_GUIDE_SOURCE_URL or "").strip()
-    relay_url = f"https://r.jina.ai/{source_url}"
-    try:
-        req = Request(
-            relay_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; RenaissBeginnerGuideBot/1.0)",
-                "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
-            },
-        )
-        with urlopen(req, timeout=BEGINNER_GUIDE_FETCH_TIMEOUT_SECONDS) as resp:
-            raw_bytes = resp.read()
-        relay_text = raw_bytes.decode("utf-8", errors="replace")
-        fresh_guide = _build_beginner_guide_payload(source_url, relay_url, relay_text)
-        fresh_sig = _beginner_guide_signature(fresh_guide)
-        with BEGINNER_GUIDE_LOCK:
-            old_cache = _read_beginner_guide_cache_unlocked()
-            old_guide = old_cache.get("guide") if isinstance(old_cache.get("guide"), dict) else {}
-            old_sig = str(old_cache.get("content_hash") or "").strip()
-            old_updated_at = str(old_cache.get("updated_at") or "").strip()
-            if isinstance(old_guide, dict) and old_guide and not old_sig:
-                old_sig = _beginner_guide_signature(old_guide)
-            unchanged = bool(old_guide and old_sig and old_sig == fresh_sig)
-            if unchanged:
-                cache_doc = {
-                    "schema": "beginner_guide_cache_v1",
-                    "source_url": source_url,
-                    "relay_url": relay_url,
-                    "content_hash": old_sig,
-                    "last_checked_at": now_iso,
-                    "updated_at": old_updated_at or str(old_guide.get("fetched_at") or now_iso),
-                    "last_reason": str(reason or "request"),
-                    "guide": old_guide,
-                }
-                _write_beginner_guide_cache_unlocked(cache_doc)
-                _remember_beginner_guide_in_memory(old_guide)
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "stale": False,
-                    "unchanged": True,
-                    "guide": old_guide,
-                    "source": "disk",
-                }
-            cache_doc = {
-                "schema": "beginner_guide_cache_v1",
-                "source_url": source_url,
-                "relay_url": relay_url,
-                "content_hash": fresh_sig,
-                "last_checked_at": now_iso,
-                "updated_at": str(fresh_guide.get("fetched_at") or now_iso),
-                "last_reason": str(reason or "request"),
-                "guide": fresh_guide,
-            }
-            _write_beginner_guide_cache_unlocked(cache_doc)
-            _remember_beginner_guide_in_memory(fresh_guide)
-        return {
-            "ok": True,
-            "cached": False,
-            "stale": False,
-            "unchanged": False,
-            "guide": fresh_guide,
-            "source": "live",
-        }
-    except Exception as exc:
-        with BEGINNER_GUIDE_LOCK:
-            old_cache = _read_beginner_guide_cache_unlocked()
-            old_guide = old_cache.get("guide") if isinstance(old_cache.get("guide"), dict) else {}
-            if isinstance(old_guide, dict) and old_guide:
-                old_cache["last_checked_at"] = now_iso
-                old_cache["last_reason"] = str(reason or "request")
-                old_cache["last_error"] = str(exc)
-                _write_beginner_guide_cache_unlocked(old_cache)
-                _remember_beginner_guide_in_memory(old_guide, error=str(exc))
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "stale": True,
-                    "warning": f"live fetch failed, serving stale cache: {exc}",
-                    "guide": old_guide,
-                    "source": "disk",
-                }
-            BEGINNER_GUIDE_CACHE["error"] = str(exc)
-        return {
-            "ok": False,
-            "error": f"failed to fetch beginner guide: {exc}",
-            "relay_url": relay_url,
-            "source_url": source_url,
-        }
-
-
-def _append_pipeline_runtime_log(event: str, **payload: object) -> None:
-    row: dict[str, object] = {
-        "ts": _now_iso(),
-        "event": str(event or "").strip() or "unknown",
-    }
-    for key, value in payload.items():
-        if value is None:
-            continue
-        row[str(key)] = value
-    try:
-        PIPELINE_RUNTIME_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with PIPELINE_RUNTIME_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-    except Exception:
-        return
-
-
-def _read_jsonl_tail(path: Path, limit: int = 200, keyword: str = "") -> list[dict]:
-    if not path.exists() or not path.is_file():
-        return []
-    safe_limit = _safe_limit(limit, default=200, min_value=1, max_value=2000)
-    keyword_norm = str(keyword or "").strip().lower()
-    rows: deque[dict] = deque(maxlen=safe_limit)
-    try:
-        with path.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                text = str(line or "").strip()
-                if not text:
-                    continue
-                if keyword_norm and keyword_norm not in text.lower():
-                    continue
-                try:
-                    obj = json.loads(text)
-                    if isinstance(obj, dict):
-                        rows.append(obj)
-                    else:
-                        rows.append({"raw": obj})
-                except Exception:
-                    rows.append({"raw": text})
-    except Exception:
-        return []
-    return list(rows)
-
-
-def _read_runtime_logs(kind: str, limit: int = 200, keyword: str = "") -> dict[str, object]:
-    tag = str(kind or "i18n_runtime").strip()
-    safe_limit = _safe_limit(limit, default=200, min_value=1, max_value=1000)
-    if tag == "all":
-        merged: list[dict] = []
-        for source_name, source_path in RUNTIME_LOG_PATHS.items():
-            for row in _read_jsonl_tail(source_path, limit=safe_limit, keyword=keyword):
-                item = dict(row)
-                item.setdefault("_source", source_name)
-                merged.append(item)
-        merged.sort(key=lambda x: str(x.get("ts") or x.get("updated_at") or ""))
-        merged = merged[-safe_limit:]
-        return {
-            "kind": "all",
-            "limit": safe_limit,
-            "rows": merged,
-            "sources": list(RUNTIME_LOG_PATHS.keys()),
-        }
-
-    target = RUNTIME_LOG_PATHS.get(tag)
-    if target is None:
-        return {
-            "kind": tag,
-            "limit": safe_limit,
-            "rows": [],
-            "error": f"unknown kind: {tag}",
-            "allowed_kinds": list(RUNTIME_LOG_PATHS.keys()) + ["all"],
-        }
-    rows = _read_jsonl_tail(target, limit=safe_limit, keyword=keyword)
-    return {
-        "kind": tag,
-        "limit": safe_limit,
-        "path": str(target),
-        "exists": target.exists(),
-        "rows": rows,
-    }
-
-
-def _normalize_progress_item(row: object) -> dict[str, str]:
-    data = row if isinstance(row, dict) else {}
-    return {
-        "id": str(data.get("id") or "").strip(),
-        "url": str(data.get("url") or "").strip(),
-        "title": str(data.get("title") or "").strip(),
-        "account": str(data.get("account") or "").strip(),
-        "published_at": str(data.get("published_at") or "").strip(),
-        "scan": str(data.get("scan") or "").strip(),
-        "curation": str(data.get("curation") or "").strip(),
-        "translation": str(data.get("translation") or "").strip(),
-        "stage": str(data.get("stage") or "").strip(),
-        "reason_code": str(data.get("reason_code") or "").strip(),
-        "reason": str(data.get("reason") or "").strip(),
-        "winner_post_id": str(data.get("winner_post_id") or "").strip(),
-        "winner_url": str(data.get("winner_url") or "").strip(),
-        "winner_title": str(data.get("winner_title") or "").strip(),
-    }
-
-
-def _normalize_progress_items(rows: object, limit: int = 60) -> list[dict[str, str]]:
-    if not isinstance(rows, list):
-        return []
-    out: list[dict[str, str]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        out.append(_normalize_progress_item(row))
-        if len(out) >= max(1, int(limit)):
-            break
-    return out
-
-
-def _blank_sync_pipeline(run_id: str = "", trigger: str = "") -> dict[str, object]:
-    return {
-        "run_id": str(run_id or ""),
-        "trigger": str(trigger or ""),
-        "scan": {
-            "status": "idle",
-            "total_sources": 0,
-            "done_sources": 0,
-            "found_cards": 0,
-            "latest_source": "",
-            "latest_source_cards": 0,
-            "done_source_names": [],
-            "pending_source_names": [],
-            "new_items": [],
-        },
-        "curation": {
-            "status": "idle",
-            "total_cards": 0,
-            "done_cards": 0,
-            "current_item": {},
-            "done_items": [],
-            "pending_items": [],
-        },
-        "translation": {
-            "status": "idle",
-            "percent": 0,
-            "items_done": 0,
-            "items_total": 0,
-            "langs": [],
-            "pending_items": [],
-        },
-        "lifecycle": [],
-        "post_stages": [],
-        "updated_at": _now_iso(),
-    }
-
-
-def _sync_progress_hook(payload: dict[str, object]) -> None:
-    if not isinstance(payload, dict):
-        return
-    event = str(payload.get("event") or "").strip().lower()
-    if not event:
-        return
-    log_payload: dict[str, object] = {"event_name": event}
-    if event.startswith("scan"):
-        log_payload.update(
-            {
-                "done_sources": _safe_int(payload.get("done_sources"), 0),
-                "total_sources": _safe_int(payload.get("total_sources"), 0),
-                "found_cards": _safe_int(payload.get("found_cards"), 0),
-                "latest_source": str(payload.get("latest_source") or ""),
-            }
-        )
-    elif event.startswith("curation"):
-        current = payload.get("current_item")
-        current_item = current if isinstance(current, dict) else {}
-        log_payload.update(
-            {
-                "done_cards": _safe_int(payload.get("done_cards"), 0),
-                "total_cards": _safe_int(payload.get("total_cards"), 0),
-                "current_card_id": str(current_item.get("id") or ""),
-                "current_title": str(current_item.get("title") or ""),
-            }
-        )
-    elif event == "lifecycle_update":
-        rows = payload.get("rows")
-        log_payload["rows_count"] = len(rows) if isinstance(rows, list) else 0
-    with SYNC_STATE_LOCK:
-        pipeline = SYNC_STATE.get("sync_pipeline")
-        if not isinstance(pipeline, dict):
-            pipeline = _blank_sync_pipeline(
-                run_id=uuid4().hex,
-                trigger=str(SYNC_STATE.get("trigger") or ""),
-            )
-            SYNC_STATE["sync_pipeline"] = pipeline
-
-        scan = pipeline.get("scan")
-        if not isinstance(scan, dict):
-            scan = {}
-            pipeline["scan"] = scan
-        curation = pipeline.get("curation")
-        if not isinstance(curation, dict):
-            curation = {}
-            pipeline["curation"] = curation
-
-        if event.startswith("scan"):
-            scan["status"] = "ok" if event == "scan_done" else "running"
-            scan["total_sources"] = _safe_int(payload.get("total_sources"), _safe_int(scan.get("total_sources"), 0))
-            scan["done_sources"] = _safe_int(payload.get("done_sources"), _safe_int(scan.get("done_sources"), 0))
-            scan["found_cards"] = _safe_int(payload.get("found_cards"), _safe_int(scan.get("found_cards"), 0))
-            scan["latest_source"] = str(payload.get("latest_source") or scan.get("latest_source") or "")
-            scan["latest_source_cards"] = _safe_int(payload.get("latest_source_cards"), _safe_int(scan.get("latest_source_cards"), 0))
-            done_names = payload.get("done_source_names")
-            pending_names = payload.get("pending_source_names")
-            if isinstance(done_names, list):
-                scan["done_source_names"] = [str(x) for x in done_names if str(x).strip()]
-            if isinstance(pending_names, list):
-                scan["pending_source_names"] = [str(x) for x in pending_names if str(x).strip()]
-            new_items = payload.get("new_items")
-            if isinstance(new_items, list):
-                scan["new_items"] = _normalize_progress_items(new_items, limit=40)
-
-        if event.startswith("curation"):
-            curation["status"] = "ok" if event == "curation_done" else "running"
-            curation["total_cards"] = _safe_int(payload.get("total_cards"), _safe_int(curation.get("total_cards"), 0))
-            curation["done_cards"] = _safe_int(payload.get("done_cards"), _safe_int(curation.get("done_cards"), 0))
-            curation["current_item"] = _normalize_progress_item(payload.get("current_item"))
-            curation["done_items"] = _normalize_progress_items(payload.get("done_items"), limit=80)
-            curation["pending_items"] = _normalize_progress_items(payload.get("pending_items"), limit=80)
-        elif event == "lifecycle_update":
-            pipeline["lifecycle"] = _normalize_progress_items(payload.get("rows"), limit=240)
-
-        pipeline["updated_at"] = _now_iso()
-        SYNC_STATE["sync_pipeline"] = pipeline
-    _append_pipeline_runtime_log("sync_progress", **log_payload)
-
-
-def _build_sync_pipeline_snapshot(sync_state: dict, feed: dict, i18n_state: dict, i18n_alignment: dict) -> dict:
-    base = sync_state.get("sync_pipeline")
-    pipeline = copy.deepcopy(base) if isinstance(base, dict) else _blank_sync_pipeline(
-        run_id="",
-        trigger=str(sync_state.get("trigger") or ""),
-    )
-
-    scan = pipeline.get("scan")
-    if not isinstance(scan, dict):
-        scan = {}
-        pipeline["scan"] = scan
-    curation = pipeline.get("curation")
-    if not isinstance(curation, dict):
-        curation = {}
-        pipeline["curation"] = curation
-
-    sync_status = str(sync_state.get("status") or "idle").strip().lower()
-    if str(scan.get("status") or "").strip().lower() in {"", "idle"} and sync_status == "running":
-        scan["status"] = "running"
-    if str(curation.get("status") or "").strip().lower() in {"", "idle"} and sync_status == "running":
-        curation["status"] = "running"
-
-    scan.setdefault("status", "idle")
-    scan.setdefault("total_sources", 0)
-    scan.setdefault("done_sources", 0)
-    scan.setdefault("found_cards", 0)
-    scan.setdefault("latest_source", "")
-    scan.setdefault("latest_source_cards", 0)
-    scan["done_source_names"] = [str(x) for x in (scan.get("done_source_names") or []) if str(x).strip()]
-    scan["pending_source_names"] = [str(x) for x in (scan.get("pending_source_names") or []) if str(x).strip()]
-    scan["new_items"] = _normalize_progress_items(scan.get("new_items"), limit=40)
-
-    curation.setdefault("status", "idle")
-    curation.setdefault("total_cards", 0)
-    curation.setdefault("done_cards", 0)
-    curation["current_item"] = _normalize_progress_item(curation.get("current_item"))
-    curation["done_items"] = _normalize_progress_items(curation.get("done_items"), limit=80)
-    curation["pending_items"] = _normalize_progress_items(curation.get("pending_items"), limit=80)
-
-    cards_raw = feed.get("cards")
-    cards = cards_raw if isinstance(cards_raw, list) else []
-    card_rows = [row for row in cards if isinstance(row, dict)]
-    card_index: dict[str, dict] = {}
-    for idx, row in enumerate(card_rows):
-        key = _card_lookup_key(row, idx)
-        if key and key not in card_index:
-            card_index[key] = row
-
-    lifecycle_runtime = pipeline.get("lifecycle")
-    lifecycle_feed = feed.get("post_lifecycle")
-    lifecycle_raw = lifecycle_runtime if isinstance(lifecycle_runtime, list) and lifecycle_runtime else (
-        lifecycle_feed if isinstance(lifecycle_feed, list) else []
-    )
-    lifecycle_rows = _normalize_progress_items(lifecycle_raw, limit=240)
-    if not lifecycle_rows:
-        for row in card_rows[:180]:
-            seeded = _normalize_progress_item(row)
-            seeded["scan"] = "done"
-            seeded["curation"] = "done"
-            seeded["translation"] = "pending"
-            seeded["stage"] = "selected"
-            lifecycle_rows.append(seeded)
-    pipeline["lifecycle"] = lifecycle_rows[:240]
-
-    lang_rows = i18n_alignment.get("langs") if isinstance(i18n_alignment.get("langs"), dict) else {}
-    target_langs = [lang for lang in ("en", "ko", "zh-Hans") if isinstance(lang_rows.get(lang), dict)]
-    i18n_running = str(i18n_state.get("status") or "").strip().lower() in {"running", "queued"}
-
-    selected_keys: list[str] = []
-    selected_rows: list[dict[str, str]] = []
-    for idx, row in enumerate(lifecycle_rows):
-        stage = str(row.get("stage") or "").strip().lower()
-        is_selected = stage in {"selected", "translating", "ready", "failed"}
-        if not is_selected:
-            continue
-        key = _progress_lookup_key(row, idx)
-        if not key:
-            continue
-        selected_keys.append(key)
-        selected_rows.append(row)
-
-    translation_langs: list[dict[str, object]] = []
-    lang_pending_sets: dict[str, set[str]] = {}
-    lang_failed_sets: dict[str, set[str]] = {}
-    lang_row_state: dict[str, str] = {}
-    lang_done_counts: dict[str, int] = {}
-    lang_total_counts: dict[str, int] = {}
-    lang_pending_counts: dict[str, int] = {}
-    for lang in target_langs:
-        row = lang_rows.get(lang) if isinstance(lang_rows.get(lang), dict) else {}
-        lang_done_counts[lang] = _safe_int(row.get("done"), 0)
-        lang_total_counts[lang] = _safe_int(row.get("total"), 0)
-        lang_pending_counts[lang] = _safe_int(row.get("pending_count"), 0)
-        state = str(row.get("state") or "").strip().lower()
-        lang_pending_sets[lang] = {
-            str(x).strip()
-            for x in (row.get("card_pending_ids") or [])
-            if str(x).strip()
-        }
-        lang_pending_sets[lang].update(
-            str(x).strip()
-            for x in (row.get("card_partial_ids") or [])
-            if str(x).strip()
-        )
-        lang_failed_sets[lang] = {
-            str(x).strip()
-            for x in (row.get("card_failed_ids") or [])
-            if str(x).strip()
-        }
-        lang_row_state[lang] = state
-
-    def _lang_state_for_card(lang: str, key: str) -> str:
-        if key in lang_failed_sets.get(lang, set()):
-            return "failed"
-        if key in lang_pending_sets.get(lang, set()):
-            return "pending"
-        row_state = lang_row_state.get(lang, "")
-        if row_state == "aligned_ready":
-            return "done"
-        if row_state == "failed":
-            return "failed"
-        if row_state == "aligned_pending":
-            if lang_pending_sets.get(lang):
-                return "done"
-            done = _safe_int(lang_done_counts.get(lang), 0)
-            total = _safe_int(lang_total_counts.get(lang), 0)
-            pending = _safe_int(lang_pending_counts.get(lang), 0)
-            if total > 0 and done >= total and pending <= 0:
-                return "done"
-        if i18n_running:
-            return "pending"
-        return "pending"
-
-    for lang in target_langs:
-        total = len(selected_keys)
-        done = 0
-        failed = 0
-        pending = 0
-        for key in selected_keys:
-            st = _lang_state_for_card(lang, key)
-            if st == "done":
-                done += 1
-            elif st == "failed":
-                failed += 1
-            else:
-                pending += 1
-        percent = round((done / total) * 100, 1) if total else 0
-        if failed > 0:
-            status = "failed"
-        elif total > 0 and done >= total:
-            status = "done"
-        elif i18n_running and total > 0:
-            status = "running"
-        elif total > 0:
-            status = "pending"
-        else:
-            status = "idle"
-        translation_langs.append(
-            {
-                "lang": lang,
-                "status": status,
-                "done": done,
-                "total": total,
-                "pending": pending,
-                "failed": failed,
-                "percent": percent,
-            }
-        )
-
-    post_stages: list[dict[str, str]] = []
-    pending_items: list[dict[str, str]] = []
-    ready_cards = 0
-    for idx, lifecycle_row in enumerate(lifecycle_rows):
-        row = _normalize_progress_item(lifecycle_row)
-        key = _progress_lookup_key(row, idx)
-        base_card = card_index.get(key)
-        if isinstance(base_card, dict):
-            card_row = _normalize_progress_item(base_card)
-            for field in ("title", "account", "published_at", "url", "id"):
-                if not row.get(field) and card_row.get(field):
-                    row[field] = card_row[field]
-
-        base_stage = str(row.get("stage") or "").strip().lower()
-        if base_stage == "scanned":
-            row["scan"] = "done"
-            row["curation"] = "pending"
-            row["translation"] = "pending"
-            row["stage"] = "scanned"
-            post_stages.append(row)
-            continue
-        if base_stage == "analyzing":
-            row["scan"] = "done"
-            row["curation"] = "running"
-            row["translation"] = "pending"
-            row["stage"] = "analyzing"
-            post_stages.append(row)
-            continue
-        if base_stage == "dedupe_dropped":
-            row["scan"] = "done"
-            row["curation"] = "done"
-            row["translation"] = "idle"
-            row["stage"] = "dedupe_dropped"
-            post_stages.append(row)
-            continue
-
-        is_selected = base_stage in {"selected", "translating", "ready", "failed"}
-        if not is_selected:
-            row["scan"] = "done"
-            row["curation"] = "done"
-            row["translation"] = "pending"
-            row["stage"] = "selected"
-            is_selected = True
-
-        translation_states: list[str] = []
-        if key:
-            for lang in target_langs:
-                translation_states.append(_lang_state_for_card(lang, key))
-
-        if not translation_states:
-            selected_stage = "ready"
-            translation_state = "done"
-        elif "failed" in translation_states:
-            selected_stage = "failed"
-            translation_state = "failed"
-        elif all(state == "done" for state in translation_states):
-            selected_stage = "ready"
-            translation_state = "done"
-        elif any(state == "pending" for state in translation_states):
-            selected_stage = "translating"
-            translation_state = "running"
-        else:
-            selected_stage = "selected"
-            translation_state = "pending"
-
-        row["scan"] = "done"
-        row["curation"] = "done"
-        row["translation"] = translation_state
-        row["stage"] = selected_stage
-        post_stages.append(row)
-        if selected_stage == "ready":
-            ready_cards += 1
-        elif selected_stage in {"selected", "translating", "failed"}:
-            pending_items.append(dict(row))
-
-    total_cards = len(selected_rows)
-    if not total_cards:
-        total_cards = ready_cards
-    if translation_langs and any(str(row.get("status")) == "failed" for row in translation_langs):
-        translation_status = "failed"
-    elif total_cards > 0 and ready_cards >= total_cards:
-        translation_status = "ok"
-    elif any(str(row.get("stage")) == "translating" for row in post_stages):
-        translation_status = "running"
-    elif i18n_running and total_cards > 0:
-        translation_status = "running"
-    elif total_cards > 0:
-        translation_status = "pending"
-    else:
-        translation_status = "idle"
-
-    percent = round((ready_cards / total_cards) * 100, 1) if total_cards else 0
-    pipeline["translation"] = {
-        "status": translation_status,
-        "percent": percent,
-        "items_done": ready_cards,
-        "items_total": total_cards,
-        "langs": translation_langs,
-        "pending_items": pending_items[:40],
-    }
-    pipeline["post_stages"] = post_stages[:80]
-    pipeline["updated_at"] = _now_iso()
-    pipeline["run_id"] = str(pipeline.get("run_id") or "")
-    pipeline["trigger"] = str(pipeline.get("trigger") or sync_state.get("trigger") or "")
-    return pipeline
-
-
-def _progress_lookup_key(row: dict, index: int) -> str:
-    if not isinstance(row, dict):
-        return f"idx:{index}"
-    card_id = str(row.get("id") or "").strip()
-    if card_id:
-        return card_id
-    card_url = str(row.get("url") or "").strip()
-    if card_url:
-        return card_url
-    return _card_lookup_key(row, index)
 
 
 def _count_recent_cards(cards: list[dict], hours: int) -> int:
@@ -1561,68 +597,28 @@ def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
 
 def _sync_state_snapshot() -> dict:
     with SYNC_STATE_LOCK:
-        return copy.deepcopy(SYNC_STATE)
+        return dict(SYNC_STATE)
 
 
 def _start_sync_state(trigger: str = "") -> None:
     with SYNC_STATE_LOCK:
-        run_id = uuid4().hex
         SYNC_STATE["status"] = "running"
         SYNC_STATE["started_at"] = _now_iso()
         SYNC_STATE["finished_at"] = ""
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["trigger"] = str(trigger or "manual")
         SYNC_STATE["duration_ms"] = 0
-        SYNC_STATE["sync_pipeline"] = _blank_sync_pipeline(
-            run_id=run_id,
-            trigger=str(trigger or "manual"),
-        )
-    _append_pipeline_runtime_log(
-        "sync_start",
-        run_id=run_id,
-        trigger=str(trigger or "manual"),
-    )
 
 
 def _finish_sync_state_ok(started_monotonic: float) -> None:
     now_iso = _now_iso()
     duration_ms = max(0, int(round((time.monotonic() - float(started_monotonic)) * 1000)))
-    scan_done_sources = 0
-    scan_total_sources = 0
-    curation_done_cards = 0
-    curation_total_cards = 0
     with SYNC_STATE_LOCK:
         SYNC_STATE["status"] = "ok"
         SYNC_STATE["finished_at"] = now_iso
         SYNC_STATE["last_success_at"] = now_iso
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["duration_ms"] = duration_ms
-        pipeline = SYNC_STATE.get("sync_pipeline")
-        if isinstance(pipeline, dict):
-            scan = pipeline.get("scan")
-            if isinstance(scan, dict) and str(scan.get("status") or "").strip().lower() == "running":
-                if _safe_int(scan.get("done_sources")) >= _safe_int(scan.get("total_sources")):
-                    scan["status"] = "ok"
-            curation = pipeline.get("curation")
-            if isinstance(curation, dict) and str(curation.get("status") or "").strip().lower() == "running":
-                if _safe_int(curation.get("done_cards")) >= _safe_int(curation.get("total_cards")):
-                    curation["status"] = "ok"
-            if isinstance(scan, dict):
-                scan_done_sources = _safe_int(scan.get("done_sources"), 0)
-                scan_total_sources = _safe_int(scan.get("total_sources"), 0)
-            if isinstance(curation, dict):
-                curation_done_cards = _safe_int(curation.get("done_cards"), 0)
-                curation_total_cards = _safe_int(curation.get("total_cards"), 0)
-            pipeline["updated_at"] = now_iso
-            SYNC_STATE["sync_pipeline"] = pipeline
-    _append_pipeline_runtime_log(
-        "sync_finish_ok",
-        duration_ms=duration_ms,
-        scan_done_sources=scan_done_sources,
-        scan_total_sources=scan_total_sources,
-        curation_done_cards=curation_done_cards,
-        curation_total_cards=curation_total_cards,
-    )
 
 
 def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
@@ -1633,21 +629,6 @@ def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> N
         SYNC_STATE["finished_at"] = now_iso
         SYNC_STATE["last_error"] = str(error_message or "unknown_error")
         SYNC_STATE["duration_ms"] = duration_ms
-        pipeline = SYNC_STATE.get("sync_pipeline")
-        if isinstance(pipeline, dict):
-            for key in ("scan", "curation"):
-                row = pipeline.get(key)
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("status") or "").strip().lower() in {"running", "queued"}:
-                    row["status"] = "failed"
-            pipeline["updated_at"] = now_iso
-            SYNC_STATE["sync_pipeline"] = pipeline
-    _append_pipeline_runtime_log(
-        "sync_finish_failed",
-        duration_ms=duration_ms,
-        error=str(error_message or "unknown_error"),
-    )
 
 
 def _mark_sync_schedule(
@@ -1672,28 +653,11 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     started_monotonic = time.monotonic()
     _start_sync_state(trigger=trigger)
     try:
-        result = sync_accounts(
-            accounts=accounts,
-            window_days=max(1, int(days)),
-            progress_hook=_sync_progress_hook,
-        )
-        cards = result.get("cards")
-        _append_pipeline_runtime_log(
-            "sync_accounts_done",
-            trigger=trigger,
-            generated_at=str(result.get("generated_at") or ""),
-            cards_count=len(cards) if isinstance(cards, list) else 0,
-        )
-        retranslate = queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
-        _append_pipeline_runtime_log(
-            "i18n_retranslate_queued",
-            trigger=trigger,
-            retranslate=retranslate,
-        )
+        result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
+        build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
         return result
     except Exception as sync_error:
-        _append_pipeline_runtime_log("sync_exception", trigger=trigger, error=str(sync_error))
         _finish_sync_state_failed(started_monotonic, str(sync_error))
         raise
 
@@ -1707,7 +671,7 @@ def _warm_i18n_bundle_from_feed() -> None:
         return
     if not isinstance(feed, dict):
         return
-    queue_i18n_retranslate(feed, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
 
 
 def _start_x_sync_scheduler(
@@ -1743,62 +707,16 @@ def _start_x_sync_scheduler(
             )
             with SYNC_STATE_LOCK:
                 is_running = str(SYNC_STATE.get("status") or "").strip().lower() == "running"
-            _append_pipeline_runtime_log(
-                "scheduled_sync_tick",
-                scheduled_at=scheduled_at,
-                next_run_at=next_run,
-                interval_hours=safe_interval_hours,
-                window_days=safe_window_days,
-                skipped=bool(is_running),
-            )
             if is_running:
                 with SYNC_STATE_LOCK:
                     SYNC_STATE["last_error"] = "scheduled sync skipped: another sync is running"
-                _append_pipeline_runtime_log("scheduled_sync_skipped", reason="another sync is running")
                 delay = interval_seconds
                 continue
             try:
                 _run_intel_sync(accounts=None, days=safe_window_days, trigger="scheduled")
             except Exception:
-                _append_pipeline_runtime_log("scheduled_sync_error", error="sync loop exception")
                 pass
             delay = interval_seconds
-
-    Thread(target=_loop, daemon=True).start()
-
-
-def _start_beginner_guide_scheduler(
-    *,
-    interval_seconds: int = BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS,
-    run_on_startup: bool = BEGINNER_GUIDE_RUN_ON_STARTUP,
-) -> None:
-    if not BEGINNER_GUIDE_SYNC_ENABLED:
-        _append_pipeline_runtime_log("beginner_guide_scheduler_disabled", enabled=False)
-        return
-
-    safe_interval_seconds = max(3600, int(interval_seconds or BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS))
-
-    def _log_refresh(trigger: str, payload: dict[str, object]) -> None:
-        _append_pipeline_runtime_log(
-            "beginner_guide_refresh",
-            trigger=trigger,
-            ok=bool(payload.get("ok")),
-            cached=bool(payload.get("cached")),
-            stale=bool(payload.get("stale")),
-            source=str(payload.get("source") or ""),
-            unchanged=bool(payload.get("unchanged")),
-            error=str(payload.get("error") or payload.get("warning") or ""),
-        )
-
-    if run_on_startup:
-        startup_payload = _fetch_beginner_guide(force=True, reason="startup")
-        _log_refresh("startup", startup_payload)
-
-    def _loop() -> None:
-        while True:
-            time.sleep(safe_interval_seconds)
-            scheduled_payload = _fetch_beginner_guide(force=True, reason="scheduled")
-            _log_refresh("scheduled", scheduled_payload)
 
     Thread(target=_loop, daemon=True).start()
 
@@ -1851,73 +769,6 @@ def _spawn_website_backup(trigger: str = "manual") -> bool:
 
     Thread(target=_worker, daemon=True).start()
     return True
-
-
-def _restore_state_snapshot() -> dict:
-    with RESTORE_STATE_LOCK:
-        return dict(RESTORE_STATE if isinstance(RESTORE_STATE, dict) else {})
-
-
-def _run_website_restore(force: bool = True, trigger: str = "manual") -> dict:
-    global RESTORE_STATE
-
-    trigger_text = str(trigger or "manual").strip() or "manual"
-    force_restore = bool(force)
-    with RESTORE_STATE_LOCK:
-        if str(RESTORE_STATE.get("status") or "").strip().lower() == "running":
-            return {
-                "ok": False,
-                "restored": False,
-                "reason": "already_running",
-                "status": "running",
-                "trigger": trigger_text,
-                "force": force_restore,
-            }
-        started_at = _now_iso()
-        RESTORE_STATE = {
-            **dict(RESTORE_STATE if isinstance(RESTORE_STATE, dict) else {}),
-            "ok": True,
-            "restored": False,
-            "reason": "running",
-            "status": "running",
-            "trigger": trigger_text,
-            "manual": True,
-            "force": force_restore,
-            "started_at": started_at,
-            "finished_at": "",
-            "duration_ms": 0,
-            "last_error": "",
-        }
-
-    started = time.monotonic()
-    result = restore_website_data_from_backup(
-        DATA_ROOT,
-        ROOT.parent,
-        manual=True,
-        force_override=force_restore,
-    )
-    now_iso = _now_iso()
-    duration_ms = max(0, int(round((time.monotonic() - started) * 1000)))
-    ok = bool(result.get("ok"))
-    restored = bool(result.get("restored"))
-    error = "" if ok else str(result.get("error") or result.get("reason") or "unknown_error")
-    next_state = {
-        **dict(result if isinstance(result, dict) else {}),
-        "status": "ok" if ok else "failed",
-        "trigger": trigger_text,
-        "manual": True,
-        "force": force_restore,
-        "started_at": started_at,
-        "finished_at": now_iso,
-        "duration_ms": duration_ms,
-        "last_error": error,
-    }
-    if ok and restored:
-        next_state["last_success_at"] = now_iso
-
-    with RESTORE_STATE_LOCK:
-        RESTORE_STATE = next_state
-        return dict(RESTORE_STATE)
 
 
 def _collect_jobs_snapshot(limit: int = 12) -> dict:
@@ -1977,7 +828,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
-    restore_state = _restore_state_snapshot()
+    x_source_config = read_x_source_config()
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
@@ -2013,7 +864,6 @@ def _build_admin_status(limit: int = 10) -> dict:
     i18n_payload["raw_status"] = i18n_raw_status or "idle"
     i18n_payload["effective_status"] = i18n_effective_status
     i18n_payload["alignment"] = i18n_alignment
-    sync_pipeline = _build_sync_pipeline_snapshot(sync_state, feed, i18n_state, i18n_alignment)
 
     return {
         "server_time": _now_iso(),
@@ -2094,6 +944,14 @@ def _build_admin_status(limit: int = 10) -> dict:
             },
         ],
         "monitors": {
+            "x": {
+                "accounts": [str(x) for x in (x_source_config.get("x_accounts") or []) if str(x).strip()],
+                "default_accounts": [str(x) for x in (x_source_config.get("default_x_accounts") or []) if str(x).strip()],
+                "using_default": bool(x_source_config.get("using_default")),
+                "updated_at": str(x_source_config.get("updated_at") or ""),
+                "source_stats": feed.get("source_stats") if isinstance(feed.get("source_stats"), dict) else {},
+                "source_quality": feed.get("source_quality") if isinstance(feed.get("source_quality"), dict) else {},
+            },
             "discord": {
                 "enabled": bool(discord_info.get("enabled")),
                 "configured": bool(discord_info.get("configured")),
@@ -2107,10 +965,9 @@ def _build_admin_status(limit: int = 10) -> dict:
             "langs": news_states,
         },
         "i18n": i18n_payload,
-        "sync_pipeline": sync_pipeline,
         "storage": {
             **STORAGE_STATE,
-            "restore": restore_state,
+            "restore": RESTORE_STATE,
         },
         "backup": {
             **backup_status,
@@ -2328,12 +1185,12 @@ def _run_analyze_job(job_id: str, url: str) -> None:
         tweet = result.get("tweet") if isinstance(result.get("tweet"), dict) else {}
         feed = result.get("feed") if isinstance(result.get("feed"), dict) else {}
         if feed:
-            queue_i18n_retranslate(feed, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+            build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
         _update_job(
             job_id,
             status="done",
             finished_at=_now_iso(),
-            message="分析完成，已進入貼文分析流程。",
+            message="分析完成，已加入精選卡片。",
             tweet_id=tweet.get("id"),
             tweet_url=tweet.get("url"),
             generated_at=feed.get("generated_at"),
@@ -2382,21 +1239,69 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
         self.send_header("Vary", "Origin")
 
-    def _auth_token_from_header(self) -> str:
-        value = str(self.headers.get("Authorization") or "").strip()
-        if not value:
+    def _is_secure_cookie(self) -> bool:
+        if COOKIE_SECURE_ENV in {"1", "true", "yes", "y", "on"}:
+            return True
+        if COOKIE_SECURE_ENV in {"0", "false", "no", "n", "off"}:
+            return False
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        if proto == "https":
+            return True
+        return False
+
+    def _session_cookie_header(self, session_id: str) -> str:
+        parts = [
+            f"{AUTH_COOKIE_NAME}={session_id}",
+            "Path=/",
+            "HttpOnly",
+            f"SameSite={COOKIE_SAMESITE}",
+            f"Max-Age={SESSION_TTL_SECONDS}",
+        ]
+        if COOKIE_DOMAIN:
+            parts.append(f"Domain={COOKIE_DOMAIN}")
+        if self._is_secure_cookie():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _clear_session_cookie_header(self) -> str:
+        parts = [
+            f"{AUTH_COOKIE_NAME}=",
+            "Path=/",
+            "HttpOnly",
+            f"SameSite={COOKIE_SAMESITE}",
+            "Max-Age=0",
+            "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        ]
+        if COOKIE_DOMAIN:
+            parts.append(f"Domain={COOKIE_DOMAIN}")
+        if self._is_secure_cookie():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _session_id_from_cookie(self) -> str:
+        cookie_raw = str(self.headers.get("Cookie") or "").strip()
+        if not cookie_raw:
             return ""
-        parts = value.split(" ", 1)
-        if len(parts) != 2:
+        jar = SimpleCookie()
+        try:
+            jar.load(cookie_raw)
+        except Exception:
             return ""
-        if parts[0].strip().lower() != "bearer":
+        node = jar.get(AUTH_COOKIE_NAME)
+        if not node:
             return ""
-        return parts[1].strip()
+        return str(node.value or "").strip()
 
     def _current_user(self) -> str:
         if not AUTH_REQUIRED:
             return "admin"
-        return _verify_auth_token(self._auth_token_from_header())
+        session_id = self._session_id_from_cookie()
+        if not session_id:
+            return ""
+        state = _get_session(session_id)
+        if not state:
+            return ""
+        return str(state.get("username") or "").strip()
 
     def _auth_me_payload(self) -> dict:
         if not AUTH_REQUIRED:
@@ -2407,8 +1312,6 @@ class Handler(SimpleHTTPRequestHandler):
                 "authenticated": True,
                 "user": "admin",
                 "mode": "open",
-                "token_type": "Bearer",
-                "token_ttl_seconds": TOKEN_TTL_SECONDS,
             }
         if not AUTH_CONFIGURED:
             return {
@@ -2428,8 +1331,6 @@ class Handler(SimpleHTTPRequestHandler):
             "authenticated": bool(user),
             "user": user,
             "mode": "protected",
-            "token_type": "Bearer",
-            "token_ttl_seconds": TOKEN_TTL_SECONDS,
         }
 
     def _require_admin_access(self) -> bool:
@@ -2482,48 +1383,6 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         return self._require_admin_access()
 
-    def _frontend_runtime_api_base(self) -> str:
-        explicit = str(FRONTEND_INTEL_API_BASE_ENV or "").strip().rstrip("/")
-        if explicit:
-            return explicit
-        if not FRONTEND_USE_LOCAL_API:
-            return ""
-        host = str(self.headers.get("Host") or "").strip()
-        if not host:
-            return ""
-        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
-        scheme = "https" if proto == "https" else "http"
-        return f"{scheme}://{host}".rstrip("/")
-
-    def _serve_html_with_runtime_config(self, path: str) -> bool:
-        request_path = str(path or "/").strip() or "/"
-        if request_path == "/":
-            request_path = "/index.html"
-        if not request_path.lower().endswith(".html"):
-            return False
-        file_path = Path(self.translate_path(request_path))
-        if not file_path.exists() or not file_path.is_file():
-            return False
-        try:
-            html = file_path.read_text(encoding="utf-8")
-        except Exception:
-            return False
-        api_base = self._frontend_runtime_api_base()
-        runtime_script = f"<script>window.__INTEL_API_BASE={json.dumps(api_base, ensure_ascii=False)};</script>"
-        if "</head>" in html:
-            html = html.replace("</head>", f"{runtime_script}\n</head>", 1)
-        else:
-            html = f"{runtime_script}\n{html}"
-        raw = html.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-        return True
-
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._set_cors_headers()
@@ -2546,18 +1405,6 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to build admin status: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
-        if path == "/api/intel/runtime-log":
-            try:
-                query = urlparse(self.path).query
-                params = parse_qs(query, keep_blank_values=False)
-                kind = str((params.get("kind") or ["i18n_runtime"])[0] or "i18n_runtime")
-                limit = _safe_limit((params.get("limit") or ["200"])[0], default=200, min_value=1, max_value=1000)
-                keyword = str((params.get("q") or params.get("keyword") or [""])[0] or "").strip()
-                payload = _read_runtime_logs(kind=kind, limit=limit, keyword=keyword)
-                self._send_json({"ok": True, "runtime_log": payload})
-            except Exception as exc:
-                self._send_json({"ok": False, "error": f"failed to read runtime log: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
@@ -2579,22 +1426,8 @@ class Handler(SimpleHTTPRequestHandler):
             localized_feed = localized_feed_from_bundle(feed, request_lang)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
-        if path == "/api/beginner-guide":
-            try:
-                query = urlparse(self.path).query
-                params = parse_qs(query, keep_blank_values=False)
-                refresh_raw = str((params.get("refresh") or [""])[0] or "").strip().lower()
-                force = refresh_raw in {"1", "true", "yes", "y", "on"}
-                result = _fetch_beginner_guide(force=force, reason="manual_refresh" if force else "request")
-                status = HTTPStatus.OK if bool(result.get("ok")) else HTTPStatus.BAD_GATEWAY
-                self._send_json(result, status=status)
-            except Exception as exc:
-                self._send_json({"ok": False, "error": f"failed to load beginner guide: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
         if path.startswith("/api/"):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
-            return
-        if self._serve_html_with_runtime_config(path):
             return
         super().do_GET()
 
@@ -2608,12 +1441,11 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/pick",
             "/api/intel/timeline",
             "/api/intel/event-wall",
-            "/api/intel/generate-cover",
             "/api/intel/sbt-fields",
             "/api/intel/feedback",
+            "/api/intel/source-config",
             "/api/intel/job-status",
             "/api/intel/backup",
-            "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
@@ -2632,7 +1464,6 @@ class Handler(SimpleHTTPRequestHandler):
             username = str(payload.get("username") or "").strip()
             password = str(payload.get("password") or "")
             if not AUTH_REQUIRED:
-                token = _create_auth_token("admin")
                 self._send_json(
                     {
                         "ok": True,
@@ -2640,9 +1471,6 @@ class Handler(SimpleHTTPRequestHandler):
                         "authenticated": True,
                         "user": "admin",
                         "mode": "open",
-                        "token_type": "Bearer",
-                        "token_ttl_seconds": TOKEN_TTL_SECONDS,
-                        "token": token,
                     }
                 )
                 return
@@ -2658,7 +1486,7 @@ class Handler(SimpleHTTPRequestHandler):
             if username != AUTH_USERNAME or not _verify_password(password):
                 self._send_json({"ok": False, "error": "帳號或密碼錯誤"}, status=HTTPStatus.UNAUTHORIZED)
                 return
-            token = _create_auth_token(username)
+            sid = _create_session(username)
             self._send_json(
                 {
                     "ok": True,
@@ -2667,14 +1495,14 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": True,
                     "user": username,
                     "mode": "protected",
-                    "token_type": "Bearer",
-                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
-                    "token": token,
                 },
+                extra_headers={"Set-Cookie": self._session_cookie_header(sid)},
             )
             return
 
         if path == "/api/auth/logout":
+            sid = self._session_id_from_cookie()
+            _delete_session(sid)
             self._send_json(
                 {
                     "ok": True,
@@ -2683,9 +1511,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": False,
                     "user": "",
                     "mode": "protected" if AUTH_REQUIRED else "open",
-                    "token_type": "Bearer",
-                    "token_ttl_seconds": TOKEN_TTL_SECONDS,
                 },
+                extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
             )
             return
 
@@ -2725,7 +1552,6 @@ class Handler(SimpleHTTPRequestHandler):
                     accounts = None
                 days = int(payload.get("days", 30) or 30)
                 trigger = self._current_user() or "manual"
-                _append_pipeline_runtime_log("api_sync_request", trigger=trigger, days=max(1, days), accounts=accounts or [])
                 result = _run_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
                 self._send_json({"ok": True, "feed": result})
                 return
@@ -2739,7 +1565,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if action == "exclude" and reason:
                     feedback = add_classification_feedback(tweet_id, "exclude", reason=reason)
                 result = sync_accounts()
-                queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
                 return
 
@@ -2747,147 +1573,54 @@ class Handler(SimpleHTTPRequestHandler):
                 tweet_id = str(payload.get("id") or "").strip()
                 timeline_date = str(payload.get("timeline_date") or "").strip()
                 timeline_end_date = str(payload.get("timeline_end_date") or "").strip()
-                updated = update_card_timeline_fields(
-                    tweet_id,
-                    timeline_date=timeline_date,
-                    timeline_end_date=timeline_end_date,
-                )
+                update = update_card_timeline_fields(tweet_id, timeline_date=timeline_date, timeline_end_date=timeline_end_date)
                 feed = _read_feed_snapshot()
-                self._send_json({"ok": True, "updated": updated, "feed": feed})
+                build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "update": update, "feed": feed})
                 return
 
             if path == "/api/intel/event-wall":
                 tweet_id = str(payload.get("id") or "").strip()
-                updated = update_card_event_wall_field(
-                    tweet_id,
-                    event_wall=payload.get("event_wall"),
-                )
+                update = update_card_event_wall_field(tweet_id, bool(payload.get("event_wall")))
                 feed = _read_feed_snapshot()
-                self._send_json({"ok": True, "updated": updated, "feed": feed})
-                return
-
-            if path == "/api/intel/generate-cover":
-                tweet_id = str(payload.get("id") or "").strip()
-                linked_card_url = str(payload.get("linked_card_url") or "").strip()
-                title = str(payload.get("title") or "").strip()
-                force = bool(payload.get("force"))
-
-                feed = _read_feed_snapshot()
-                cards = feed.get("cards") if isinstance(feed, dict) else None
-                if not isinstance(cards, list):
-                    self._send_json({"ok": False, "error": "feed cards not found"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-
-                target_row = None
-                if tweet_id:
-                    for row in cards:
-                        if isinstance(row, dict) and str(row.get("id") or "").strip() == tweet_id:
-                            target_row = row
-                            break
-                if target_row is None and linked_card_url:
-                    for row in cards:
-                        if isinstance(row, dict) and str(row.get("url") or "").strip() == linked_card_url:
-                            target_row = row
-                            break
-                if target_row is None and title:
-                    exact = title.strip().lower()
-                    for row in cards:
-                        if not isinstance(row, dict):
-                            continue
-                        if str(row.get("title") or "").strip().lower() == exact:
-                            target_row = row
-                            break
-                if target_row is None and title:
-                    keyword = title.strip().lower()
-                    for row in cards:
-                        if not isinstance(row, dict):
-                            continue
-                        value = str(row.get("title") or "").strip().lower()
-                        if keyword and keyword in value:
-                            target_row = row
-                            break
-                if not isinstance(target_row, dict):
-                    self._send_json({"ok": False, "error": "target card not found"}, status=HTTPStatus.NOT_FOUND)
-                    return
-
-                target_card = StoryCard(
-                    id=str(target_row.get("id") or "").strip(),
-                    account=str(target_row.get("account") or "").strip(),
-                    url=str(target_row.get("url") or "").strip(),
-                    title=str(target_row.get("title") or "").strip(),
-                    summary=str(target_row.get("summary") or "").strip(),
-                    bullets=[str(x) for x in (target_row.get("bullets") or []) if str(x).strip()][:5],
-                    published_at=str(target_row.get("published_at") or "").strip(),
-                    confidence=float(target_row.get("confidence") or 0.66),
-                    card_type=str(target_row.get("card_type") or "").strip(),
-                    layout=str(target_row.get("layout") or "").strip(),
-                    tags=[str(x) for x in (target_row.get("tags") or []) if str(x).strip()][:5],
-                    raw_text=str(target_row.get("raw_text") or "").strip(),
-                    provider=str(target_row.get("provider") or "").strip() or "manual",
-                    cover_image=str(target_row.get("cover_image") or "").strip(),
-                    metrics=target_row.get("metrics") if isinstance(target_row.get("metrics"), dict) else {},
-                    event_facts=target_row.get("event_facts") if isinstance(target_row.get("event_facts"), dict) else {},
-                    topic_labels=target_row.get("topic_labels") if isinstance(target_row.get("topic_labels"), list) else [],
-                )
-                if not target_card.raw_text:
-                    target_card.raw_text = " ".join(
-                        x for x in [target_card.title, target_card.summary, " ".join(target_card.bullets)] if x
-                    )[:2500]
-
-                generated = generate_minimax_cover_image(target_card, force=force)
-                updated = {}
-                if not bool(generated.get("skipped")):
-                    cover_image = str(generated.get("cover_image") or "").strip()
-                    if not cover_image:
-                        self._send_json({"ok": False, "error": "cover generated but path missing"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-                        return
-                    updated = update_card_cover_image(
-                        str(target_card.id or "").strip(),
-                        linked_card_url=str(target_card.url or "").strip(),
-                        cover_image=cover_image,
-                    )
-                    feed = _read_feed_snapshot()
-
-                self._send_json(
-                    {
-                        "ok": True,
-                        "target": {
-                            "id": str(target_card.id or "").strip(),
-                            "title": str(target_card.title or "").strip(),
-                            "url": str(target_card.url or "").strip(),
-                        },
-                        "generated": generated,
-                        "updated": updated,
-                        "feed": feed,
-                    }
-                )
+                build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "update": update, "feed": feed})
                 return
 
             if path == "/api/intel/sbt-fields":
                 tweet_id = str(payload.get("id") or "").strip()
-                linked_card_url = str(payload.get("linked_card_url") or "").strip()
-                sbt_names = payload.get("sbt_names")
-                if sbt_names is None:
-                    sbt_names = payload.get("sbt_name")
-                sbt_acquisition = payload.get("sbt_acquisition")
-                updated = update_card_sbt_fields(
+                update = update_card_sbt_fields(
                     tweet_id,
-                    linked_card_url=linked_card_url,
-                    sbt_names=sbt_names,
-                    sbt_acquisition=sbt_acquisition,
+                    sbt_names=payload.get("sbt_names") or "",
+                    sbt_acquisition=str(payload.get("sbt_acquisition") or "").strip(),
                 )
                 feed = _read_feed_snapshot()
-                self._send_json({"ok": True, "updated": updated, "feed": feed})
+                build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "update": update, "feed": feed})
                 return
 
             if path == "/api/intel/feedback":
                 tweet_id = str(payload.get("id") or "").strip()
                 label = str(payload.get("label") or "").strip().lower()
+                card_type = str(payload.get("card_type") or "").strip().lower()
+                section = str(payload.get("section") or payload.get("topic_label") or "").strip().lower()
+                topic_labels = payload.get("topic_labels")
                 reason = str(payload.get("reason") or "").strip()
-                feedback = add_classification_feedback(tweet_id, label, reason=reason)
+                if card_type or section or isinstance(topic_labels, list):
+                    feedback = add_classification_feedback_fields(tweet_id, card_type=card_type, topic_label=section, topic_labels=topic_labels if isinstance(topic_labels, list) else None, reason=reason)
+                else:
+                    feedback = add_classification_feedback(tweet_id, label, reason=reason)
                 result = sync_accounts()
-                queue_i18n_retranslate(result, target_langs=["en", "ko", "zh-Hans"], force_full=False)
+                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "feedback": feedback, "feed": result})
+                return
+
+            if path == "/api/intel/source-config":
+                action = str(payload.get("action") or "").strip().lower()
+                account = str(payload.get("account") or "").strip()
+                accounts = payload.get("accounts")
+                source = update_x_source_accounts(action=action, account=account, accounts=accounts if isinstance(accounts, list) else None)
+                self._send_json({"ok": True, "source": source})
                 return
 
             if path == "/api/intel/job-status":
@@ -2907,11 +1640,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
                 return
 
-            if path == "/api/intel/restore":
-                restore = _run_website_restore(force=bool(payload.get("force")), trigger=self._current_user() or "manual")
-                self._send_json({"ok": True, "restore": restore})
-                return
-
             if path == "/api/intel/retranslate":
                 lang_raw = str(payload.get("lang") or "").strip().lower()
                 if not lang_raw or lang_raw == "all":
@@ -2925,13 +1653,6 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "feed not ready"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                     return
                 result = queue_i18n_retranslate(feed, target_langs=target_langs, force_full=force_full)
-                _append_pipeline_runtime_log(
-                    "api_retranslate_request",
-                    by=self._current_user() or "manual",
-                    target_langs=target_langs,
-                    force_full=force_full,
-                    retranslate=result,
-                )
                 self._send_json({"ok": True, "retranslate": result, "i18n": i18n_state_snapshot()})
                 return
 
@@ -3010,10 +1731,6 @@ def main() -> int:
         )
     if I18N_WARM_ON_STARTUP:
         _warm_i18n_bundle_from_feed()
-    _start_beginner_guide_scheduler(
-        interval_seconds=BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS,
-        run_on_startup=BEGINNER_GUIDE_RUN_ON_STARTUP,
-    )
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")
@@ -3023,17 +1740,6 @@ def main() -> int:
         f"migrated={bool(STORAGE_STATE.get('migrated'))}"
     )
     print(f"[ai-intel] pokemon news auto refresh every {max(1, int(args.news_interval_minutes))} minutes; langs={langs or ['zh-Hant']}")
-    if BEGINNER_GUIDE_SYNC_ENABLED:
-        print(
-            "[ai-intel] beginner guide refresh "
-            f"every {int(BEGINNER_GUIDE_REFRESH_INTERVAL_SECONDS)} seconds; "
-            f"startup={bool(BEGINNER_GUIDE_RUN_ON_STARTUP)}; cache={BEGINNER_GUIDE_CACHE_PATH}"
-        )
-    else:
-        print(
-            "[ai-intel] beginner guide Notion sync disabled by default; "
-            "set BEGINNER_GUIDE_SYNC_ENABLED=1 to enable"
-        )
     if args.no_sync_scheduler:
         print("[ai-intel] X/Discord auto sync disabled")
     else:
@@ -3045,9 +1751,10 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/intel/runtime-log, GET /api/beginner-guide, "
-        "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/generate-cover, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
+        "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
+        "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
+        "POST /api/intel/feedback, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )
     print(

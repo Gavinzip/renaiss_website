@@ -1113,8 +1113,8 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
         if label not in labels and label in ALLOWED_TOPIC_LABELS:
             labels.append(label)
 
-    account = str(card.account or "").strip().lower().lstrip("@")
-    if account.startswith("renaiss"):
+    account = normalize_account_handle(card.account)
+    if is_official_source_card(card):
         add("official")
 
     strict_event_call = bool(STRICT_EVENT_CALL_RE.search(source))
@@ -1152,11 +1152,7 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
     if _has_sbt_evidence(source, card.card_type, facts):
         add("sbt")
 
-    if re.search(
-        r"pokemon|寶可夢|宝可梦|one\s*piece|tcg|卡牌|卡片|pack|luffy|psa|snkrdunk|pricecharting|collectr|op\d{1,2}",
-        source,
-        re.I,
-    ):
+    if has_pokemon_topic_evidence(source):
         add("pokemon")
 
     if card.card_type in {"feature", "announcement"} or re.search(
@@ -1166,10 +1162,11 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
     ):
         add("alpha")
 
-    if card.card_type == "report" or (
-        GUIDE_SIGNAL_RE.search(source) and not account.startswith("renaiss")
-    ):
-        add("tools")
+    if has_guide_topic_evidence(source, card.card_type):
+        add("guides")
+
+    if is_community_pick_source_card(card):
+        add("community")
 
     if not labels:
         add("other")
@@ -1190,7 +1187,7 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
             " ".join(str(x) for x in (normalize_event_facts(card.event_facts).values())),
         ]
     ))
-    account = str(card.account or "").strip().lower().lstrip("@")
+    account = normalize_account_handle(card.account)
 
     if "events" in merged:
         strict_event_call = bool(STRICT_EVENT_CALL_RE.search(source))
@@ -1200,10 +1197,15 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
         if has_threshold_notice and not strict_event_call and not _has_event_evidence(source, timeline_iso=str(card.timeline_date or "")):
             merged = [x for x in merged if x != "events"]
 
-    if "tools" in merged:
-        allow_tools = card.card_type == "report" or (bool(GUIDE_SIGNAL_RE.search(source)) and not account.startswith("renaiss"))
-        if not allow_tools:
-            merged = [x for x in merged if x != "tools"]
+    if "guides" in merged:
+        if not has_guide_topic_evidence(source, card.card_type):
+            merged = [x for x in merged if x != "guides"]
+
+    if "pokemon" in merged and not has_pokemon_topic_evidence(source):
+        merged = [x for x in merged if x != "pokemon"]
+
+    if "community" in merged and not is_community_pick_source_card(card):
+        merged = [x for x in merged if x != "community"]
 
     if "sbt" in merged:
         facts = normalize_event_facts(card.event_facts)
@@ -1221,7 +1223,10 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
         if not sbt_ok:
             merged = [x for x in merged if x != "sbt"]
 
-    if account.startswith("renaiss") and "official" not in merged:
+    if "official" in merged and not is_official_source_card(card):
+        merged = [x for x in merged if x != "official"]
+
+    if is_official_source_card(card) and "official" not in merged:
         merged.append("official")
 
     card.topic_labels = merged if merged else ["other"]
@@ -1552,4 +1557,3 @@ def apply_quality_guard(card: StoryCard) -> None:
             card.detail_summary = rd_summary[:420]
         if rd_lines:
             card.detail_lines = rd_lines[:6]
-

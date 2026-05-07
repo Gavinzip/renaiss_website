@@ -5,127 +5,145 @@
         name: "Discord Linker / X Linker",
         badge: "✅ Available",
         status: "available",
-        requirement: "綁定 Discord、X 帳號。",
+        difficulty: 1,
+        requirement: "綁定 X 與 Discord 帳號；可用 X 註冊，或在 Profile → Settings 補綁。",
         icons: ["13-discord-linker.png", "12-x-linker-new.png"],
       },
       {
         name: "Fund Your Account",
         badge: "✅ Available",
         status: "available",
-        requirement: "近 3 天內單筆充值 ≥ 60 USDT。",
+        difficulty: 1,
+        requirement: "透過 BSC 至少充值 60 USDT；錢包另留少量 BNB 作 Gas。",
         icons: ["14-fund-your-account.png"],
       },
       {
         name: "Pack Opener",
         badge: "✅ Available",
         status: "available",
-        requirement: "完成至少 5 次開包。",
+        difficulty: 2,
+        requirement: "任一卡池累計開包 ≥ 5 次，不同卡池可累計。",
         icons: ["2-pack-opener.png"],
       },
       {
         name: "The Trader",
         badge: "✅ Available",
         status: "available",
-        requirement: "完成 3 筆以上有效交易。",
+        difficulty: 2,
+        requirement: "在 Marketplace 完成 3 次卡牌交易；買入或賣出都算，開包不算。",
         icons: ["1-the-trader.png"],
       },
       {
         name: "The Recruiter",
         badge: "✅ Available",
         status: "available",
-        requirement: "成功邀請 5 位以上新用戶。",
+        difficulty: 3,
+        requirement: "使用你的邀請連結，成功邀請 5 位以上新用戶加入並活躍。",
         icons: ["3-the-recruiter.png"],
       },
       {
         name: "Sequential Cert",
         badge: "✅ Available",
         status: "available",
-        requirement: "持有連續編號 PSA 卡，並分享發推。",
-        icons: ["35-supreme-collector.png"],
+        difficulty: 4,
+        requirement: "持有符合條件的連續編號 PSA 認證稀有卡，並在 X 分享。",
+        icons: ["108-sequential-cert.png"],
       },
       {
         name: "Mystic Luck",
         badge: "✅ Available",
         status: "available",
-        requirement: "發布 A 級及以上抽卡影片。",
-        icons: ["77-omega-s-card.png"],
+        difficulty: 4,
+        requirement: "抽到 Tier A 或以上卡牌，錄製並分享抽卡影片。",
+        icons: ["95-mystic-luck.png"],
       },
       {
         name: "Omega Pack",
         badge: "✅ Available",
         status: "available",
-        requirement: "抽取一次 48U 卡機。",
+        difficulty: 2,
+        requirement: "在無限卡池 OMEGA 至少開 1 包；每次約 48U。",
         icons: ["76-omega-pack.png"],
       },
       {
         name: "Renacrypt Pack",
         badge: "✅ Available",
         status: "available",
-        requirement: "抽取一次 88U 卡機。",
+        difficulty: 2,
+        requirement: "在無限卡池 RenaCrypt Pack 至少開 1 包；每次約 88U。",
         icons: ["75-renacrypt-pack.png"],
       },
       {
         name: "Discord Server Booster",
         badge: "✅ Available",
         status: "available",
-        requirement: "至少為 Renaiss Discord 伺服器提升一次優先級（Boost）。",
+        difficulty: 2,
+        requirement: "為 Renaiss Discord 伺服器 Boost 至少 1 次。",
         icons: ["43-discord-server-booster.png"],
       },
       {
-        name: "Community Battle Winner",
+        name: "Community Event MVP",
         badge: "✅ Available",
         status: "available",
-        requirement: "在直播中和 Winchman PK 開包，並贏得比賽。",
-        icons: ["74-community-battle-winner.png"],
+        difficulty: 3,
+        requirement: "參與社群組織的活動，並被選為活動 MVP / 優勝者。",
+        icons: ["63-community-event-mvp.png"],
       },
       {
         name: "Community Voice",
         badge: "✅ Available",
         status: "available",
-        requirement: "在 X + Discord 持續輸出高品質內容。",
+        difficulty: 4,
+        requirement: "每月 22 號快照；X 累計 8 篇高品質 Renaiss 內容，並提交到 Discord Mission Submit。",
         icons: ["4-community-voice.png"],
       },
       {
         name: "S+ Breaker",
         badge: "✅ Available",
         status: "available",
-        requirement: "抽到頂級或 S 級卡。",
+        difficulty: 5,
+        requirement: "在任一卡池抽出 S 級 / 頂級卡牌，極度看運氣。",
         icons: ["22-s-plus-breaker.png"],
       },
       {
         name: "Grand Ripper",
         badge: "✅ Available",
         status: "available",
-        requirement: "完成 200 次以上開包。",
+        difficulty: 5,
+        requirement: "累計完成 200 次以上開包；成本高，建議量力而為。",
         icons: ["34-grand-ripper.png"],
       },
       {
         name: "Signal Booster",
         badge: "✅ Available",
         status: "available",
-        requirement: "高質量互動官方與創始人貼文。",
+        difficulty: 2,
+        requirement: "用心互動官方或創始人貼文；高品質評論被創始人 / 團隊選中。",
         icons: ["39-signal-booster.png"],
       },
       {
         name: "Contributor of the Week",
         badge: "✅ Available",
         status: "available",
-        requirement: "被官方評為週度貢獻者（篩選）。",
-        icons: ["29-core-contributor.png"],
+        difficulty: 4,
+        requirement: "被 Renaiss 團隊選為當週 top contributor / 週度貢獻者。",
+        icons: ["96-contributor-of-the-week.png"],
       },
       {
         name: "Community Developer",
         badge: "✅ Available",
         status: "available",
-        requirement: "提交並被認可的工具 / App / AI 技術貢獻。",
+        difficulty: 4,
+        requirement: "為 Renaiss 建工具、App、插件或 AI 系統；到官方 Discord 開 Tool Apply 票提交並被認可。",
         icons: ["44-community-dev.png"],
       },
       {
-        name: "Community Leader (L1/L2)",
+        name: "Community Event Organizer",
         badge: "✅ Available",
         status: "available",
-        requirement: "作為社區創始人組織社區並向社區玩家分享 Renaiss。",
-        icons: ["63-community-event-mvp.png", "65-community-event-organizer.png"],
+        difficulty: 4,
+        requirement: "主辦並提交一場讓 Renaiss 成員參與的社群活動；活動前到官方 Discord 開 Event Apply 票申請。",
+        icons: ["65-community-event-organizer.png"],
       },
       {
         name: "Infinite Pioneer / Grinder / Flash Mint",
@@ -145,7 +163,8 @@
         name: "The Vanguard",
         badge: "✅ Available",
         status: "available",
-        requirement: "加入 Renaiss 大使計劃（需申請）。",
+        difficulty: 4,
+        requirement: "加入 Renaiss 大使計畫，通常需申請並具備持續社群影響力。",
         icons: ["33-the-vanguard.png"],
       },
       {
@@ -173,6 +192,29 @@
       if (status === "invite") return "s-soon";
       if (status === "unknown") return "s-unknown";
       return "s-off";
+    }
+
+    function sbtIconSrc(file) {
+      if (/^(?:https?:)?\/\//i.test(file)) return file;
+      return `${sbtIconBase}${file}`;
+    }
+
+    function sbtDifficultyStars(difficulty) {
+      return Array.from({ length: 5 }, (_, index) => {
+        const filled = index < difficulty;
+        return `<span class="${filled ? "is-filled" : "is-empty"}" aria-hidden="true">${filled ? "★" : "☆"}</span>`;
+      }).join("");
+    }
+
+    function sbtDifficultyHtml(row) {
+      const difficulty = Math.max(0, Math.min(5, Number(row && row.difficulty) || 0));
+      if (!difficulty) return "";
+      return `
+        <span class="sbt-difficulty" aria-label="難度 ${difficulty} / 5">
+          <span class="sbt-difficulty-label">難度</span>
+          <span class="sbt-stars">${sbtDifficultyStars(difficulty)}</span>
+        </span>
+      `;
     }
 
     function sbtFileMeta(fileName) {
@@ -213,7 +255,7 @@
 
         const iconsHtml = row.icons
           .map((file) => {
-            const src = `${sbtIconBase}${file}`;
+            const src = sbtIconSrc(file);
             return `
               <a class="sbt-thumb" href="${src}" target="_blank" rel="noreferrer">
                 <img loading="lazy" src="${src}" alt="${row.name}" />
@@ -227,7 +269,10 @@
           <div class="sbt-item-main">
             <div class="sbt-item-top">
               <div class="sbt-item-name">${row.name}</div>
-              <span class="status ${sbtStatusClass(row.status)}">${row.badge}</span>
+              <div class="sbt-item-badges">
+                ${sbtDifficultyHtml(row)}
+                <span class="status ${sbtStatusClass(row.status)}">${row.badge}</span>
+              </div>
             </div>
             <p class="sbt-item-req">${row.requirement}</p>
           </div>
@@ -355,7 +400,7 @@
     const intelFeedbackLabels = new Set([
       "event", "feature", "announcement", "market", "report", "insight",
       "trend",
-      "events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other",
+      "events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other",
       "exclude",
     ]);
     const INTEL_ANALYZE_JOB_KEY = "intel_analyze_job_id";
@@ -682,6 +727,23 @@
       return `${type}｜${body}`;
     }
 
+    function isOfficialTimelineEvent(item) {
+      const account = String(item?.account || "")
+        .trim()
+        .replace(/^@+/, "")
+        .toLowerCase();
+      const officialAccounts = new Set(["renaissxyz", "renaisxzy"]);
+      const officialDiscordChannelIds = new Set(["1478788250687766796"]);
+      const url = String(item?.url || item?.source_url || "");
+      const id = String(item?.id || "");
+      const channelFromId = id.match(/^discord-(\d+)-\d+$/i)?.[1] || "";
+      const channelFromUrl = url.match(/discord\.com\/channels\/(?:@me|\d+)\/(\d+)\/\d+/i)?.[1] || "";
+      const isOfficialAccount = officialAccounts.has(account) || /(?:^|\/)renaissxyz(?:\/|$)/i.test(url);
+      const isOfficialDiscordChannel = officialDiscordChannelIds.has(channelFromId)
+        || officialDiscordChannelIds.has(channelFromUrl);
+      return Boolean(isOfficialAccount || isOfficialDiscordChannel);
+    }
+
     function isTodayTimelineDate(dt) {
       if (!dt || Number.isNaN(dt.valueOf())) return false;
       const now = new Date();
@@ -732,9 +794,11 @@
         official: "官方",
         pokemon: "寶可夢",
         collectibles: "收藏趨勢",
-        alpha: "未來 Alpha",
-        tools: "工具",
-        other: "社群精選",
+        alpha: "未來規劃",
+        guides: "攻略",
+        tools: "攻略",
+        community: "社群精選",
+        other: "無",
         published: "發布",
         eventDate: "事件",
         sourceOriginal: "原文",
@@ -838,6 +902,11 @@
         nextRefresh: "下次",
         loadingNews: "來源：MiniMax NewsAgent · 載入中...",
         updatingNews: "來源：MiniMax NewsAgent · 正在更新最新消息...",
+        repairingLoadState: "正在修復載入狀態...",
+        repairDoneReloading: "載入狀態已清理，正在重新抓取資料...",
+        repairFailed: "修復失敗",
+        feedFailedUsingSnapshot: "API 暫時連不上，已沿用上一份成功資料。",
+        feedAutoRepaired: "偵測到壞掉的載入狀態，已自動修復並重新抓取。",
       },
       "zh-Hans": {
         intelligence: "情报",
@@ -851,9 +920,11 @@
         official: "官方",
         pokemon: "宝可梦",
         collectibles: "收藏趋势",
-        alpha: "未来 Alpha",
-        tools: "工具",
-        other: "社群精选",
+        alpha: "未来规划",
+        guides: "攻略",
+        tools: "攻略",
+        community: "社群精选",
+        other: "无",
         published: "发布",
         eventDate: "事件",
         sourceOriginal: "原文",
@@ -957,6 +1028,11 @@
         nextRefresh: "下次",
         loadingNews: "来源：MiniMax NewsAgent · 加载中...",
         updatingNews: "来源：MiniMax NewsAgent · 正在更新最新消息...",
+        repairingLoadState: "正在修复加载状态...",
+        repairDoneReloading: "加载状态已清理，正在重新抓取数据...",
+        repairFailed: "修复失败",
+        feedFailedUsingSnapshot: "API 暂时连不上，已沿用上一份成功数据。",
+        feedAutoRepaired: "检测到损坏的加载状态，已自动修复并重新抓取。",
       },
       en: {
         intelligence: "Intel",
@@ -970,9 +1046,11 @@
         official: "Official",
         pokemon: "Pokemon",
         collectibles: "Collectibles",
-        alpha: "Future Alpha",
-        tools: "Tools",
-        other: "Community Picks",
+        alpha: "Future Plans",
+        guides: "Guides",
+        tools: "Guides",
+        community: "Community Picks",
+        other: "Unclassified",
         published: "Published",
         eventDate: "Event",
         sourceOriginal: "Source",
@@ -1076,6 +1154,11 @@
         nextRefresh: "next",
         loadingNews: "Source: MiniMax NewsAgent · Loading...",
         updatingNews: "Source: MiniMax NewsAgent · Updating news...",
+        repairingLoadState: "Repairing loading state...",
+        repairDoneReloading: "Loading state cleared. Refetching data...",
+        repairFailed: "Repair failed",
+        feedFailedUsingSnapshot: "API is temporarily unavailable. Using the last successful data.",
+        feedAutoRepaired: "Detected a broken loading state. Repaired and refetched data.",
       },
       ko: {
         intelligence: "정보",
@@ -1089,9 +1172,11 @@
         official: "공식",
         pokemon: "포켓몬",
         collectibles: "컬렉터블 트렌드",
-        alpha: "향후 Alpha",
-        tools: "도구",
-        other: "커뮤니티 픽",
+        alpha: "미래 계획",
+        guides: "가이드",
+        tools: "가이드",
+        community: "커뮤니티 픽",
+        other: "미분류",
         published: "게시",
         eventDate: "이벤트",
         sourceOriginal: "원문",
@@ -1195,6 +1280,11 @@
         nextRefresh: "다음",
         loadingNews: "출처: MiniMax NewsAgent · 로딩 중...",
         updatingNews: "출처: MiniMax NewsAgent · 최신 소식 업데이트 중...",
+        repairingLoadState: "로딩 상태를 복구하는 중...",
+        repairDoneReloading: "로딩 상태를 정리했습니다. 데이터를 다시 가져오는 중...",
+        repairFailed: "복구 실패",
+        feedFailedUsingSnapshot: "API에 일시적으로 연결할 수 없어 마지막 성공 데이터를 사용합니다.",
+        feedAutoRepaired: "손상된 로딩 상태를 감지해 자동 복구하고 데이터를 다시 가져왔습니다.",
       },
     };
 
@@ -1220,7 +1310,8 @@
       "报告": "report",
       "寶可夢": "pokemon",
       "宝可梦": "pokemon",
-      "工具": "tools",
+      "工具": "guides",
+      "攻略": "guides",
       "官方": "official",
     };
 
@@ -1374,23 +1465,25 @@
       const bucket = currentTimelineBucket(dt);
       const eventText = timelineRangeText(item?.timeline_date, item?.timeline_end_date) || (dt ? toPosterDate(dt.toISOString()) : "--");
       const publishText = toLocalTime(item?.published_at);
-      const cover = String(item?.cover_image || "");
-      const backdropStyle = /^https?:\/\//i.test(cover)
+      const cover = resolveCoverImageUrl(item?.cover_image);
+      const backdropStyle = cover
         ? `background-image: url('${escapeHtml(cover)}');`
         : "background-image: linear-gradient(140deg, #1f3551, #2b4e73 46%, #29495b 100%);";
-      const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" loading="lazy" onerror="this.remove()" />`
+      const coverHtml = cover
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
         : "";
       const id = String(item?.id || "");
       const picked = Boolean(item?.manual_pick);
       const pinned = Boolean(item?.manual_pin);
       const bottomed = Boolean(item?.manual_bottom);
+      const eventWall = item?.event_wall === true;
       const feedbackLabel = String(item?.card_type || "insight");
       const actionHtml = (!preview && id && intelCanEdit())
         ? `<div class="intel-actions">
             <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
             <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
             <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+            <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-false" data-intel-id="${escapeHtml(id)}">移出活動牆</button>
             <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(id)}">${escapeHtml(uiLabel("exclude"))}</button>
             <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(id)}" data-intel-label="${escapeHtml(feedbackLabel)}">${escapeHtml(uiLabel("feedback"))}</button>
           </div>`
@@ -1482,7 +1575,12 @@
         const label = dt ? toPosterDate(dt.toISOString()) : "--";
         const topic = timelineTopic(it);
         const today = isTodayTimelineDate(dt) ? `<span class="intel-masterline-today">今日</span>` : "";
-        return `<button class="intel-masterline-chip ${i === idx ? "is-active" : ""}" data-master-index="${i}" type="button"><span class="intel-masterline-date-row"><span class="intel-masterline-date">${escapeHtml(label)}</span>${today}</span><span class="intel-masterline-topic">${escapeHtml(topic)}</span></button>`;
+        const classes = [
+          "intel-masterline-chip",
+          i === idx ? "is-active" : "",
+          isOfficialTimelineEvent(it) ? "is-official-event" : "",
+        ].filter(Boolean).join(" ");
+        return `<button class="${classes}" data-master-index="${i}" type="button"><span class="intel-masterline-date-row"><span class="intel-masterline-date">${escapeHtml(label)}</span>${today}</span><span class="intel-masterline-topic">${escapeHtml(topic)}</span></button>`;
       }).join("");
       const activeChip = rail.querySelector(".intel-masterline-chip.is-active");
       if (activeChip && typeof rail.scrollTo === "function") {
@@ -1552,9 +1650,9 @@
       const layout = ["poster", "brief", "data", "timeline"].includes(card.layout) ? card.layout : "brief";
       const typeLabel = intelTypeLabel(card.card_type);
       const cardKey = String(card?._card_key || cardStableKey(card)).trim();
-      const cover = String(card.cover_image || "");
-      const coverHtml = /^https?:\/\//i.test(cover)
-        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" loading="lazy" onerror="this.closest('.intel-cover')?.remove()" /></div>`
+      const cover = resolveCoverImageUrl(card.cover_image);
+      const coverHtml = cover
+        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
         : "";
       const tags = Array.isArray(card.tags) ? card.tags.slice(0, 3) : [];
       const tagHtml = tags
@@ -1566,11 +1664,13 @@
       const picked = Boolean(card.manual_pick);
       const pinned = Boolean(card.manual_pin);
       const bottomed = Boolean(card.manual_bottom);
+      const eventWall = card?.event_wall === true;
       const actionHtml = (canPick && intelCanEdit())
         ? `<div class="intel-actions">
              <button class="intel-pick-btn ${picked ? "is-picked" : ""}" data-intel-action="include" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(picked ? uiLabel("kept") : uiLabel("keep"))}</button>
              <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
              <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
+             <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-true" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(eventWall ? "已在活動牆" : "加入活動牆")}</button>
              <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(uiLabel("exclude"))}</button>
              <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(card.id)}" data-intel-label="${escapeHtml(String(card.card_type || "insight"))}">${escapeHtml(uiLabel("feedback"))}</button>
            </div>`
@@ -1628,6 +1728,7 @@
       el.classList.remove("is-error", "is-ok");
       if (mode === "error") el.classList.add("is-error");
       if (mode === "ok") el.classList.add("is-ok");
+      el.removeAttribute("data-i18n-key");
       el.textContent = text;
     }
 
@@ -1752,32 +1853,18 @@
       return parts.join(" ").toLowerCase();
     }
 
-    function isOfficialAccount(account) {
-      const handle = String(account || "").trim().toLowerCase().replace(/^@/, "");
-      if (!handle) return false;
-      return /^renaiss(?:_|cn|xyz|official)?/.test(handle);
-    }
-
-    function hasAny(text, terms) {
-      return terms.some((term) => text.includes(term));
-    }
-
-    function hasStrictEventCall(text) {
-      return /(join us|join on|register|signup|報名|报名|參加|参加|參與|参与|attend|attendees?|live\s+(session|stream|ama)|community\s*session|ama|space|tour|festival|meetup|線下|线下|venue|booth|地點|地点)/i.test(String(text || ""));
-    }
-
-    function isSbtThresholdNotice(text) {
-      return /((sbt|soulbound|points?|積分|积分).{0,42}(threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank))|((threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank).{0,42}(sbt|soulbound|points?|積分|积分))/i.test(String(text || ""));
-    }
-
-    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "collectibles", "alpha", "tools", "other"];
-
-    function isCollectiblesSourceCard(card) {
-      const id = String(card?.id || "");
-      const url = String(card?.url || "");
-      return /^discord-1480867987270402149-\d+$/i.test(id)
-        || /discord\.com\/channels\/[^/]+\/1480867987270402149\/\d+/i.test(url);
-    }
+    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"];
+    const TOPIC_LABEL_ALIASES = {
+      tool: "guides",
+      tools: "guides",
+      guide: "guides",
+      community_picks: "community",
+      "community-picks": "community",
+      none: "other",
+      unclassified: "other",
+      uncategorized: "other",
+      "5": "other",
+    };
 
     function normalizeTopicLabels(value) {
       const raw = Array.isArray(value)
@@ -1785,279 +1872,60 @@
         : (typeof value === "string" ? value.split(/[,\u3001/|\\\s]+/g) : []);
       const out = [];
       raw.forEach((item) => {
-        const label = String(item || "").trim().toLowerCase();
+        const rawLabel = String(item || "").trim().toLowerCase();
+        const label = TOPIC_LABEL_ALIASES[rawLabel] || rawLabel;
         if (!label || !TOPIC_LABELS.includes(label) || out.includes(label)) return;
         out.push(label);
       });
       return out;
     }
 
-    function inferFallbackTopicLabels(card) {
-      const cardType = String(card?.card_type || "").toLowerCase();
-      const text = cardTextBlob(card);
-      const clsText = [
-        String(card?.title || ""),
-        String(card?.raw_text || ""),
-        (card?.event_facts && typeof card.event_facts === "object")
-          ? Object.values(card.event_facts).map((x) => String(x || "")).join(" ")
-          : "",
-      ].join(" ").toLowerCase();
-      const hasTimeline = normalizeTimelineDate(card) instanceof Date;
-      const hasEventFacts = Boolean(card?.event_facts && (card.event_facts.schedule || card.event_facts.participation));
-      const isOfficial = isOfficialAccount(card?.account);
-      const strictEventCall = hasStrictEventCall(clsText);
-      const thresholdNotice = isSbtThresholdNotice(clsText);
-      const labels = [];
-      const add = (label) => {
-        if (!TOPIC_LABELS.includes(label)) return;
-        if (!labels.includes(label)) labels.push(label);
-      };
-
-      const eventKeywordRe = /(活動|直播|\bama\b|\bspace\b|\bsession\b|報名|參加|今晚|今天|明天|\bevent\b|\btour\b|\bfestival\b|\bmeetup\b)/i;
-      const participationRe = /(報名|报名|參加|参加|參與|参与|attend|join|signup|register|discord|space|直播|\blive\b|\bama\b|\bsession\b)/i;
-      const timePattern = /(?:\b[01]?\d[:：][0-5]\d\b|\butc[+\-]?\d+\b|\b(?:today|tonight|tomorrow)\b|\d+\s*月\s*\d+\s*(?:日|號)|今晚|明天|今天)/i;
-      const explicitEventSignal = cardType === "event" || hasEventFacts || (eventKeywordRe.test(clsText) && timePattern.test(clsText));
-      const looksEvent = explicitEventSignal
-        || ((cardType !== "feature" && cardType !== "announcement") && hasTimeline && eventKeywordRe.test(clsText));
-
-      let eventScore = 0;
-      if (eventKeywordRe.test(clsText)) eventScore += 1;
-      if (timePattern.test(clsText) || hasTimeline) eventScore += 1;
-      if (participationRe.test(clsText)) eventScore += 2;
-      if (/(hong\s*kong|taipei|台北|香港|venue|booth|地點|地点|線下|线下|festival|tour|meetup)/i.test(clsText)) eventScore += 1;
-      if (strictEventCall) eventScore += 2;
-      if (cardType === "event") eventScore += 1;
-      let hasEventEvidence = looksEvent && eventScore >= 3 && (strictEventCall || hasEventFacts || participationRe.test(clsText) || /(festival|tour|meetup)/i.test(clsText));
-      if (thresholdNotice && eventScore < 4) hasEventEvidence = false;
-
-      if (hasEventEvidence) add("events");
-
-      const rewardBlob = `${String(card?.event_facts?.reward || "")} ${String(card?.event_facts?.participation || "")} ${String(card?.event_facts?.audience || "")} ${String(card?.event_facts?.schedule || "")}`.toLowerCase();
-      const sbtDirect = /\bsbt\b|soulbound/.test(clsText);
-      const sbtThreshold = /(threshold|snapshot|top\s*\d+%|快照|門檻).{0,28}(points?|積分|分)|(points?|積分|分).{0,28}(threshold|snapshot|top\s*\d+%|快照|門檻)/.test(clsText);
-      const sbtReward = /(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边).{0,24}(sbt|積分|积分|points?)|(sbt|積分|积分|points?).{0,24}(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边)/.test(clsText);
-      const sbtFacts = /\bsbt\b|soulbound|積分|积分|points?|reward|獎勵|奖励|airdrop|snapshot|快照|threshold|門檻/.test(rewardBlob);
-      if (sbtDirect || sbtThreshold || sbtReward || sbtFacts) add("sbt");
-
-      const pokemonTerms = [
-        "pokemon", "pokémon", "寶可夢", "口袋妖怪", "ptcg",
-        "pikachu", "charizard", "mew", "mewtwo", "groudon", "eevee",
-        "皮卡丘", "噴火龍", "超夢", "固拉多", "伊布",
-      ];
-      if (hasAny(clsText, pokemonTerms)) add("pokemon");
-
-      const alphaTerms = ["alpha", "beta", "coming soon", "upcoming", "launch", "release", "roadmap", "上線", "即將", "預告", "功能更新"];
-      if (cardType === "feature" || hasAny(clsText, alphaTerms)) add("alpha");
-
-      const toolsTerms = ["攻略", "教學", "指南", "tool", "工具", "集運", "how to", "比價", "price compare", "報告整理"];
-      if (cardType === "report" || (!isOfficial && hasAny(text, toolsTerms))) add("tools");
-
-      if (isCollectiblesSourceCard(card)) add("collectibles");
-
-      if (isOfficial) add("official");
-      if (!labels.length) add("other");
-      return labels;
-    }
-
     function cardTopicLabels(card) {
-      const aiLabels = normalizeTopicLabels(card?.topic_labels);
-      const fallback = inferFallbackTopicLabels(card);
-      const merged = [...aiLabels];
-      fallback.forEach((label) => {
-        if (!merged.includes(label)) merged.push(label);
-      });
-      const clsText = [
-        String(card?.title || ""),
-        String(card?.raw_text || ""),
-        (card?.event_facts && typeof card.event_facts === "object")
-          ? Object.values(card.event_facts).map((x) => String(x || "")).join(" ")
-          : "",
-      ].join(" ").toLowerCase();
-      const thresholdNotice = isSbtThresholdNotice(clsText);
-      const strictEventCall = hasStrictEventCall(clsText);
-      if (merged.includes("events")) {
-        const cardType = String(card?.card_type || "").toLowerCase();
-        const hasEventFacts = Boolean(card?.event_facts && (card.event_facts.schedule || card.event_facts.participation || card.event_facts.location));
-        if ((cardType === "feature" || cardType === "announcement") && !strictEventCall && !hasEventFacts) {
-          const idx = merged.indexOf("events");
-          if (idx >= 0) merged.splice(idx, 1);
-        }
-        if (thresholdNotice && !strictEventCall && !hasEventFacts) {
-          const idx = merged.indexOf("events");
-          if (idx >= 0) merged.splice(idx, 1);
-        }
-      }
-      if (!merged.length) return ["other"];
-      return merged;
+      const labels = normalizeTopicLabels(card?.topic_labels);
+      return labels.length ? labels : ["other"];
     }
 
-    function isSameOrAfterToday(dt) {
-      if (!(dt instanceof Date) || Number.isNaN(dt.valueOf())) return false;
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const target = new Date(dt);
-      target.setHours(0, 0, 0, 0);
-      return target >= today;
-    }
-
-    function filterFutureAlphaCards(cards) {
-      const rows = Array.isArray(cards) ? cards : [];
-      return rows.filter((card) => {
-        const cardType = String(card?.card_type || "").trim().toLowerCase();
-        if (hasLiveReleaseSignal(card)) return false;
-        const eventDate = resolveExplicitTimelineDate(card);
-        // Alpha / Release Timeline 僅顯示「功能或公告」型卡片，避免混入市場與社群貼文。
-        if (cardType !== "feature" && cardType !== "announcement") return false;
-        if (eventDate instanceof Date) return isSameOrAfterToday(eventDate);
-        return hasFutureReleaseSignal(card);
-      });
-    }
-
-    function isPokemonCommunityCard(card) {
-      const cardType = String(card?.card_type || "").trim().toLowerCase();
-      if (isOfficialAccount(card?.account)) return false;
-      if (cardType === "feature" || cardType === "announcement") return false;
-      const blob = cardTextBlob(card);
-      const pokemonCoreRe = /(pokemon|pok[eé]mon|寶可夢|口袋妖怪|ptcg|皮卡丘|噴火龍|超夢|固拉多|伊布|pikachu|charizard|mewtwo|groudon)/i;
-      if (!pokemonCoreRe.test(blob)) return false;
-      const valueRe = /(行情|價格|价格|市場|市场|成交|二級市場|二级市场|開箱|开箱|收藏|稀有卡|psa|grading|抽卡|開包|开包|pull)/i;
-      const noisyEventRe = /(poker night|portaldot|ama|community session|discord|報名|报名|join us|tonight|today|tomorrow|utc\+?\d*)/i;
-      if (cardType === "event" && noisyEventRe.test(blob) && !valueRe.test(blob)) return false;
-      return true;
-    }
-
-    function dedupeAlphaCardsPreferOfficial(rows) {
-      const items = Array.isArray(rows) ? rows : [];
-      const normalizeTopic = (card) => String(card?.title || card?.glance || card?.summary || "")
-        .replace(/\s+/g, " ")
-        .replace(/^(活動重點|活動快訊|活動速報|功能進度|公告快訊|市場訊號|社群觀點|活動|功能|公告|市場|觀點)\s*[｜|:：\-]\s*/u, "")
-        .replace(/[^\w\u4e00-\u9fff]+/g, " ")
-        .trim()
-        .toLowerCase()
-        .split(/\s+/)
-        .slice(0, 8)
-        .join(" ");
-      const signatureOf = (card) => {
-        const type = String(card?.card_type || "").trim().toLowerCase();
-        const dt = resolveMasterTimelineDate(card);
-        const dateSig = (dt instanceof Date && !Number.isNaN(dt.valueOf()))
-          ? dt.toISOString().slice(0, 10)
-          : String(card?.published_at || "").slice(0, 10);
-        const topicSig = normalizeTopic(card);
-        return `${type}|${dateSig}|${topicSig}`;
-      };
-      const score = (card) => {
-        let s = 0;
-        if (Boolean(card?.manual_pin)) s += 500;
-        if (Boolean(card?.manual_bottom)) s -= 500;
-        if (isOfficialAccount(card?.account)) s += 120;
-        if (String(card?.cover_image || "").trim()) s += 8;
-        s += Number(card?.importance || 0);
-        s += toTimestamp(card?.published_at) / 1e13;
-        return s;
-      };
-      const alphaTheme = (card) => {
-        const blob = cardTextBlob(card);
-        if (/(mfa|2fa|multi[-\s]*factor|authenticator|帳號安全|账号安全)/i.test(blob)) return "mfa";
-        if (/(sbt|soulbound|points?|積分|积分|threshold|snapshot|top\s*\d+%|門檻|快照|beta\s*2\.0)/i.test(blob)) return "sbt";
-        if (/(omega|restock|pack|卡包|抽卡|pull|gacha)/i.test(blob)) return "pack";
-        if (/(one\s*piece|infinite gacha|op-\d+)/i.test(blob)) return "onepiece";
-        return "other";
-      };
-      const tokenSet = (card) => {
-        const text = normalizeTopic(card) + " " + String(card?.summary || "").toLowerCase();
-        const tokens = text
-          .replace(/[^\w\u4e00-\u9fff]+/g, " ")
-          .split(/\s+/)
-          .map((x) => x.trim())
-          .filter((x) => x.length >= 2)
-          .slice(0, 40);
-        return new Set(tokens);
-      };
-      const overlap = (a, b) => {
-        if (!a.size || !b.size) return 0;
-        let hit = 0;
-        a.forEach((t) => { if (b.has(t)) hit += 1; });
-        return hit / Math.max(a.size, b.size);
-      };
-      const dateStamp = (card) => {
-        const dt = resolveMasterTimelineDate(card);
-        if (dt instanceof Date && !Number.isNaN(dt.valueOf())) return dt.valueOf();
-        return toTimestamp(card?.published_at);
-      };
-      const chosen = new Map();
-      items.forEach((card) => {
-        const sig = signatureOf(card);
-        const prev = chosen.get(sig);
-        if (!prev || score(card) > score(prev)) {
-          chosen.set(sig, card);
-        }
-      });
-      const deduped = [...chosen.values()];
-      const official = deduped.filter((x) => isOfficialAccount(x?.account));
-      const officialByTheme = new Map();
-      official.forEach((x) => {
-        const t = alphaTheme(x);
-        if (!officialByTheme.has(t)) officialByTheme.set(t, []);
-        officialByTheme.get(t).push(x);
-      });
-      const finalRows = [];
-      deduped.forEach((card) => {
-        if (isOfficialAccount(card?.account)) {
-          finalRows.push(card);
-          return;
-        }
-        const theme = alphaTheme(card);
-        const peers = officialByTheme.get(theme) || [];
-        if (!peers.length || theme === "other") {
-          finalRows.push(card);
-          return;
-        }
-        const toks = tokenSet(card);
-        const ts = dateStamp(card);
-        let shouldDrop = false;
-        peers.forEach((off) => {
-          if (shouldDrop) return;
-          const ov = overlap(toks, tokenSet(off));
-          const dtDiff = Math.abs(ts - dateStamp(off)) / 86400000;
-          if (ov >= 0.18 || dtDiff <= 5) {
-            shouldDrop = true;
-          }
-        });
-        if (!shouldDrop) finalRows.push(card);
-      });
-      return sortCardsByTimeDesc(finalRows);
-    }
-
-    function resolveCardWindowDate(item) {
-      const cardType = String(item?.card_type || "").trim().toLowerCase();
-      if (cardType === "event" || cardType === "feature" || cardType === "announcement") {
-        const endRaw = String(item?.timeline_end_date || "").trim();
-        if (endRaw) {
-          const endDt = new Date(endRaw);
-          if (!Number.isNaN(endDt.valueOf())) {
-            return new Date(Date.UTC(endDt.getFullYear(), endDt.getMonth(), endDt.getDate()));
-          }
-        }
-        const dt = resolveMasterTimelineDate(item);
-        if (dt instanceof Date && !Number.isNaN(dt.valueOf())) return dt;
-      }
-      const published = String(item?.published_at || "").trim();
-      if (!published) return null;
-      const dt = new Date(published);
+    function dateOnlyUtc(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return null;
+      const dt = new Date(raw);
       if (Number.isNaN(dt.valueOf())) return null;
       return new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
     }
 
+    function resolveCardWindowRange(item) {
+      const cardType = String(item?.card_type || "").trim().toLowerCase();
+      if (cardType === "event" || cardType === "feature" || cardType === "announcement") {
+        const start = dateOnlyUtc(item?.timeline_date);
+        const end = dateOnlyUtc(item?.timeline_end_date);
+        if (start || end) {
+          const safeStart = start || end;
+          const safeEnd = end || start;
+          return safeStart <= safeEnd ? [safeStart, safeEnd] : [safeEnd, safeStart];
+        }
+        const dt = resolveMasterTimelineDate(item);
+        if (dt instanceof Date && !Number.isNaN(dt.valueOf())) return [dt, dt];
+      }
+      const published = dateOnlyUtc(item?.published_at);
+      return published ? [published, published] : [null, null];
+    }
+
+    function resolveCardWindowDate(item) {
+      const [start, end] = resolveCardWindowRange(item);
+      return end || start || null;
+    }
+
     function isWithinBiweekWindow(item) {
-      const dt = resolveCardWindowDate(item);
-      if (!(dt instanceof Date) || Number.isNaN(dt.valueOf())) return false;
+      const [start, end] = resolveCardWindowRange(item);
+      if (!(start instanceof Date) || Number.isNaN(start.valueOf())) return false;
+      if (!(end instanceof Date) || Number.isNaN(end.valueOf())) return false;
       const base = new Date();
       base.setHours(0, 0, 0, 0);
-      const target = new Date(dt);
-      target.setHours(0, 0, 0, 0);
-      const diffDays = Math.round((target - base) / 86400000);
-      return Math.abs(diffDays) <= 14;
+      const windowStart = new Date(base);
+      windowStart.setDate(windowStart.getDate() - 14);
+      const windowEnd = new Date(base);
+      windowEnd.setDate(windowEnd.getDate() + 14);
+      return start <= windowEnd && end >= windowStart;
     }
 
     function routeIntelCards(cards) {
@@ -2068,7 +1936,8 @@
         pokemon: [],
         collectibles: [],
         alpha: [],
-        tools: [],
+        guides: [],
+        community: [],
         other: [],
       };
       const seenByBucket = {
@@ -2078,19 +1947,25 @@
         pokemon: new Set(),
         collectibles: new Set(),
         alpha: new Set(),
-        tools: new Set(),
+        guides: new Set(),
+        community: new Set(),
         other: new Set(),
       };
       (Array.isArray(cards) ? cards : []).forEach((card) => {
         const labels = cardTopicLabels(card);
         const key = cardStableKey(card);
         const normalized = { ...card, route_labels: labels, _card_key: key };
-        if (normalized.manual_pin && !labels.includes("other")) labels.push("other");
         const keepByWindow = Boolean(normalized.manual_pin) || isWithinBiweekWindow(normalized);
+        if (normalized.event_wall === true && keepByWindow) {
+          const eventSeen = seenByBucket.events;
+          if (!eventSeen.has(key)) {
+            eventSeen.add(key);
+            buckets.events.push(normalized);
+          }
+        }
         labels.forEach((label) => {
           const bucket = buckets[label] ? label : "other";
-          if (bucket === "pokemon" && !isPokemonCommunityCard(normalized)) return;
-          if (bucket === "collectibles" && !isCollectiblesSourceCard(normalized)) return;
+          if (bucket === "events") return;
           if (bucket !== "collectibles" && !keepByWindow) return;
           const seen = seenByBucket[bucket];
           if (seen.has(key)) return;
@@ -2100,9 +1975,6 @@
       });
       Object.keys(buckets).forEach((key) => {
         buckets[key] = sortCardsByTimeDesc(buckets[key]);
-        if (key === "alpha") {
-          buckets[key] = dedupeAlphaCardsPreferOfficial(buckets[key]);
-        }
       });
       return buckets;
     }
@@ -2122,6 +1994,23 @@
       const empty = document.getElementById(emptyId);
       if (!wrap || !empty) return;
       const rows = Array.isArray(cards) ? cards : [];
+      const adminOnly = wrap.classList.contains("intel-user-hidden");
+      const canShowAdminOnly = !adminOnly || document.body.classList.contains("intel-admin-mode");
+      if (!canShowAdminOnly) {
+        wrap.innerHTML = "";
+        wrap.hidden = true;
+        wrap.setAttribute("aria-hidden", "true");
+        empty.hidden = true;
+        empty.setAttribute("aria-hidden", "true");
+        empty.style.display = "none";
+        return;
+      }
+      if (adminOnly) {
+        wrap.hidden = false;
+        wrap.setAttribute("aria-hidden", "false");
+        empty.hidden = Boolean(rows.length);
+        empty.setAttribute("aria-hidden", rows.length ? "true" : "false");
+      }
       wrap.innerHTML = rows.map((card) => intelCardHtml(card)).join("");
       empty.textContent = emptyText;
       empty.style.display = rows.length ? "none" : "block";
@@ -2146,6 +2035,20 @@
       if (/^https?:\/\//i.test(tail)) return tail;
       if (tail.startsWith("/")) return `${INTEL_API_BASE}${tail}`;
       return `${INTEL_API_BASE}/${tail}`;
+    }
+
+    const DEFAULT_COVER_IMAGE = "./image.png";
+
+    function resolveCoverImageUrl(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return DEFAULT_COVER_IMAGE;
+      if (/^https?:\/\//i.test(raw)) return raw;
+      if (raw.startsWith("/data/")) return intelApiUrl(raw);
+      if (raw.startsWith("data/")) return intelApiUrl(`/${raw}`);
+      if (raw.startsWith("/website/")) return raw;
+      if (raw.startsWith("website/")) return `/${raw}`;
+      if (raw.startsWith("/")) return raw;
+      return DEFAULT_COVER_IMAGE;
     }
 
     const uiTextNodeCache = new WeakMap();

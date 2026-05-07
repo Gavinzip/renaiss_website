@@ -99,16 +99,28 @@
       ko: "미래 계획",
     },
     "category.tools": {
-      "zh-Hant": "工具",
-      "zh-Hans": "工具",
-      en: "Tools",
-      ko: "도구",
+      "zh-Hant": "攻略",
+      "zh-Hans": "攻略",
+      en: "Guides",
+      ko: "가이드",
     },
-    "category.other": {
+    "category.guides": {
+      "zh-Hant": "攻略",
+      "zh-Hans": "攻略",
+      en: "Guides",
+      ko: "가이드",
+    },
+    "category.community": {
       "zh-Hant": "社群精選",
       "zh-Hans": "社群精选",
       en: "Community Picks",
       ko: "커뮤니티 픽",
+    },
+    "category.other": {
+      "zh-Hant": "無",
+      "zh-Hans": "无",
+      en: "Unclassified",
+      ko: "미분류",
     },
     "category.mainTitle": {
       "zh-Hant": "主分類導覽",
@@ -140,6 +152,12 @@
       en: "Showing: Events.",
       ko: "현재 표시: 이벤트.",
     },
+    "category.repairLoadState": {
+      "zh-Hant": "修復載入狀態",
+      "zh-Hans": "修复加载状态",
+      en: "Repair Loading",
+      ko: "로딩 상태 복구",
+    },
     "events.title": {
       "zh-Hant": "活動主時間軸 / <span class=\"text-gradient\">Events</span>",
       "zh-Hans": "活动主时间轴 / <span class=\"text-gradient\">Events</span>",
@@ -159,10 +177,10 @@
       ko: "이벤트 메인 타임라인 (좌우 스와이프)",
     },
     "events.timelineHint": {
-      "zh-Hant": "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。<span id=\"intel-master-today-date\"></span>",
-      "zh-Hans": "滑动卡片或点上方时间点，即可快转查看该日期内容（仅显示活动，前后 7 天）。<span id=\"intel-master-today-date\"></span>",
-      en: "Swipe cards or tap a time point to jump to that date (events only, plus/minus 7 days).<span id=\"intel-master-today-date\"></span>",
-      ko: "카드를 넘기거나 시간점을 눌러 해당 날짜로 바로 이동하세요 (이벤트만, 전후 7일).<span id=\"intel-master-today-date\"></span>",
+      "zh-Hant": "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。<span id=\"intel-master-today-date\"></span><span class=\"intel-masterline-legend\"><span class=\"intel-masterline-legend-swatch\"></span>金色為官方活動</span>",
+      "zh-Hans": "滑动卡片或点上方时间点，即可快转查看该日期内容（仅显示活动，前后 7 天）。<span id=\"intel-master-today-date\"></span><span class=\"intel-masterline-legend\"><span class=\"intel-masterline-legend-swatch\"></span>金色为官方活动</span>",
+      en: "Swipe cards or tap a time point to jump to that date (events only, plus/minus 7 days).<span id=\"intel-master-today-date\"></span><span class=\"intel-masterline-legend\"><span class=\"intel-masterline-legend-swatch\"></span>Gold marks official events</span>",
+      ko: "카드를 넘기거나 시간점을 눌러 해당 날짜로 바로 이동하세요 (이벤트만, 전후 7일).<span id=\"intel-master-today-date\"></span><span class=\"intel-masterline-legend\"><span class=\"intel-masterline-legend-swatch\"></span>금색은 공식 이벤트</span>",
     },
     "events.timelineEmpty": {
       "zh-Hant": "等待時間軸資料...",
@@ -177,10 +195,10 @@
       ko: "최근 이벤트 핵심",
     },
     "events.upcomingTitle": {
-      "zh-Hant": "即將開放 / 功能追蹤",
-      "zh-Hans": "即将开放 / 功能追踪",
-      en: "Upcoming Opens / Feature Tracking",
-      ko: "곧 오픈 / 기능 추적",
+      "zh-Hant": "即將開放",
+      "zh-Hans": "即将开放",
+      en: "Upcoming",
+      ko: "곧 오픈",
     },
     "events.empty": {
       "zh-Hant": "目前沒有可顯示的活動貼文。",
@@ -217,12 +235,6 @@
       "zh-Hans": "官方近期更新 / <span class=\"text-gradient\">X Intel</span>",
       en: "Recent Official Updates / <span class=\"text-gradient\">X Intel</span>",
       ko: "공식 최근 업데이트 / <span class=\"text-gradient\">X Intel</span>",
-    },
-    "official.sub": {
-      "zh-Hant": "以 <strong>@TCGRWA</strong>、<strong>@ChenYichiao</strong>、<strong>@renaissxyz</strong>、<strong>@davidcheang99</strong> 為核心，自動抓最近 30 天內容後，先過濾低訊號回覆，再統整成「官方新情報 / 近期活動 / 即將開放 / 社群焦點」。",
-      "zh-Hans": "以 <strong>@TCGRWA</strong>、<strong>@ChenYichiao</strong>、<strong>@renaissxyz</strong>、<strong>@davidcheang99</strong> 为核心，自动抓最近 30 天内容后，先过滤低信号回复，再统整成「官方新情报 / 近期活动 / 即将开放 / 社群焦点」。",
-      en: "Centered on <strong>@TCGRWA</strong>, <strong>@ChenYichiao</strong>, <strong>@renaissxyz</strong>, and <strong>@davidcheang99</strong>. The latest 30 days are ingested, low-signal replies are filtered, and content is curated into “Official Updates / Recent Events / Upcoming Opens / Community Focus”.",
-      ko: "<strong>@TCGRWA</strong>, <strong>@ChenYichiao</strong>, <strong>@renaissxyz</strong>, <strong>@davidcheang99</strong>를 중심으로 최근 30일 콘텐츠를 수집하고 저신호 답글을 걸러낸 뒤 ‘공식 업데이트 / 최근 이벤트 / 곧 오픈 / 커뮤니티 포커스’로 정리합니다.",
     },
     "official.manualLabel": {
       "zh-Hant": "手動加入貼文：貼上 X 連結後，會先進入背景貼文分析流程（不會預設分區；可刷新頁面，不影響進度）",
@@ -393,10 +405,10 @@
       ko: "SBT 게시물 정리",
     },
     "sbt.postsNote": {
-      "zh-Hant": "預設顯示前後 14 天內的內容；若要長期保留舊文，請在卡片上按「頂選」，它會同步出現在「社群精選」。",
-      "zh-Hans": "默认显示前后 14 天内的内容；若要长期保留旧文，请在卡片上按「顶选」，它会同步出现在「社群精选」。",
-      en: "By default, content within plus/minus 14 days is shown. To keep older posts long-term, click Pin on the card and it will also appear in Community Picks.",
-      ko: "기본으로 전후 14일 범위만 표시됩니다. 오래 유지할 글은 카드에서 고정을 눌러 Community Picks에도 함께 보이게 하세요.",
+      "zh-Hant": "預設顯示前後 14 天內的內容；若要長期保留舊文，請在卡片上按「頂選」，它會跨越時間窗但不改變分類。",
+      "zh-Hans": "默认显示前后 14 天内的内容；若要长期保留旧文，请在卡片上按「顶选」，它会跨越时间窗但不改变分类。",
+      en: "By default, content within plus/minus 14 days is shown. Pin keeps older posts visible without changing their category.",
+      ko: "기본으로 전후 14일 범위만 표시됩니다. 고정은 오래 보이게 할 뿐 분류를 바꾸지 않습니다.",
     },
     "sbt.empty": {
       "zh-Hant": "目前沒有 SBT 相關貼文。",
@@ -512,29 +524,29 @@
       en: "Display logic: only SBT with clear acquisition conditions are shown. <strong>`Invite`, `Closed`, and expired limited-time events</strong> are grouped under “Not Obtainable Now”. Unclassified icons are hidden on the front-end.",
       ko: "표시 로직: 획득 조건이 정리된 SBT만 노출합니다. <strong>`Invite`, `Closed`, 기간 종료 이벤트</strong>는 ‘현재 획득 불가’로 분류됩니다. 미분류 아이콘은 프런트에 표시하지 않습니다.",
     },
-    "tools.title": {
-      "zh-Hant": "工具 / <span class=\"text-gradient\">Community Toolbox</span>",
-      "zh-Hans": "工具 / <span class=\"text-gradient\">Community Toolbox</span>",
-      en: "Tools / <span class=\"text-gradient\">Community Toolbox</span>",
-      ko: "도구 / <span class=\"text-gradient\">Community Toolbox</span>",
+    "guides.title": {
+      "zh-Hant": "攻略 / <span class=\"text-gradient\">Guides</span>",
+      "zh-Hans": "攻略 / <span class=\"text-gradient\">Guides</span>",
+      en: "Guides / <span class=\"text-gradient\">Guides</span>",
+      ko: "가이드 / <span class=\"text-gradient\">Guides</span>",
     },
-    "tools.sub": {
-      "zh-Hant": "這區是社群常用工具與功能入口，幫你快速完成查價、整理、貼文分析與追蹤。",
-      "zh-Hans": "这区是社群常用工具与功能入口，帮你快速完成查价、整理、贴文分析与追踪。",
-      en: "This section contains common community tools and utility entry points for pricing checks, curation, post analysis, and tracking.",
-      ko: "이 구역은 커뮤니티에서 자주 쓰는 도구와 기능 진입점입니다. 시세 확인, 정리, 게시물 분석, 추적을 빠르게 수행할 수 있습니다.",
+    "guides.sub": {
+      "zh-Hant": "這區只放攻略、教學、操作步驟、工具用法與可照做的實用資訊。",
+      "zh-Hans": "这里只放攻略、教学、操作步骤、工具用法与可照做的实用资讯。",
+      en: "This section only keeps guides, tutorials, steps, tool usage, and practical information readers can follow.",
+      ko: "이 섹션은 가이드, 튜토리얼, 실행 단계, 도구 사용법처럼 따라 할 수 있는 실용 정보만 다룹니다.",
     },
-    "tools.postsTitle": {
-      "zh-Hant": "工具 / 攻略貼文整理",
-      "zh-Hans": "工具 / 攻略贴文整理",
-      en: "Tools / Guide Post Curation",
-      ko: "도구 / 가이드 게시물 정리",
+    "guides.postsTitle": {
+      "zh-Hant": "攻略貼文整理",
+      "zh-Hans": "攻略贴文整理",
+      en: "Guide Post Curation",
+      ko: "가이드 게시물 정리",
     },
-    "tools.empty": {
-      "zh-Hant": "目前沒有工具或攻略貼文。",
-      "zh-Hans": "目前没有工具或攻略贴文。",
-      en: "No tools or guide posts are available now.",
-      ko: "현재 도구/가이드 게시물이 없습니다.",
+    "guides.empty": {
+      "zh-Hant": "目前沒有攻略貼文。",
+      "zh-Hans": "目前没有攻略贴文。",
+      en: "No guide posts are available now.",
+      ko: "현재 가이드 게시물이 없습니다.",
     },
     "alpha.title": {
       "zh-Hant": "未來規劃 / <span class=\"text-gradient\">Release Timeline</span>",
@@ -620,95 +632,125 @@
       en: "Open each card for full AI summary and source link instead of relying on title only.",
       ko: "제목만 보지 말고 카드를 열어 AI 요약과 원문 링크를 함께 확인하세요.",
     },
-    "other.title": {
+    "communityPicks.title": {
       "zh-Hant": "社群精選 / <span class=\"text-gradient\">Community Picks</span>",
       "zh-Hans": "社群精选 / <span class=\"text-gradient\">Community Picks</span>",
       en: "Community Picks / <span class=\"text-gradient\">Community Picks</span>",
       ko: "커뮤니티 픽 / <span class=\"text-gradient\">Community Picks</span>",
     },
-    "other.sub": {
-      "zh-Hant": "這裡只放玩家與社群看得懂的補充內容；遊戲細節請從上方 <strong>Game</strong> 入口查看。",
-      "zh-Hans": "这里只放玩家与社群看得懂的补充内容；游戏细节请从上方 <strong>Game</strong> 入口查看。",
-      en: "This section contains supplementary content that players and community members can quickly understand; for game details, use the <strong>Game</strong> entry above.",
-      ko: "이 구역은 플레이어/커뮤니티가 바로 이해할 수 있는 보충 정보만 다룹니다. 게임 상세는 상단 <strong>Game</strong> 진입점을 이용하세요.",
+    "communityPicks.sub": {
+      "zh-Hant": "只收 X/Twitter 原文含 <strong>#renaiss</strong> 或 <strong>@renaissxyz</strong> 的非官方社群貼文。",
+      "zh-Hans": "只收 X/Twitter 原文含 <strong>#renaiss</strong> 或 <strong>@renaissxyz</strong> 的非官方社群贴文。",
+      en: "Only non-official X/Twitter posts whose raw text contains <strong>#renaiss</strong> or <strong>@renaissxyz</strong> appear here.",
+      ko: "원문에 <strong>#renaiss</strong> 또는 <strong>@renaissxyz</strong>가 포함된 비공식 X/Twitter 게시물만 표시합니다.",
     },
-    "other.focusChip": {
+    "communityPicks.focusChip": {
       "zh-Hant": "Community Focus",
       "zh-Hans": "Community Focus",
       en: "Community Focus",
       ko: "커뮤니티 포커스",
     },
-    "other.postsTitle": {
+    "communityPicks.postsTitle": {
       "zh-Hant": "社群精選貼文",
       "zh-Hans": "社群精选贴文",
       en: "Community Picked Posts",
       ko: "커뮤니티 선정 게시물",
     },
-    "other.empty": {
+    "communityPicks.empty": {
       "zh-Hant": "目前沒有可顯示的社群精選貼文。",
       "zh-Hans": "目前没有可显示的社群精选贴文。",
       en: "No community-picked posts are available now.",
       ko: "현재 표시할 커뮤니티 선정 게시물이 없습니다.",
     },
-    "other.gameEntryTitle": {
+    "communityPicks.gameEntryTitle": {
       "zh-Hant": "Game 專區入口",
       "zh-Hans": "Game 专区入口",
       en: "Game Section Entry",
       ko: "Game 섹션 입구",
     },
-    "other.gameEntry1": {
+    "communityPicks.gameEntry1": {
       "zh-Hant": "遊戲世界觀、玩法與互動展示，統一在獨立的 <strong>Game</strong> 頁面。",
       "zh-Hans": "游戏世界观、玩法与互动展示，统一在独立的 <strong>Game</strong> 页面。",
       en: "World lore, gameplay, and interactive showcases are all placed in the dedicated <strong>Game</strong> page.",
       ko: "세계관, 플레이 방식, 인터랙티브 소개는 전용 <strong>Game</strong> 페이지로 통합되어 있습니다.",
     },
-    "other.gameEntry2": {
+    "communityPicks.gameEntry2": {
       "zh-Hant": "這個整理頁只負責情報彙整，不混入遊戲開發內容。",
       "zh-Hans": "这个整理页只负责情报汇整，不混入游戏开发内容。",
       en: "This intel page focuses on curation only and does not mix in game development details.",
       ko: "이 페이지는 정보 정리에만 집중하며 게임 개발 내용은 섞지 않습니다.",
     },
-    "other.gameEntry3": {
+    "communityPicks.gameEntry3": {
       "zh-Hant": "想看完整遊戲介紹，直接從下方按鈕進入。",
       "zh-Hans": "想看完整游戏介绍，直接从下方按钮进入。",
       en: "For the full game introduction, jump in via the button below.",
       ko: "게임 전체 소개는 아래 버튼으로 바로 이동하세요.",
     },
-    "other.goGame": {
+    "communityPicks.goGame": {
       "zh-Hant": "前往 Game 頁面",
       "zh-Hans": "前往 Game 页面",
       en: "Go to Game Page",
       ko: "Game 페이지로 이동",
     },
-    "other.howToReadTitle": {
+    "communityPicks.howToReadTitle": {
       "zh-Hant": "如何看這個區塊",
       "zh-Hans": "如何看这个区块",
       en: "How to Read This Section",
       ko: "이 섹션 보는 법",
     },
-    "other.how1": {
-      "zh-Hant": "優先看貼文標題、重點摘要與原始來源連結。",
-      "zh-Hans": "优先看贴文标题、重点摘要与原始来源链接。",
-      en: "Check title, key summary, and source link first.",
-      ko: "게시물 제목, 핵심 요약, 원문 링크를 먼저 확인하세요.",
+    "communityPicks.how1": {
+      "zh-Hant": "只看原文真的標記 Renaiss 的社群內容。",
+      "zh-Hans": "只看原文真的标记 Renaiss 的社群内容。",
+      en: "Only community posts that explicitly tag Renaiss in the raw source are included.",
+      ko: "원문에서 Renaiss를 명확히 태그한 커뮤니티 글만 포함합니다.",
     },
-    "other.how2": {
+    "communityPicks.how2": {
       "zh-Hant": "遇到活動資訊時，先確認時間、獎勵與參與方式。",
       "zh-Hans": "遇到活动资讯时，先确认时间、奖励与参与方式。",
       en: "For event info, confirm time, rewards, and participation method first.",
       ko: "이벤트 정보는 시간, 보상, 참여 방식을 먼저 확인하세요.",
     },
-    "other.how3": {
+    "communityPicks.how3": {
       "zh-Hant": "遇到觀點型內容時，建議多來源比對再下判斷。",
       "zh-Hans": "遇到观点型内容时，建议多来源比对再下判断。",
       en: "For opinion-based content, compare multiple sources before making judgment.",
       ko: "의견형 콘텐츠는 복수 출처를 비교한 뒤 판단하세요.",
     },
-    "other.how4": {
-      "zh-Hant": "不確定分類可用「保留 / 排除 / 回饋分類 / 頂選 / 置底」手動微調。",
-      "zh-Hans": "不确定分类可用「保留 / 排除 / 回馈分类 / 顶选 / 置底」手动微调。",
-      en: "If classification is uncertain, fine-tune manually with Keep / Exclude / Feedback / Pin / Move Down.",
-      ko: "분류가 애매하면 Keep / Exclude / Feedback / Pin / Move Down으로 수동 보정하세요.",
+    "communityPicks.how4": {
+      "zh-Hant": "不符合 tag 規則的貼文會改放到「無」或其他正確分類。",
+      "zh-Hans": "不符合 tag 规则的贴文会改放到「无」或其他正确分类。",
+      en: "Posts that do not pass the tag rule move to Unclassified or a more accurate section.",
+      ko: "태그 규칙을 통과하지 못한 글은 미분류 또는 더 정확한 섹션으로 이동합니다.",
+    },
+    "other.title": {
+      "zh-Hant": "無 / <span class=\"text-gradient\">Unclassified</span>",
+      "zh-Hans": "无 / <span class=\"text-gradient\">Unclassified</span>",
+      en: "Unclassified / <span class=\"text-gradient\">Unclassified</span>",
+      ko: "미분류 / <span class=\"text-gradient\">Unclassified</span>",
+    },
+    "other.sub": {
+      "zh-Hant": "這裡放無法安全分類、被攻略/寶可夢/社群精選淘汰，或需要管理員再次判斷的貼文。",
+      "zh-Hans": "这里放无法安全分类、被攻略/宝可梦/社群精选淘汰，或需要管理员再次判断的贴文。",
+      en: "Posts that cannot be safely classified, were rejected from guides/Pokemon/community picks, or need admin review go here.",
+      ko: "안전하게 분류할 수 없거나 가이드/포켓몬/커뮤니티 픽에서 제외되어 관리자 재검토가 필요한 게시물이 여기에 표시됩니다.",
+    },
+    "other.focusChip": {
+      "zh-Hant": "Needs Review",
+      "zh-Hans": "Needs Review",
+      en: "Needs Review",
+      ko: "검토 필요",
+    },
+    "other.postsTitle": {
+      "zh-Hant": "無分類貼文",
+      "zh-Hans": "无分类贴文",
+      en: "Unclassified Posts",
+      ko: "미분류 게시물",
+    },
+    "other.empty": {
+      "zh-Hant": "目前沒有無分類貼文。",
+      "zh-Hans": "目前没有无分类贴文。",
+      en: "No unclassified posts are available now.",
+      ko: "현재 미분류 게시물이 없습니다.",
     },
     "community.title": {
       "zh-Hant": "其他 / Community",
@@ -787,14 +829,13 @@
       "活動主時間軸 /": "Event Main Timeline /",
       "活動主時間軸 / Events": "Event Main Timeline / Events",
       "這裡只放活動相關貼文，包含時間、地點、參與方式與獎勵重點。": "This section focuses on event posts only: timing, location, participation method, and rewards.",
-      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "Swipe cards or tap a time point to jump to that date (events only, plus/minus 7 days).",
+      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "Swipe cards or tap a time point to jump to that date (events only, plus/minus 7 days). Gold marks official events.",
       "近期活動重點": "Recent Event Highlights",
-      "即將開放 / 功能追蹤": "Upcoming Opens / Feature Tracking",
+      "即將開放": "Upcoming",
       "等待時間軸資料...": "Waiting for timeline data...",
       "目前沒有可顯示的活動貼文。": "No event posts are available right now.",
       "目前沒有可用社群焦點": "No community focus items available right now.",
       "官方近期更新 / X Intel": "Recent Official Updates / X Intel",
-      "以 @TCGRWA、@ChenYichiao、@renaissxyz、@davidcheang99 為核心，最近 30 天內容做智能排版與重點整合。": "Centered on @TCGRWA, @ChenYichiao, @renaissxyz, and @davidcheang99, organizing the last 30 days with smart layout and key-point synthesis.",
       "SBT = 專案參與度與貢獻的鏈上紀錄。以下將資料整理成可快速判讀版本。": "SBT is an on-chain record of project participation and contribution. This section organizes data for quick reading.",
       "目前沒有工具或攻略貼文。": "No tool or guide posts at the moment.",
       "管理登入": "Admin Login",
@@ -840,9 +881,9 @@
       "活動主時間軸 /": "이벤트 메인 타임라인 /",
       "活動主時間軸 / Events": "이벤트 메인 타임라인 / Events",
       "這裡只放活動相關貼文，包含時間、地點、參與方式與獎勵重點。": "이 섹션은 이벤트 관련 게시물만 다룹니다. 시간, 장소, 참여 방식, 보상 포인트를 빠르게 확인하세요.",
-      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "카드를 좌우로 넘기거나 위 시간점을 눌러 해당 날짜로 바로 이동하세요 (이벤트만, 전후 7일).",
+      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "카드를 좌우로 넘기거나 위 시간점을 눌러 해당 날짜로 바로 이동하세요 (이벤트만, 전후 7일). 금색은 공식 이벤트입니다.",
       "近期活動重點": "최근 이벤트 핵심",
-      "即將開放 / 功能追蹤": "곧 오픈 / 기능 추적",
+      "即將開放": "곧 오픈",
       "等待時間軸資料...": "타임라인 데이터를 불러오는 중...",
       "目前沒有可顯示的活動貼文。": "표시할 이벤트 게시물이 없습니다.",
       "目前沒有可用社群焦點": "사용 가능한 커뮤니티 포커스가 없습니다.",
@@ -877,9 +918,9 @@
       "活動主時間軸 /": "活动主时间轴 /",
       "活動主時間軸 / Events": "活动主时间轴 / Events",
       "這裡只放活動相關貼文，包含時間、地點、參與方式與獎勵重點。": "这里仅展示活动相关贴文，包含时间、地点、参与方式与奖励重点。",
-      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "滑动卡片或点上方时间点，即可快转查看该日期内容（仅显示活动，前后 7 天）。",
+      "滑動卡片或點上方時間點，即可快轉查看該日期內容（僅顯示活動，前後 7 天）。": "滑动卡片或点上方时间点，即可快转查看该日期内容（仅显示活动，前后 7 天）。金色为官方活动。",
       "近期活動重點": "近期活动重点",
-      "即將開放 / 功能追蹤": "即将开放 / 功能追踪",
+      "即將開放": "即将开放",
       "等待時間軸資料...": "等待时间轴资料...",
       "目前沒有可顯示的活動貼文。": "目前没有可显示的活动贴文。",
       "目前沒有可用社群焦點": "目前没有可用社群焦点。",
