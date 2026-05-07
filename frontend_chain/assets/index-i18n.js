@@ -2,6 +2,24 @@
   if (!windowObj) return;
 
   windowObj.INTEL_UI_STATIC_TRANSLATIONS = {
+    "nav.game": {
+      "zh-Hant": "Game",
+      "zh-Hans": "Game",
+      en: "Game",
+      ko: "게임",
+    },
+    "nav.aggregator": {
+      "zh-Hant": "聚合器",
+      "zh-Hans": "聚合器",
+      en: "Aggregator",
+      ko: "애그리게이터",
+    },
+    "nav.beginner": {
+      "zh-Hant": "新手教學",
+      "zh-Hans": "新手教学",
+      en: "Beginner Guide",
+      ko: "초보자 가이드",
+    },
     "home.heroIntro": {
       "zh-Hant": "這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、收藏趨勢、未來規劃與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。",
       "zh-Hans": "这里是 Renaiss 社群的情报入口：把官方更新、活动、SBT 获取方式、宝可梦 / TCG 讨论、收藏趋势、未来规划与工具资源整理成可快速判断的分区。你可以先看活动时间轴掌握近期行程，再切到各分类看重点摘要、完整分析与原始来源。",

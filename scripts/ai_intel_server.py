@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
-from x_intel_core import add_classification_feedback, add_classification_feedback_fields, add_manual_tweet, feedback_memory_stats, load_environment, read_x_source_config, set_manual_selection, sync_accounts, update_card_event_wall_field, update_card_sbt_fields, update_card_timeline_fields, update_x_source_accounts
+from x_intel_core import ALLOWED_CARD_TYPES, ALLOWED_TOPIC_LABELS, add_classification_feedback, add_classification_feedback_fields, add_manual_tweet, feedback_memory_stats, load_environment, read_x_source_config, set_manual_selection, sync_accounts, update_card_classification_fields, update_card_event_wall_field, update_card_sbt_fields, update_card_timeline_fields, update_x_source_accounts
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
 from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
@@ -1625,11 +1625,20 @@ class Handler(SimpleHTTPRequestHandler):
                 reason = str(payload.get("reason") or "").strip()
                 if card_type or section or isinstance(topic_labels, list):
                     feedback = add_classification_feedback_fields(tweet_id, card_type=card_type, topic_label=section, topic_labels=topic_labels if isinstance(topic_labels, list) else None, reason=reason)
+                    update = update_card_classification_fields(tweet_id, card_type=card_type, topic_label=section, topic_labels=topic_labels if isinstance(topic_labels, list) else None)
                 else:
                     feedback = add_classification_feedback(tweet_id, label, reason=reason)
-                result = sync_accounts()
-                build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
-                self._send_json({"ok": True, "feedback": feedback, "feed": result})
+                    if label in ALLOWED_CARD_TYPES or label in ALLOWED_TOPIC_LABELS:
+                        update = update_card_classification_fields(
+                            tweet_id,
+                            card_type=label if label in ALLOWED_CARD_TYPES else "",
+                            topic_label=label if label in ALLOWED_TOPIC_LABELS else "",
+                        )
+                    else:
+                        update = {"id": tweet_id, "skipped": True, "reason": "no_card_field_patch"}
+                feed = _read_feed_snapshot()
+                build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "feedback": feedback, "update": update, "feed": feed})
                 return
 
             if path == "/api/intel/source-config":

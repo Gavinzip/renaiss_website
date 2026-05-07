@@ -414,27 +414,49 @@
     let pokemonNewsPollTimer = null;
     let pokemonNewsItemsState = [];
     const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
+
+    function normalizeIntelApiBase(raw) {
+      return String(raw || "").trim().replace(/\/+$/, "");
+    }
+
+    function isLocalIntelPreviewHost(hostname) {
+      const host = String(hostname || "").toLowerCase();
+      return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local");
+    }
+
+    function isAllowedIntelApiBase(base, localPreview) {
+      const value = normalizeIntelApiBase(base);
+      if (!value) return false;
+      if (value === DEFAULT_INTEL_API_BASE) return true;
+      if (localPreview && /^http:\/\/(127\.0\.0\.1|localhost):8787$/i.test(value)) return true;
+      return false;
+    }
+
     function detectIntelApiBase() {
+      const isLocal = isLocalIntelPreviewHost(window.location?.hostname || "");
       try {
         const win = window || {};
         const params = new URLSearchParams(String(window.location?.search || ""));
-        const fromQuery = String(params.get("intel_api_base") || "").trim();
-        if (fromQuery) {
-          const normalized = fromQuery.replace(/\/+$/, "");
-          window.localStorage.setItem("intel_api_base", normalized);
-          return normalized;
+        const fromQuery = normalizeIntelApiBase(params.get("intel_api_base") || "");
+        if (fromQuery && isAllowedIntelApiBase(fromQuery, isLocal)) {
+          window.localStorage.setItem("intel_api_base", fromQuery);
+          return fromQuery;
         }
-        const explicit = String(
-          win.__INTEL_API_BASE__ ||
-          window.localStorage.getItem("intel_api_base") ||
-          ""
-        ).trim();
-        if (explicit) {
-          return explicit.replace(/\/+$/, "");
+        if (fromQuery) {
+          window.localStorage.removeItem("intel_api_base");
+        }
+        const explicit = normalizeIntelApiBase(win.__INTEL_API_BASE__ || "");
+        if (explicit && isAllowedIntelApiBase(explicit, isLocal)) {
+          return explicit;
+        }
+        const stored = normalizeIntelApiBase(window.localStorage.getItem("intel_api_base") || "");
+        if (stored && isAllowedIntelApiBase(stored, isLocal)) {
+          return stored;
+        }
+        if (stored) {
+          window.localStorage.removeItem("intel_api_base");
         }
       } catch (_err) {}
-      const host = String(window.location?.hostname || "").toLowerCase();
-      const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local");
       if (isLocal) {
         return "http://127.0.0.1:8787";
       }

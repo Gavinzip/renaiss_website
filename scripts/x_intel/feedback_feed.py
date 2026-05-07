@@ -593,6 +593,74 @@ def update_card_sbt_fields(tweet_id: str, sbt_names: Any = "", sbt_acquisition: 
     )
 
 
+def update_card_classification_fields(
+    tweet_id: str,
+    *,
+    card_type: str = "",
+    topic_label: str = "",
+    topic_labels: list[str] | None = None,
+) -> dict[str, Any]:
+    tid = str(tweet_id or "").strip()
+    next_card_type = str(card_type or "").strip().lower()
+    has_topic_labels_payload = isinstance(topic_labels, list)
+    raw_topic_labels = topic_labels if has_topic_labels_payload else []
+    if not raw_topic_labels and str(topic_label or "").strip():
+        raw_topic_labels = [topic_label]
+    next_topic_labels = normalize_topic_labels(raw_topic_labels)
+    if "other" in next_topic_labels:
+        next_topic_labels = ["other"]
+    if not tid:
+        raise ValueError("tweet id is required")
+    if next_card_type and next_card_type not in ALLOWED_CARD_TYPES:
+        raise ValueError("invalid card_type")
+    if (has_topic_labels_payload or str(topic_label or "").strip()) and not next_topic_labels:
+        raise ValueError("invalid topic_label")
+    if not next_card_type and not next_topic_labels:
+        raise ValueError("card_type or topic_label is required")
+
+    payload = _read_feed_payload()
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        raise ValueError("feed cards are not ready")
+
+    updated_card: dict[str, Any] | None = None
+    for item in cards:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "").strip() != tid:
+            continue
+        card = _story_card_from_payload(item)
+        if next_card_type:
+            _apply_card_type_override(card, next_card_type)
+        if next_topic_labels:
+            _apply_topic_label_override(card, next_topic_labels, exact=True)
+        item.update(
+            {
+                "card_type": card.card_type,
+                "layout": card.layout,
+                "tags": card.tags,
+                "confidence": card.confidence,
+                "template_id": card.template_id,
+                "event_facts": card.event_facts or {},
+                "urgency": card.urgency,
+                "topic_labels": normalize_topic_labels(card.topic_labels),
+            }
+        )
+        updated_card = item
+        break
+
+    if updated_card is None:
+        raise ValueError("card not found")
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    write_json(data_dir() / "x_intel_feed.json", payload)
+    return {
+        "id": tid,
+        "card_type": str(updated_card.get("card_type") or ""),
+        "topic_labels": normalize_topic_labels(updated_card.get("topic_labels")),
+        "card": updated_card,
+    }
+
+
 def feedback_training_text(max_items: int = 8, max_rules: int = 10, max_profiles: int = 5) -> str:
     state = read_feedback_state()
     items = state.get("items", {})

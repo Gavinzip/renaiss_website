@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const DEFAULT_INTEL_API_BASE = "https://gavinx.zeabur.app";
+  const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
   const INTEL_API_BASE = (() => {
     const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
     const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
@@ -15,7 +15,9 @@
       fromStorage = "";
     }
     const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
-    const fromHost = localHost ? normalize(window.location.origin || "") : "";
+    const fromHost = localHost
+      ? (String(window.location.port || "") === "8787" ? normalize(window.location.origin || "") : "http://127.0.0.1:8787")
+      : "";
     const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
     return (
       fromQuery

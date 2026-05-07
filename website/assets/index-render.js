@@ -305,11 +305,13 @@
 
     function loadIntelFeedSnapshot(lang) {
       try {
+        const tag = normalizeUiLang(lang || currentUiLang);
         const raw = localStorage.getItem(intelFeedSnapshotKey(lang)) || "";
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         const feed = parsed && typeof parsed === "object" ? parsed.feed : null;
         if (!isUsableIntelFeed(feed)) return null;
+        if (normalizeUiLang(feed.lang || tag) !== tag) return null;
         return feed;
       } catch (_error) {
         return null;
@@ -318,14 +320,15 @@
 
     function saveIntelFeedSnapshot(lang, feed) {
       if (!feed || typeof feed !== "object") return;
+      const tag = normalizeUiLang(lang || feed.lang || currentUiLang);
       const cards = Array.isArray(feed.cards) ? feed.cards : null;
       if (!cards || !cards.length) return;
       const payload = {
         saved_at: new Date().toISOString(),
-        feed,
+        feed: { ...feed, lang: tag },
       };
       try {
-        localStorage.setItem(intelFeedSnapshotKey(lang), JSON.stringify(payload));
+        localStorage.setItem(intelFeedSnapshotKey(tag), JSON.stringify(payload));
       } catch (_error) {
       }
     }
@@ -487,12 +490,25 @@
       const mode = String(i18n?.mode || "");
       const lang = normalizeUiLang(payload?.lang || currentUiLang);
       const progress = i18n?.state?.lang_progress?.[lang] || {};
-      if (mode === "building" || mode === "building-stale") {
+      const cardState = i18n?.qa?.card_state || {};
+      const pendingCards = Number(cardState?.pending || 0) + Number(cardState?.partial || 0) + Number(cardState?.failed || 0);
+      const progressStatus = String(progress?.status || "").toLowerCase();
+      const shouldKeepRefreshing = (
+        mode === "building"
+        || mode === "building-stale"
+        || (mode === "pretranslated-partial" && (
+          pendingCards > 0
+          || Number(progress?.remaining || 0) > 0
+          || ["running", "queued", "pending"].includes(progressStatus)
+        ))
+      );
+      if (shouldKeepRefreshing) {
         const percent = Number(progress?.percent || 0);
         const remaining = Number(progress?.remaining || 0);
         const remainingLabel = currentUiLang === "en" ? "remaining" : (currentUiLang === "ko" ? "남음" : "剩");
         const buildingLabel = currentUiLang === "en" ? "building" : (currentUiLang === "ko" ? "빌드 중" : "建置中");
-        const suffix = percent > 0 ? `${percent}% / ${remainingLabel} ${remaining}` : buildingLabel;
+        const cardSuffix = pendingCards > 0 ? ` / cards ${pendingCards}` : "";
+        const suffix = percent > 0 ? `${percent}% / ${remainingLabel} ${remaining}${cardSuffix}` : buildingLabel;
         setLangBuildStatus(`${langDisplayName(lang)} ${suffix}`, "working");
         langFeedRefreshTimer = window.setTimeout(() => {
           if (normalizeUiLang(currentUiLang) === lang) {
@@ -2587,8 +2603,13 @@
         setIntelMessage("分區至少要保留一個；若不屬於任何分區請選「無」。", "error");
         return false;
       }
-      await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
-      await refreshIntelFeedForCurrentLang();
+      const data = await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
+      if (data?.feed && typeof data.feed === "object") {
+        renderIntelFeed(data.feed);
+        scheduleLangFeedRefresh(data.feed);
+      } else {
+        await refreshIntelFeedForCurrentLang();
+      }
       return true;
     }
 

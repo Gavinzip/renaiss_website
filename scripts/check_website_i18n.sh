@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-http://renaiss.zeabur.app}}}"
+API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-https://renaiss.zeabur.app}}}"
 TIMEOUT=10
 
 echo "=== 1) API base ==="
@@ -77,8 +77,12 @@ for lang in langs:
     i18n = feed.get("_i18n", {}) if isinstance(feed, dict) else {}
     state = i18n.get("state", {}) if isinstance(i18n, dict) else {}
     qa = i18n.get("qa", {}) if isinstance(i18n, dict) else {}
+    card_state = qa.get("card_state", {}) if isinstance(qa, dict) else {}
     lp = state.get("lang_progress", {}) if isinstance(state, dict) else {}
     entry = lp.get(lang, {}) if isinstance(lp, dict) else {}
+    cards = feed.get("cards", []) if isinstance(feed.get("cards"), list) else []
+    first_card = cards[0] if cards and isinstance(cards[0], dict) else {}
+    first_tags = first_card.get("tags") if isinstance(first_card.get("tags"), list) else []
 
     head = (feed.get("digest") or {}).get("headline", "")
     mode = i18n.get("mode", "")
@@ -86,6 +90,10 @@ for lang in langs:
     state_status = state.get("status")
     print(f"[{lang}] mode={mode} coverage={coverage} state={state_status} build={entry.get('status')} mode={entry.get('mode')} done={entry.get('done')}/{entry.get('total')} remaining={entry.get('remaining')} percent={entry.get('percent')}")
     print(f"       headline={head[:60]}")
+    if card_state:
+        print(f"       cards={len(cards)} card_state=ready:{card_state.get('ready')} translated:{card_state.get('translated')} partial:{card_state.get('partial')} pending:{card_state.get('pending')} fallback:{card_state.get('fallback')}")
+    if first_tags:
+        print(f"       first_tags={', '.join(str(x) for x in first_tags[:5])}")
     print(f"       state_status={state_status} langs={state.get('langs', [])}")
     print()
 PY
