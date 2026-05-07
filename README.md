@@ -114,6 +114,8 @@ If frontend and backend are deployed separately:
   - `INTEL_COOKIE_SAMESITE=None`
   - `INTEL_COOKIE_SECURE=1`
   - `INTEL_COOKIE_DOMAIN=<your-backend-domain>` (optional)
+- The admin login also returns a short-lived Bearer session token so Walrus
+  frontend deployments are not blocked by third-party cookie restrictions.
 
 ## 4) Generate password hash (recommended)
 

@@ -1989,6 +1989,46 @@
       }));
     }
 
+    function intelCardGridSignature(rows, emptyText, canEdit) {
+      try {
+        const core = (Array.isArray(rows) ? rows : []).map((card, idx) => [
+          card?._card_key || cardStableKey(card, idx),
+          card?.id,
+          card?.title,
+          card?.glance,
+          card?.summary,
+          card?.card_type,
+          card?.layout,
+          card?.account,
+          card?.published_at,
+          card?.cover_image,
+          card?.timeline_date,
+          card?.timeline_end_date,
+          card?.event_wall,
+          card?.manual_pick,
+          card?.manual_pin,
+          card?.manual_bottom,
+          card?.dedupe_status,
+          Array.isArray(card?.tags) ? card.tags.join("|") : "",
+          Array.isArray(card?.topic_labels) ? card.topic_labels.join("|") : "",
+          Array.isArray(card?.sbt_names) ? card.sbt_names.join("|") : "",
+          card?.sbt_name,
+          card?.sbt_acquisition,
+        ]);
+        return JSON.stringify([Boolean(canEdit), String(emptyText || ""), core]);
+      } catch (_error) {
+        return `${Date.now()}`;
+      }
+    }
+
+    function keepRenderedImagesWarm(wrap) {
+      if (!wrap || !wrap.querySelectorAll) return;
+      wrap.querySelectorAll("img[loading='lazy']").forEach((img) => {
+        img.loading = "eager";
+        img.decoding = "async";
+      });
+    }
+
     function renderCardGrid(containerId, emptyId, cards, emptyText) {
       const wrap = document.getElementById(containerId);
       const empty = document.getElementById(emptyId);
@@ -1997,7 +2037,10 @@
       const adminOnly = wrap.classList.contains("intel-user-hidden");
       const canShowAdminOnly = !adminOnly || document.body.classList.contains("intel-admin-mode");
       if (!canShowAdminOnly) {
-        wrap.innerHTML = "";
+        if (wrap.dataset.renderSig || wrap.innerHTML) {
+          wrap.innerHTML = "";
+          delete wrap.dataset.renderSig;
+        }
         wrap.hidden = true;
         wrap.setAttribute("aria-hidden", "true");
         empty.hidden = true;
@@ -2011,7 +2054,12 @@
         empty.hidden = Boolean(rows.length);
         empty.setAttribute("aria-hidden", rows.length ? "true" : "false");
       }
-      wrap.innerHTML = rows.map((card) => intelCardHtml(card)).join("");
+      const signature = intelCardGridSignature(rows, emptyText, intelCanEdit());
+      if (wrap.dataset.renderSig !== signature) {
+        wrap.innerHTML = rows.map((card) => intelCardHtml(card)).join("");
+        wrap.dataset.renderSig = signature;
+      }
+      keepRenderedImagesWarm(wrap);
       empty.textContent = emptyText;
       empty.style.display = rows.length ? "none" : "block";
     }

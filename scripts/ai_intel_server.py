@@ -1292,10 +1292,24 @@ class Handler(SimpleHTTPRequestHandler):
             return ""
         return str(node.value or "").strip()
 
+    def _session_id_from_auth_header(self) -> str:
+        raw = str(self.headers.get("Authorization") or "").strip()
+        if not raw:
+            return ""
+        scheme, _, value = raw.partition(" ")
+        if scheme.lower() != "bearer":
+            return ""
+        return value.strip()
+
+    def _session_id_from_request(self) -> str:
+        # Walrus frontend and Zeabur backend are cross-site; third-party cookies
+        # are not reliable there, so the admin session also supports Bearer auth.
+        return self._session_id_from_cookie() or self._session_id_from_auth_header()
+
     def _current_user(self) -> str:
         if not AUTH_REQUIRED:
             return "admin"
-        session_id = self._session_id_from_cookie()
+        session_id = self._session_id_from_request()
         if not session_id:
             return ""
         state = _get_session(session_id)
@@ -1495,13 +1509,14 @@ class Handler(SimpleHTTPRequestHandler):
                     "authenticated": True,
                     "user": username,
                     "mode": "protected",
+                    "token": sid,
                 },
                 extra_headers={"Set-Cookie": self._session_cookie_header(sid)},
             )
             return
 
         if path == "/api/auth/logout":
-            sid = self._session_id_from_cookie()
+            sid = self._session_id_from_request()
             _delete_session(sid)
             self._send_json(
                 {
