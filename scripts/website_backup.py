@@ -84,6 +84,52 @@ def _has_staged_changes(cwd: Path) -> bool:
     return result.returncode == 1
 
 
+def _has_dirty_worktree(cwd: Path) -> bool:
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=str(cwd), text=True, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"git status --porcelain failed: {_mask_secret(result.stderr or result.stdout or '')}")
+    return bool((result.stdout or "").strip())
+
+
+def _has_local_commits_ahead(repo_dir: Path, target_ref: str) -> bool:
+    result = subprocess.run(
+        ["git", "rev-list", "--left-right", "--count", f"HEAD...{target_ref}"],
+        cwd=str(repo_dir),
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return False
+    parts = (result.stdout or "").strip().split()
+    if not parts:
+        return False
+    try:
+        return int(parts[0]) > 0
+    except ValueError:
+        return False
+
+
+def _snapshot_dirty_repo(repo_dir: Path, branch: str, target_ref: str = "") -> str:
+    if not _has_dirty_worktree(repo_dir) and not (target_ref and _has_local_commits_ahead(repo_dir, target_ref)):
+        return ""
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe_branch = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in branch) or "branch"
+    snapshot_root = repo_dir.parent / f".{repo_dir.name}_restore_safety_snapshots"
+    snapshot_target = snapshot_root / f"{stamp}_{safe_branch}"
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    suffix = 1
+    while snapshot_target.exists():
+        suffix += 1
+        snapshot_target = snapshot_root / f"{stamp}_{safe_branch}_{suffix}"
+    shutil.copytree(
+        repo_dir,
+        snapshot_target,
+        ignore=shutil.ignore_patterns(".git", "__pycache__"),
+        symlinks=False,
+    )
+    return str(snapshot_target)
+
+
 def _copytree_clean(source: Path, target: Path, include_volatile: bool) -> None:
     volatile_names = {"x_intel_jobs.json"} if not include_volatile else set()
     shutil.rmtree(target, ignore_errors=True)
@@ -122,7 +168,25 @@ def _copy_backup_to_data(source: Path, target: Path) -> None:
             shutil.copy2(item, dest)
 
 
-def _ensure_repo(repo_url: str, repo_dir: Path, branch: str, project_root: Path) -> None:
+def _force_sync_branch_from_remote(repo_dir: Path, branch: str) -> dict[str, Any]:
+    target_ref = f"origin/{branch}"
+    _run_git(["fetch", "--prune", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir)
+    dirty_snapshot = _snapshot_dirty_repo(repo_dir, branch, target_ref=target_ref)
+    _run_git(["reset", "--hard"], repo_dir)
+    _run_git(["clean", "-fd"], repo_dir)
+    _run_git(["checkout", "-B", branch, target_ref], repo_dir)
+    _run_git(["branch", "--set-upstream-to", target_ref, branch], repo_dir)
+    _run_git(["reset", "--hard", target_ref], repo_dir)
+    _run_git(["clean", "-fd"], repo_dir)
+    return {
+        "mode": "force_sync",
+        "branch": branch,
+        "target": target_ref,
+        "dirty_snapshot": dirty_snapshot,
+    }
+
+
+def _ensure_repo(repo_url: str, repo_dir: Path, branch: str, project_root: Path) -> dict[str, Any]:
     branch_exists = _remote_has_branch(repo_url, branch)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
     if not (repo_dir / ".git").exists():
@@ -134,14 +198,17 @@ def _ensure_repo(repo_url: str, repo_dir: Path, branch: str, project_root: Path)
     else:
         _run_git(["remote", "set-url", "origin", repo_url], repo_dir)
         if branch_exists:
-            _run_git(["fetch", "origin", branch], repo_dir)
-            _run_git(["checkout", branch], repo_dir)
-            _run_git(["pull", "--ff-only", "origin", branch], repo_dir)
+            sync_info = _force_sync_branch_from_remote(repo_dir, branch)
         else:
             _run_git(["checkout", "-B", branch], repo_dir)
+            sync_info = {"mode": "local_branch", "branch": branch}
 
     _run_git(["config", "user.name", str(os.getenv("WEBSITE_BACKUP_GIT_NAME") or "Renaiss Website Bot")], repo_dir)
     _run_git(["config", "user.email", str(os.getenv("WEBSITE_BACKUP_GIT_EMAIL") or "bot@renaiss.website")], repo_dir)
+    if "sync_info" not in locals():
+        sync_info = {"mode": "clone" if branch_exists else "clone_local_branch", "branch": branch}
+    sync_info["branch_exists"] = branch_exists
+    return sync_info
 
 
 def restore_website_data_from_backup(data_root: Path, project_root: Path, force: bool | None = None) -> dict[str, Any]:
@@ -167,12 +234,14 @@ def restore_website_data_from_backup(data_root: Path, project_root: Path, force:
     repo_dir = _backup_repo_dir(data_root)
     subdir = _backup_subdir(data_root)
     try:
-        _ensure_repo(repo_url, repo_dir, branch, project_root)
+        repo_sync = _ensure_repo(repo_url, repo_dir, branch, project_root)
         source = repo_dir / subdir
         if not source.exists() or not source.is_dir():
             return {"ok": False, "restored": False, "reason": "missing_subdir", "subdir": subdir}
-        data_root.mkdir(parents=True, exist_ok=True)
-        _copy_backup_to_data(source, data_root)
+        source_is_data_root = source.resolve() == data_root.resolve()
+        if not source_is_data_root:
+            data_root.mkdir(parents=True, exist_ok=True)
+            _copy_backup_to_data(source, data_root)
         return {
             "ok": True,
             "restored": True,
@@ -181,6 +250,8 @@ def restore_website_data_from_backup(data_root: Path, project_root: Path, force:
             "subdir": subdir,
             "policy": policy,
             "force": should_force,
+            "repo_sync": repo_sync,
+            "source_is_data_root": source_is_data_root,
         }
     except Exception as error:
         return {"ok": False, "restored": False, "reason": "restore_failed", "error": _mask_secret(str(error))}
