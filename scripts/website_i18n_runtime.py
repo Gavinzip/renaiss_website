@@ -42,7 +42,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 10
+I18N_BUILD_VERSION = 11
 I18N_QUEUE_MERGE_WAIT_SEC = 0.25
 I18N_FEED_TEXT_KEYS = {
     "headline",
@@ -68,6 +68,7 @@ I18N_FEED_TEXT_KEYS = {
     "reward",
     "message",
     "participation",
+    "sbt_acquisition",
     "tags",
 }
 I18N_FEED_LIST_KEYS = {
@@ -116,6 +117,9 @@ I18N_CARD_FACT_TEXT_KEYS = (
     "what",
     "why",
     "impact",
+)
+I18N_CARD_DIRECT_TEXT_KEYS = (
+    "sbt_acquisition",
 )
 I18N_VISIBLE_FEED_ROOT_KEYS = (
     "digest",
@@ -867,6 +871,10 @@ def _collect_feed_i18n_entries(node: object) -> list[tuple[str, str]]:
         card_key = _card_lookup_key(card, index)
         card_path = f"cards[{card_key}]"
         for key in I18N_CARD_TEXT_KEYS:
+            value = card.get(key)
+            if isinstance(value, str):
+                _push(f"{card_path}.{key}", value, key)
+        for key in I18N_CARD_DIRECT_TEXT_KEYS:
             value = card.get(key)
             if isinstance(value, str):
                 _push(f"{card_path}.{key}", value, key)
