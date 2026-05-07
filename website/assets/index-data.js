@@ -2107,7 +2107,7 @@
       return `${INTEL_API_BASE}/${tail}`;
     }
 
-    const DEFAULT_COVER_IMAGE = "./image.png";
+    const DEFAULT_COVER_IMAGE = "./image.webp";
 
     function resolveCoverImageUrl(value) {
       const raw = String(value || "").trim();

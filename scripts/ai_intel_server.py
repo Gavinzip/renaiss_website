@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -19,6 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import parse_qs
+from urllib.parse import unquote
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -1235,6 +1237,38 @@ class Handler(SimpleHTTPRequestHandler):
     def _request_path(self) -> str:
         return str(urlparse(self.path).path or "/").strip() or "/"
 
+    def _send_data_file(self, path: str) -> bool:
+        raw_path = unquote(str(path or ""))
+        if not raw_path.startswith("/data/generated_covers/"):
+            return False
+        rel = raw_path.removeprefix("/data/").lstrip("/")
+        root = (DATA_ROOT / "generated_covers").resolve()
+        target = (DATA_ROOT / rel).resolve()
+        try:
+            target.relative_to(root)
+        except Exception:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return True
+        if not target.exists() or not target.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return True
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        try:
+            size = target.stat().st_size
+            self.send_response(HTTPStatus.OK)
+            self._set_cors_headers()
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "public, max-age=604800")
+            self.end_headers()
+            with target.open("rb") as fh:
+                self.copyfile(fh, self.wfile)
+        except BrokenPipeError:
+            return True
+        except Exception:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "failed to read data file")
+        return True
+
     def _request_origin(self) -> str:
         return str(self.headers.get("Origin") or "").strip()
 
@@ -1421,6 +1455,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self._request_path()
+        if self._send_data_file(path):
+            return
         if path == "/api/auth/me":
             self._send_json(self._auth_me_payload())
             return

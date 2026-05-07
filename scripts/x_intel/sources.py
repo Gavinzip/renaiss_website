@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 
@@ -9,6 +11,15 @@ globals().update(vars(_editorial))
 # Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
 
 X_SOURCE_CONFIG_FILE = "x_intel_sources.json"
+DISCORD_COVER_CACHE_DIR = "generated_covers"
+DISCORD_COVER_MAX_BYTES = 12 * 1024 * 1024
+DISCORD_COVER_EXT_BY_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 def normalize_x_account(value: Any) -> str:
@@ -106,6 +117,79 @@ def update_x_source_accounts(action: str, account: str = "", accounts: list[str]
     config["action"] = op
     config["account"] = normalized_account
     return config
+
+
+def _image_ext_from_url(url: str) -> str:
+    try:
+        path = str(urlparse(str(url or "")).path or "")
+    except Exception:
+        path = ""
+    suffix = Path(path).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    return ""
+
+
+def _cached_discord_cover_for_id(card_id: str) -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(card_id or "").strip()).strip(".-")
+    if not safe_id:
+        return ""
+    cover_dir = data_dir() / DISCORD_COVER_CACHE_DIR
+    for ext in (".webp", ".png", ".jpg", ".gif"):
+        candidate = cover_dir / f"{safe_id}{ext}"
+        if candidate.exists() and candidate.is_file():
+            return f"/data/{DISCORD_COVER_CACHE_DIR}/{candidate.name}"
+    return ""
+
+
+def _cache_discord_cover_image(source_url: str, card_id: str) -> str:
+    url = str(source_url or "").strip()
+    if not url:
+        return ""
+    if url.startswith("/data/generated_covers/"):
+        return url
+    if not url.startswith("http"):
+        return ""
+    cached = _cached_discord_cover_for_id(card_id)
+    if cached:
+        return cached
+
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(card_id or "").strip()).strip(".-")
+    if not safe_id:
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+        safe_id = f"discord-{digest}"
+    cover_dir = data_dir() / DISCORD_COVER_CACHE_DIR
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    headers = {"User-Agent": "RenaissIntelDiscordImageCache/1.0"}
+    try:
+        resp = requests.get(url, headers=headers, stream=True, timeout=(10, 30))
+        resp.raise_for_status()
+        content_type = str(resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if not content_type.startswith("image/"):
+            return ""
+        ext = DISCORD_COVER_EXT_BY_TYPE.get(content_type) or _image_ext_from_url(url) or ".jpg"
+        target = cover_dir / f"{safe_id}{ext}"
+        tmp = cover_dir / f".{safe_id}.{os.getpid()}.tmp"
+        total = 0
+        with tmp.open("wb") as fh:
+            for chunk in resp.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > DISCORD_COVER_MAX_BYTES:
+                    raise RuntimeError("discord image exceeds cache limit")
+                fh.write(chunk)
+        if total <= 0:
+            tmp.unlink(missing_ok=True)
+            return ""
+        tmp.replace(target)
+        return f"/data/{DISCORD_COVER_CACHE_DIR}/{target.name}"
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)  # type: ignore[name-defined]
+        except Exception:
+            pass
+        return ""
 
 def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
     model_name = str(
@@ -737,10 +821,13 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         referenced = item.get("referenced_message") if isinstance(item.get("referenced_message"), dict) else {}
         reply_to_id = str(referenced.get("id") or "").strip()
 
+    card_id = f"discord-{channel_id}-{mid}"
+    cover_image = _cache_discord_cover_image(_discord_first_image(item), card_id)
+
     card_type, layout, tags = classify_story(text)
     shaped = build_editorial_copy(text, card_type, account)
     card = StoryCard(
-        id=f"discord-{channel_id}-{mid}",
+        id=card_id,
         account=account,
         url=_discord_message_url(item, channel_id, mid),
         title=str(shaped.get("title") or summarize_naive(text, 180)),
@@ -753,7 +840,7 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         tags=tags,
         raw_text=text[:2500],
         provider="discord-rest",
-        cover_image=_discord_first_image(item),
+        cover_image=cover_image,
         metrics={},
         reply_to_id=reply_to_id,
     )
