@@ -1488,11 +1488,12 @@
       const eventText = timelineRangeText(item?.timeline_date, item?.timeline_end_date) || (dt ? toPosterDate(dt.toISOString()) : "--");
       const publishText = toLocalTime(item?.published_at);
       const cover = resolveCoverImageUrl(item?.cover_image);
+      const coverAttrs = coverImageAttrs(cover);
       const backdropStyle = cover
         ? `background-image: url('${escapeHtml(cover)}');`
         : "background-image: linear-gradient(140deg, #1f3551, #2b4e73 46%, #29495b 100%);";
       const coverHtml = cover
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
         : "";
       const id = String(item?.id || "");
       const picked = Boolean(item?.manual_pick);
@@ -1673,8 +1674,9 @@
       const typeLabel = intelTypeLabel(card.card_type);
       const cardKey = String(card?._card_key || cardStableKey(card)).trim();
       const cover = resolveCoverImageUrl(card.cover_image);
+      const coverAttrs = coverImageAttrs(cover);
       const coverHtml = cover
-        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" loading="lazy" onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
+        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
         : "";
       const tags = Array.isArray(card.tags) ? card.tags.slice(0, 3) : [];
       const tagHtml = tags
@@ -2108,6 +2110,15 @@
     }
 
     const DEFAULT_COVER_IMAGE = "./image.webp";
+
+    function coverImageAttrs(src) {
+      const isDefault = String(src || "") === DEFAULT_COVER_IMAGE;
+      const loading = isDefault ? "eager" : "lazy";
+      const priority = isDefault ? " fetchpriority=\"high\"" : "";
+      const size = isDefault ? " width=\"1672\" height=\"940\"" : "";
+      const cssClass = isDefault ? " class=\"is-default-cover\"" : "";
+      return `loading="${loading}" decoding="async"${priority}${size}${cssClass}`;
+    }
 
     function resolveCoverImageUrl(value) {
       const raw = String(value || "").trim();
