@@ -144,7 +144,7 @@ def _ensure_repo(repo_url: str, repo_dir: Path, branch: str, project_root: Path)
     _run_git(["config", "user.email", str(os.getenv("WEBSITE_BACKUP_GIT_EMAIL") or "bot@renaiss.website")], repo_dir)
 
 
-def restore_website_data_from_backup(data_root: Path, project_root: Path) -> dict[str, Any]:
+def restore_website_data_from_backup(data_root: Path, project_root: Path, force: bool | None = None) -> dict[str, Any]:
     """Restore persistent website data from the configured git backup repo.
 
     This runs before bundled data migration. It only copies data when the target
@@ -158,10 +158,10 @@ def restore_website_data_from_backup(data_root: Path, project_root: Path) -> dic
     if not repo_url:
         return {"ok": True, "restored": False, "reason": "missing_repo"}
     policy = str(os.getenv("WEBSITE_DATA_RESTORE_POLICY") or "always").strip().lower() or "always"
-    force = _truthy(os.getenv("WEBSITE_DATA_RESTORE_FORCE", "0"))
+    should_force = _truthy(os.getenv("WEBSITE_DATA_RESTORE_FORCE", "0")) if force is None else bool(force)
     should_require_empty = policy in {"if-empty", "if_empty", "empty-only", "empty_only"}
-    if should_require_empty and data_root.exists() and any(data_root.iterdir()) and not force:
-        return {"ok": True, "restored": False, "reason": "data_root_not_empty", "policy": policy}
+    if should_require_empty and data_root.exists() and any(data_root.iterdir()) and not should_force:
+        return {"ok": True, "restored": False, "reason": "data_root_not_empty", "policy": policy, "force": should_force}
 
     branch = _backup_branch()
     repo_dir = _backup_repo_dir(data_root)
@@ -180,6 +180,7 @@ def restore_website_data_from_backup(data_root: Path, project_root: Path) -> dic
             "branch": branch,
             "subdir": subdir,
             "policy": policy,
+            "force": should_force,
         }
     except Exception as error:
         return {"ok": False, "restored": False, "reason": "restore_failed", "error": _mask_secret(str(error))}

@@ -2,7 +2,7 @@ import * as THREE from 'https://esm.sh/three@0.161.0';
 
 export class ParticlesSwarm {
     constructor(container, count = 4200) {
-        this.count = count;
+        this.count = Math.max(1, Math.min(Number(count) || 4200, 6400));
         this.container = container;
         this.speedMult = 1;
         this.extentY = 35;
@@ -13,6 +13,9 @@ export class ParticlesSwarm {
         this.scatterStrength = 17.8;
         this.pointerInside = false;
         this.pointerWorld = { y: 0, z: 0 };
+        this.frameId = 0;
+        this.disposed = false;
+        this.isVisible = true;
         
         // SETUP
         this.scene = new THREE.Scene();
@@ -23,7 +26,7 @@ export class ParticlesSwarm {
         this.camera.lookAt(0, 0, 0);
         
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
         this.renderer.setClearColor(0x000000, 0);
         this.renderer.setSize(width, height);
         this.container.appendChild(this.renderer.domElement);
@@ -61,12 +64,22 @@ export class ParticlesSwarm {
         this.handlePointerEnter = this.handlePointerEnter.bind(this);
         this.handlePointerMove = this.handlePointerMove.bind(this);
         this.handlePointerLeave = this.handlePointerLeave.bind(this);
+        this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
+        this.handleIntersection = this.handleIntersection.bind(this);
         window.addEventListener('resize', this.handleResize);
+        document.addEventListener('visibilitychange', this.handleVisibilityChange);
         this.renderer.domElement.addEventListener('pointerenter', this.handlePointerEnter);
         this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
         this.renderer.domElement.addEventListener('pointerleave', this.handlePointerLeave);
+        if ('IntersectionObserver' in window) {
+            this.visibilityObserver = new IntersectionObserver(this.handleIntersection, {
+                rootMargin: '360px 0px',
+                threshold: 0.01
+            });
+            this.visibilityObserver.observe(this.container);
+        }
         this.animate = this.animate.bind(this);
-        this.animate();
+        this.requestFrame();
     }
 
     handleResize() {
@@ -96,8 +109,29 @@ export class ParticlesSwarm {
         this.pointerInside = false;
     }
 
+    handleVisibilityChange() {
+        if (!document.hidden) {
+            this.requestFrame();
+        }
+    }
+
+    handleIntersection(entries) {
+        this.isVisible = entries.some((entry) => entry.isIntersecting);
+        if (!this.isVisible) {
+            this.pointerInside = false;
+            return;
+        }
+        this.requestFrame();
+    }
+
+    requestFrame() {
+        if (this.disposed || this.frameId || document.hidden || !this.isVisible) return;
+        this.frameId = requestAnimationFrame(this.animate);
+    }
+
     animate() {
-        requestAnimationFrame(this.animate);
+        this.frameId = 0;
+        if (this.disposed || document.hidden || !this.isVisible) return;
         const time = this.clock.getElapsedTime() * this.speedMult;
         
         if(this.material.uniforms && this.material.uniforms.uTime) {
@@ -242,10 +276,22 @@ export class ParticlesSwarm {
         this.mesh.instanceColor.needsUpdate = true;
         
         this.renderer.render(this.scene, this.camera);
+        this.requestFrame();
     }
     
     dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        if (this.frameId) {
+            cancelAnimationFrame(this.frameId);
+            this.frameId = 0;
+        }
         window.removeEventListener('resize', this.handleResize);
+        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+        if (this.visibilityObserver) {
+            this.visibilityObserver.disconnect();
+            this.visibilityObserver = null;
+        }
         this.renderer.domElement.removeEventListener('pointerenter', this.handlePointerEnter);
         this.renderer.domElement.removeEventListener('pointermove', this.handlePointerMove);
         this.renderer.domElement.removeEventListener('pointerleave', this.handlePointerLeave);

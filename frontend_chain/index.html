@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss Aggregator collects official updates, event timelines, SBT notes, Pokemon and TCG posts, guides, community picks, and admin-curated intelligence." />
   <title>Renaiss 新手入門指南 | Renaiss Starter Guide</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -34,18 +35,20 @@
       }, { once: true });
     })();
   </script>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
-  <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
-  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-auth-cache1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260507-auth-cache1" />
-  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-auth-cache1" />
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" /></noscript>
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-restore-perf1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260507-restore-perf1" />
+  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-restore-perf1" />
 </head>
 <body>
-  <div class="shell">
+  <main class="shell">
     <header class="nav">
       <div class="nav-main-row" data-lang-morph="1">
         <a class="brand" href="#hero">
-          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="eager" decoding="async" fetchpriority="high" width="282" height="396" />
           <span class="brand-text">Renaiss Aggregator</span>
         </a>
         <nav class="nav-links">
@@ -101,7 +104,9 @@
       <div class="hero-visual observe" style="--delay: 260ms;">
         <div class="beam-wrap">
           <div class="beam-core">
-            <div id="hero-logo-swarm" class="project-logo-card hero-logo-swarm" aria-label="Renaiss Particle Logo"></div>
+            <div id="hero-logo-swarm" class="project-logo-card hero-logo-swarm" aria-label="Renaiss Particle Logo">
+              <img class="hero-logo-fallback" src="./assets/renaiss-logo-alpha-cropped.png" alt="" loading="eager" decoding="async" fetchpriority="low" width="282" height="396" aria-hidden="true" />
+            </div>
           </div>
           <div class="beam-label">Renaiss Logo | 項目 Logo</div>
         </div>
@@ -464,7 +469,7 @@
         <p id="intel-other-empty" class="source-empty intel-user-hidden" hidden aria-hidden="true" style="display:none;" data-i18n-key="other.empty">目前沒有無分類貼文。</p>
       </article>
     </section>
-  </div>
+  </main>
 
   <div id="intel-detail-modal" class="intel-detail-modal" aria-hidden="true">
     <div class="intel-detail-dialog" role="dialog" aria-modal="true" aria-label="貼文詳細內容">
@@ -632,21 +637,38 @@
   </div>
 
   <script type="module">
-    import { ParticlesSwarm } from "./assets/base_basic_shaded.js";
-
     const heroLogoSwarm = document.getElementById("hero-logo-swarm");
-    if (heroLogoSwarm) {
+    async function startHeroParticleLogo() {
+      if (!heroLogoSwarm || heroLogoSwarm.dataset.logoInit === "1") return;
+      heroLogoSwarm.dataset.logoInit = "1";
       try {
-        new ParticlesSwarm(heroLogoSwarm, 18000);
+        const { ParticlesSwarm } = await import("./assets/base_basic_shaded.js?v=20260507-restore-perf1");
+        heroLogoSwarm.particleSwarm = new ParticlesSwarm(heroLogoSwarm, 5200);
+        heroLogoSwarm.dataset.logoReady = "1";
       } catch (error) {
         console.error("Failed to init hero particle logo:", error);
       }
     }
+
+    function scheduleHeroParticleLogo() {
+      if (!heroLogoSwarm) return;
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(startHeroParticleLogo, { timeout: 1600 });
+      } else {
+        window.setTimeout(startHeroParticleLogo, 450);
+      }
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", scheduleHeroParticleLogo, { once: true });
+    } else {
+      scheduleHeroParticleLogo();
+    }
   </script>
 
-  <script src="./assets/index-i18n.js?v=20260507-auth-cache1"></script>
-  <script src="./assets/index-data.js?v=20260507-auth-cache1"></script>
-  <script src="./assets/index-render.js?v=20260507-auth-cache1"></script>
-  <script src="./assets/index-actions.js?v=20260507-auth-cache1"></script>
+  <script src="./assets/index-i18n.js?v=20260507-restore-perf1"></script>
+  <script src="./assets/index-data.js?v=20260507-restore-perf1"></script>
+  <script src="./assets/index-render.js?v=20260507-restore-perf1"></script>
+  <script src="./assets/index-actions.js?v=20260507-restore-perf1"></script>
 </body>
 </html>

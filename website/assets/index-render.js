@@ -2054,6 +2054,10 @@
 
     async function triggerWebsiteRestore(force = true) {
       const data = await postIntel("/api/intel/restore", { force: Boolean(force) });
+      if (data?.feed && typeof data.feed === "object") {
+        renderIntelFeed(data.feed);
+        scheduleLangFeedRefresh(data.feed);
+      }
       return data?.restore || {};
     }
 

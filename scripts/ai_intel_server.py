@@ -103,6 +103,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/source-config",
     "/api/intel/job-status",
     "/api/intel/backup",
+    "/api/intel/restore",
     "/api/intel/retranslate",
 }
 
@@ -1460,6 +1461,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/source-config",
             "/api/intel/job-status",
             "/api/intel/backup",
+            "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
@@ -1655,6 +1657,29 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "started": started, "backup": _backup_state_snapshot()})
                 return
 
+            if path == "/api/intel/restore":
+                global RESTORE_STATE
+                force_restore = bool(payload.get("force"))
+                restore = restore_website_data_from_backup(DATA_ROOT, ROOT.parent, force=force_restore)
+                restore = {
+                    **restore,
+                    "trigger": self._current_user() or "manual",
+                    "finished_at": _now_iso(),
+                }
+                RESTORE_STATE = restore
+                feed = None
+                if restore.get("ok") is not False and restore.get("restored"):
+                    feed = _read_feed_snapshot()
+                    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json(
+                    {
+                        "ok": True,
+                        "restore": restore,
+                        "feed": feed,
+                    }
+                )
+                return
+
             if path == "/api/intel/retranslate":
                 lang_raw = str(payload.get("lang") or "").strip().lower()
                 if not lang_raw or lang_raw == "all":
@@ -1769,7 +1794,7 @@ def main() -> int:
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts"
     )
     print(

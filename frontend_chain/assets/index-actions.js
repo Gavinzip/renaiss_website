@@ -898,6 +898,7 @@
       if (typeof renderIntelCategoryFromCurrentFeed === "function") {
         renderIntelCategoryFromCurrentFeed(nextCategory);
       }
+      markActiveCategoryFullyRendered(nextCategory);
       if (typeof scheduleIntelDeferredCategoryRender === "function") {
         scheduleIntelDeferredCategoryRender(5200);
       }
@@ -924,6 +925,28 @@
       };
       updateHintAfterLanguage();
     }
+
+    function sectionMatchesCategory(section, category) {
+      const keys = String(section?.dataset?.categorySection || "")
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      return keys.includes(category);
+    }
+
+    function markActiveCategoryFullyRendered(category = activeCategory) {
+      const nextCategory = categoryTargets[category] ? category : activeCategory;
+      categorySections.forEach((section) => {
+        if (!sectionMatchesCategory(section, nextCategory)) return;
+        [section, ...Array.from(section.querySelectorAll(".observe"))].forEach((el) => {
+          if (!el || !el.classList?.contains("observe")) return;
+          el.style.setProperty("--delay", "0ms");
+          el.classList.add("inview");
+        });
+      });
+    }
+
+    window.markActiveCategoryFullyRendered = markActiveCategoryFullyRendered;
 
     function setupCategorySwitcher() {
       categoryTabs.forEach((tab) => {
@@ -986,12 +1009,8 @@
 
     function updateScrollUi() {
       if (topNav) {
-        const currentY = window.scrollY;
-        const delta = currentY - lastScrollY;
-        const isPastTop = currentY > 108;
-        if (isPastTop && delta > 2) topNav.classList.add("nav-hidden");
-        if (delta < -2 || !isPastTop) topNav.classList.remove("nav-hidden");
-        lastScrollY = currentY;
+        topNav.classList.remove("nav-hidden");
+        lastScrollY = window.scrollY;
       }
     }
 

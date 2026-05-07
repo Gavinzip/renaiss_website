@@ -3103,7 +3103,6 @@
         box-shadow 220ms ease,
         border-color 220ms ease,
         background 220ms ease;
-      will-change: transform, box-shadow;
     }
 
     @media (hover: hover) {
