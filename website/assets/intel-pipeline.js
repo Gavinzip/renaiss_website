@@ -15,8 +15,9 @@
       fromStorage = "";
     }
     const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
+    const localPort = String(window.location.port || "");
     const fromHost = localHost
-      ? (String(window.location.port || "") === "8787" ? normalize(window.location.origin || "") : "http://127.0.0.1:8787")
+      ? (localPort && localPort !== "18787" ? normalize(window.location.origin || "") : "http://127.0.0.1:8787")
       : "";
     const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
     return (

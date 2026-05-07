@@ -30,8 +30,24 @@ from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_ru
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _resolve_static_root() -> Path:
+    raw = str(os.getenv("WEBSITE_STATIC_ROOT", "website") or "website").strip()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+    except Exception:
+        resolved = candidate
+    if resolved.exists() and resolved.is_dir():
+        return resolved
+    return ROOT / "website"
+
+
 # Ensure project/website .env is loaded before storage/auth/env constants are resolved.
 load_environment()
+STATIC_ROOT = _resolve_static_root()
 DATA_ROOT = get_website_data_dir(ROOT)
 RESTORE_STATE = restore_website_data_from_backup(DATA_ROOT, ROOT.parent)
 STORAGE_STATE = setup_website_storage(ROOT)
@@ -1214,7 +1230,7 @@ def _enqueue_analyze_job(url: str) -> dict:
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
 
     def _request_path(self) -> str:
         return str(urlparse(self.path).path or "/").strip() or "/"
@@ -1782,7 +1798,7 @@ def main() -> int:
         _warm_i18n_bundle_from_feed()
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"[ai-intel] serving {ROOT} at http://{args.host}:{args.port}")
+    print(f"[ai-intel] serving api={ROOT} static={STATIC_ROOT} at http://{args.host}:{args.port}")
     print(
         "[ai-intel] storage "
         f"data_root={DATA_ROOT} symlink={bool(STORAGE_STATE.get('using_symlink'))} "

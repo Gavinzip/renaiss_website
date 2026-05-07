@@ -428,7 +428,7 @@
       const value = normalizeIntelApiBase(base);
       if (!value) return false;
       if (value === DEFAULT_INTEL_API_BASE) return true;
-      if (localPreview && /^http:\/\/(127\.0\.0\.1|localhost):8787$/i.test(value)) return true;
+      if (localPreview && /^http:\/\/(127\.0\.0\.1|localhost):\d+$/i.test(value)) return true;
       return false;
     }
 
@@ -458,6 +458,11 @@
         }
       } catch (_err) {}
       if (isLocal) {
+        const localOrigin = normalizeIntelApiBase(window.location?.origin || "");
+        const localPort = String(window.location?.port || "");
+        if (localOrigin && localPort && localPort !== "18787") {
+          return localOrigin;
+        }
         return "http://127.0.0.1:8787";
       }
       return DEFAULT_INTEL_API_BASE;
