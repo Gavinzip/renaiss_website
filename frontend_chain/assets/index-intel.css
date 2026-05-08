@@ -2720,6 +2720,35 @@
       min-height: 2rem;
     }
 
+    .intel-source-result {
+      border: 1px solid rgba(190, 219, 247, 0.72);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.82);
+      color: #4f7195;
+      font-size: 0.74rem;
+      font-weight: 750;
+      line-height: 1.4;
+      padding: 0.38rem 0.5rem;
+    }
+
+    .intel-source-result.is-pending {
+      border-color: rgba(139, 184, 229, 0.9);
+      background: rgba(239, 248, 255, 0.94);
+      color: #285982;
+    }
+
+    .intel-source-result.is-ok {
+      border-color: rgba(91, 178, 126, 0.82);
+      background: rgba(243, 255, 248, 0.94);
+      color: #1e6841;
+    }
+
+    .intel-source-result.is-error {
+      border-color: rgba(234, 170, 158, 0.9);
+      background: rgba(255, 246, 244, 0.94);
+      color: #9d3b3b;
+    }
+
     .intel-source-pill {
       display: inline-flex;
       align-items: center;

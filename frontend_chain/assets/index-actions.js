@@ -25,6 +25,16 @@
       const xSourceInput = document.getElementById("intel-admin-x-source-input");
       const xSourcePokemonInput = document.getElementById("intel-admin-x-source-pokemon");
       const xSourceList = document.getElementById("intel-admin-x-source-list");
+      const xSourceResult = document.getElementById("intel-admin-x-source-result");
+
+      const setXSourceResult = (text, mode = "") => {
+        if (!xSourceResult) return;
+        xSourceResult.classList.remove("is-pending", "is-ok", "is-error");
+        if (mode === "pending") xSourceResult.classList.add("is-pending");
+        if (mode === "ok") xSourceResult.classList.add("is-ok");
+        if (mode === "error") xSourceResult.classList.add("is-error");
+        xSourceResult.textContent = String(text || "");
+      };
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
       const masterStage = document.getElementById("intel-master-stage");
@@ -364,11 +374,13 @@
           event.preventDefault();
           if (!intelCanEdit()) {
             openIntelAuthModal();
+            setXSourceResult("新增失敗：請先登入管理員帳號。", "error");
             setIntelMessage("請先登入管理員帳號後再新增追蹤用戶。", "error");
             return;
           }
           const account = String(xSourceInput?.value || "").trim();
           if (!account) {
+            setXSourceResult("新增失敗：請輸入 X username 或個人頁 URL。", "error");
             setIntelMessage("請輸入要追蹤的 X username 或個人頁 URL。", "error");
             return;
           }
@@ -376,13 +388,27 @@
           if (submitBtn) submitBtn.disabled = true;
           try {
             const action = xSourcePokemonInput?.checked ? "add_pokemon" : "add";
-            await updateIntelXSource(action, account);
+            setXSourceResult(action === "add_pokemon" ? `送出中：正在新增 ${account} 並標記為寶可夢來源...` : `送出中：正在新增 ${account} 到一般 X 追蹤清單...`, "pending");
+            const source = await updateIntelXSource(action, account);
+            const normalizedAccount = String(source?.account || account).trim();
+            const label = normalizedAccount ? `@${normalizedAccount}` : account;
+            const changed = source?.changed === true;
             if (xSourceInput) xSourceInput.value = "";
             if (xSourcePokemonInput) xSourcePokemonInput.checked = false;
-            setIntelMessage(`已新增追蹤來源：${account}${action === "add_pokemon" ? "（寶可夢來源）" : ""}`, "ok");
+            const okMessage = changed
+              ? (action === "add_pokemon"
+                ? `新增成功：${label} 已加入追蹤清單，並設為寶可夢來源。`
+                : `新增成功：${label} 已加入一般 X 追蹤清單，之後會進完整分析流程。`)
+              : (action === "add_pokemon"
+                ? `沒有變更：${label} 已在追蹤清單，且已是寶可夢來源。`
+                : `沒有變更：${label} 已在一般 X 追蹤清單。`);
+            setXSourceResult(okMessage, "ok");
+            setIntelMessage(okMessage, "ok");
             await refreshIntelAdminStatus();
           } catch (error) {
-            setIntelMessage(`新增追蹤來源失敗：${error.message}`, "error");
+            const failMessage = `新增追蹤來源失敗：${error.message}`;
+            setXSourceResult(failMessage, "error");
+            setIntelMessage(failMessage, "error");
           } finally {
             if (submitBtn) submitBtn.disabled = false;
           }
@@ -396,6 +422,7 @@
           if (pokemonBtn) {
             if (!intelCanEdit()) {
               openIntelAuthModal();
+              setXSourceResult("更新失敗：請先登入管理員帳號。", "error");
               setIntelMessage("請先登入管理員帳號後再更新來源分區。", "error");
               return;
             }
@@ -404,11 +431,19 @@
             if (!account || !action) return;
             pokemonBtn.disabled = true;
             try {
-              await updateIntelXSource(action, account);
-              setIntelMessage(action === "add_pokemon" ? `已標記 @${account} 為寶可夢來源。` : `已取消 @${account} 的寶可夢來源標記。`, "ok");
+              setXSourceResult(`送出中：正在更新 @${account} 的寶可夢來源設定...`, "pending");
+              const source = await updateIntelXSource(action, account);
+              const changed = source?.changed === true;
+              const okMessage = changed
+                ? (action === "add_pokemon" ? `更新成功：@${account} 已設為寶可夢來源。` : `更新成功：@${account} 已取消寶可夢來源。`)
+                : (action === "add_pokemon" ? `沒有變更：@${account} 已是寶可夢來源。` : `沒有變更：@${account} 原本就不是寶可夢來源。`);
+              setXSourceResult(okMessage, "ok");
+              setIntelMessage(okMessage, "ok");
               await refreshIntelAdminStatus();
             } catch (error) {
-              setIntelMessage(`更新來源分區失敗：${error.message}`, "error");
+              const failMessage = `更新來源分區失敗：${error.message}`;
+              setXSourceResult(failMessage, "error");
+              setIntelMessage(failMessage, "error");
             } finally {
               pokemonBtn.disabled = false;
             }
@@ -418,6 +453,7 @@
           if (!btn) return;
           if (!intelCanEdit()) {
             openIntelAuthModal();
+            setXSourceResult("取消追蹤失敗：請先登入管理員帳號。", "error");
             setIntelMessage("請先登入管理員帳號後再取消追蹤。", "error");
             return;
           }
@@ -426,11 +462,18 @@
           if (!window.confirm(`確定要取消追蹤 @${account} 嗎？這只影響下一次 sync 的抓取來源，不會刪除既有卡片。`)) return;
           btn.disabled = true;
           try {
-            await updateIntelXSource("remove", account);
-            setIntelMessage(`已取消追蹤：@${account}`, "ok");
+            setXSourceResult(`送出中：正在取消追蹤 @${account}...`, "pending");
+            const source = await updateIntelXSource("remove", account);
+            const okMessage = source?.changed === true
+              ? `取消成功：@${account} 已從追蹤清單移除。`
+              : `沒有變更：@${account} 不在追蹤清單中。`;
+            setXSourceResult(okMessage, "ok");
+            setIntelMessage(okMessage, "ok");
             await refreshIntelAdminStatus();
           } catch (error) {
-            setIntelMessage(`取消追蹤失敗：${error.message}`, "error");
+            const failMessage = `取消追蹤失敗：${error.message}`;
+            setXSourceResult(failMessage, "error");
+            setIntelMessage(failMessage, "error");
           } finally {
             btn.disabled = false;
           }
