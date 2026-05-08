@@ -2175,6 +2175,7 @@
       const i18n = status?.i18n || {};
       const storage = status?.storage || {};
       const backup = status?.backup || {};
+      const publicFeedback = status?.public_feedback || {};
       const backupRuntime = backup?.runtime || {};
       const updatedAtEl = document.getElementById("intel-admin-updated-at");
       const syncStatusEl = document.getElementById("intel-admin-sync-status");
@@ -2196,6 +2197,8 @@
       const jobListEl = document.getElementById("intel-admin-job-list");
       const backupListEl = document.getElementById("intel-admin-backup-list");
       const monitorListEl = document.getElementById("intel-admin-monitor-list");
+      const publicFeedbackMetaEl = document.getElementById("intel-admin-public-feedback-meta");
+      const publicFeedbackListEl = document.getElementById("intel-admin-public-feedback-list");
 
       if (updatedAtEl) {
         updatedAtEl.textContent = `最後更新：${toLocalTime(status?.server_time)}`;
@@ -2371,6 +2374,29 @@
       if (!backup?.has_pat) backupRows.push("Next step：設定 WEBSITE_BACKUP_PAT，權限只需要 Contents read/write。");
       renderIntelAdminList(backupListEl, backupRows, "目前沒有備份狀態資料");
       renderIntelXSourceManager(status);
+
+      const publicFeedbackItems = Array.isArray(publicFeedback?.items) ? publicFeedback.items : [];
+      const publicFeedbackCategoryLabels = {
+        bug: "問題",
+        suggestion: "建議",
+        data: "資料",
+        translation: "翻譯",
+        other: "其他",
+      };
+      if (publicFeedbackMetaEl) {
+        publicFeedbackMetaEl.textContent = `總數 ${Number(publicFeedback?.total || 0)} · 最後更新 ${toLocalTime(publicFeedback?.updated_at)}`;
+      }
+      const publicFeedbackRows = publicFeedbackItems.slice(0, 12).map((item) => {
+        const category = publicFeedbackCategoryLabels[String(item?.category || "other")] || "其他";
+        const title = String(item?.title || "").trim();
+        const message = String(item?.message || "").trim();
+        const contact = String(item?.contact || "").trim();
+        const pageUrl = String(item?.page_url || item?.referer || "").trim();
+        const createdAt = toLocalTime(item?.created_at);
+        const main = title ? `${title}：${message}` : message;
+        return `[${category}] ${main || "(空白回饋)"} · ${createdAt}${contact ? ` · contact ${contact}` : ""}${pageUrl ? ` · ${pageUrl}` : ""}`;
+      });
+      renderIntelAdminList(publicFeedbackListEl, publicFeedbackRows, "目前沒有使用者回饋");
 
       const monitorRows = [];
       const syncNext = toLocalTime(sync?.next_run_at);
@@ -2699,9 +2725,9 @@
         const result = await openIntelFeedbackModal({ mode: "exclude", defaultLabel: "exclude" });
         if (!result) return false;
         const reason = String(result.reason || "").trim();
-        setIntelMessage(reason ? "已加入排除，正在寫入 AI 回饋記憶並重新整理..." : "已加入排除，正在重新整理...", "");
+        setIntelMessage(reason ? "已加入排除，正在儲存原因並重新整理..." : "已加入排除，正在重新整理...", "");
         await submitIntelPick(id, action, reason);
-        setIntelMessage(reason ? "已排除這篇貼文，原因已寫入 AI 回饋記憶。" : "已排除這篇貼文。", "ok");
+        setIntelMessage(reason ? "已排除這篇貼文，原因已儲存。" : "已排除這篇貼文。", "ok");
         return true;
       }
       if (action === "pin" || action === "unpin" || action === "bottom" || action === "unbottom") {

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Send feedback to the Renaiss Aggregator maintainers." />
+  <title>Renaiss Aggregator 回饋</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260508-x-source-feedback1" />
+  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
+  <style>
+    .feedback-shell { min-height: 100vh; padding-bottom: 6rem; }
+    .feedback-panel { max-width: 920px; margin: 2rem auto 0; }
+    .feedback-card { position: relative; overflow: hidden; }
+    .feedback-card::before {
+      content: "";
+      position: absolute;
+      inset: -30% auto auto -10%;
+      width: 22rem;
+      height: 22rem;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(88, 191, 255, 0.18), transparent 62%);
+      pointer-events: none;
+    }
+    .feedback-form { position: relative; display: grid; gap: 1rem; margin-top: 1.2rem; }
+    .feedback-field { display: grid; gap: 0.42rem; }
+    .feedback-field label { color: #244365; font-weight: 800; font-size: 0.92rem; }
+    .feedback-field input,
+    .feedback-field select,
+    .feedback-field textarea {
+      width: 100%;
+      border: 1px solid rgba(125, 180, 235, 0.58);
+      border-radius: 18px;
+      background: rgba(255,255,255,0.82);
+      color: #183758;
+      padding: 0.82rem 0.92rem;
+      font: inherit;
+      outline: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
+    }
+    .feedback-field textarea { min-height: 170px; resize: vertical; line-height: 1.55; }
+    .feedback-field input:focus,
+    .feedback-field select:focus,
+    .feedback-field textarea:focus { border-color: rgba(71, 155, 235, 0.92); box-shadow: 0 0 0 4px rgba(71,155,235,0.13); }
+    .feedback-actions { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; }
+    .feedback-status { color: #496b8e; font-weight: 700; }
+    .feedback-status.is-ok { color: #18805d; }
+    .feedback-status.is-error { color: #a43b3b; }
+    .feedback-honeypot { position: absolute; left: -9999px; opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <main class="shell feedback-shell">
+    <header class="nav">
+      <div class="nav-main-row">
+        <a class="brand" href="./index.html#hero">
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <span class="brand-text">Renaiss Aggregator</span>
+        </a>
+        <nav class="nav-links">
+          <a href="./game.html">Game</a>
+          <a href="./index.html#cat-events">聚合器</a>
+          <a href="./beginner.html">新手教學</a>
+          <a href="./feedback.html" aria-current="page">回饋</a>
+        </nav>
+        <div class="nav-actions">
+          <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">Open Renaiss</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel feedback-panel">
+      <article class="card feedback-card">
+        <span class="chip"><iconify-icon icon="lucide:message-square-heart"></iconify-icon>Feedback</span>
+        <h1 class="section-title">網站回饋</h1>
+        <p class="section-sub">這裡不用管理員登入。可以回報資料錯誤、翻譯問題、操作卡住或想新增的功能；管理員會在後台看到。</p>
+
+        <form id="public-feedback-form" class="feedback-form">
+          <input class="feedback-honeypot" type="text" id="public-feedback-website" name="website" tabindex="-1" autocomplete="off" />
+          <div class="feedback-field">
+            <label for="public-feedback-category">回饋類型</label>
+            <select id="public-feedback-category" name="category">
+              <option value="bug">網站問題 / 操作卡住</option>
+              <option value="data">資料錯誤 / 分類不對</option>
+              <option value="translation">翻譯問題</option>
+              <option value="suggestion">功能建議</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
+          <div class="feedback-field">
+            <label for="public-feedback-title">標題（可選）</label>
+            <input id="public-feedback-title" name="title" type="text" maxlength="180" placeholder="例如：某張活動卡分類錯誤" />
+          </div>
+          <div class="feedback-field">
+            <label for="public-feedback-message">回饋內容</label>
+            <textarea id="public-feedback-message" name="message" maxlength="1800" required placeholder="請描述你看到的問題、在哪個分區、哪張卡，或你希望怎麼改。"></textarea>
+          </div>
+          <div class="feedback-field">
+            <label for="public-feedback-contact">聯絡方式（可選）</label>
+            <input id="public-feedback-contact" name="contact" type="text" maxlength="180" placeholder="Discord / X / Email，方便需要時追問" />
+          </div>
+          <div class="feedback-actions">
+            <button id="public-feedback-submit" class="btn btn-main" type="submit"><span class="shine"></span>送出回饋</button>
+            <a class="btn btn-sub" href="./index.html#cat-events">回首頁</a>
+            <span id="public-feedback-status" class="feedback-status" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+      </article>
+    </section>
+  </main>
+  <script src="./assets/public-feedback.js?v=20260508-public-feedback1"></script>
+</body>
+</html>

@@ -23,6 +23,11 @@ def feedback_path() -> Path:
     return data_dir() / "x_intel_feedback.json"
 
 
+def _feedback_memory_sync_enabled() -> bool:
+    raw = str(os.getenv("INTEL_FEEDBACK_MEMORY_SYNC", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 DEFAULT_MEMORY_RULES = [
     "只有明確有參與行為、時間、地點、直播、報名或 join/register 等訊號，才把 card_type 判成 event。",
     "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；這類內容通常應放入 sbt 與 alpha/topic label。",
@@ -66,18 +71,29 @@ def _forced_pokemon_account_handles() -> set[str]:
     }
 
 
+def _is_forced_pokemon_account(account: Any) -> bool:
+    return normalize_account_handle(account) in _forced_pokemon_account_handles()
+
+
 def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
-    forced_pokemon_accounts = _forced_pokemon_account_handles()
     for card in cards:
         labels = normalize_topic_labels(card.topic_labels)
         if _is_forced_collectibles_channel_card(card):
             labels = normalize_topic_labels([*labels, "collectibles"])
         else:
             labels = [label for label in labels if label != "collectibles"]
-        if normalize_account_handle(card.account) in forced_pokemon_accounts:
-            labels = [label for label in labels if label != "other"]
-            labels = normalize_topic_labels([*labels, "pokemon"])
+        if _is_forced_pokemon_account(card.account):
+            labels = ["pokemon"]
+            card.event_wall = False
         card.topic_labels = labels if labels else ["other"]
+
+
+def _enforce_fixed_channel_payload_fields(item: dict[str, Any]) -> None:
+    if not isinstance(item, dict):
+        return
+    if _is_forced_pokemon_account(item.get("account")):
+        item["topic_labels"] = ["pokemon"]
+        item["event_wall"] = False
 
 
 def _ensure_forced_collectibles_cards_in_curated(
@@ -434,7 +450,11 @@ def add_classification_feedback(tweet_id: str, label: str, reason: str = "") -> 
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     state["items"] = items
-    distilled = _update_feedback_memory(state, tweet_id=tid, label=fb_label, reason=fb_reason, snapshot=snapshot)
+    distilled = (
+        _update_feedback_memory(state, tweet_id=tid, label=fb_label, reason=fb_reason, snapshot=snapshot)
+        if _feedback_memory_sync_enabled()
+        else {"status": "reason_saved" if fb_reason else "pending"}
+    )
     items[tid]["memory_status"] = str(distilled.get("status") or "pending")
     if distilled.get("status") == "ready":
         items[tid]["memory_rule"] = clean_text(str(distilled.get("rule") or ""))[:220]
@@ -504,7 +524,7 @@ def add_classification_feedback_fields(
     overrides[tid] = next_override
 
     memory_results: list[dict[str, Any]] = []
-    if fb_reason:
+    if fb_reason and _feedback_memory_sync_enabled():
         if next_card_type:
             memory_results.append(add_classification_feedback(tid, next_card_type, reason=fb_reason))
             state = read_feedback_state()
@@ -521,6 +541,8 @@ def add_classification_feedback_fields(
             current.update(next_override)
             overrides[tid] = current
             state["card_field_overrides"] = overrides
+    elif fb_reason:
+        memory_results.append({"status": "reason_saved"})
 
     write_feedback_state(state)
     return {
@@ -551,6 +573,7 @@ def _update_feed_card_fields(tweet_id: str, patch: dict[str, Any]) -> dict[str, 
         if str(item.get("id") or "").strip() != tid:
             continue
         item.update(patch)
+        _enforce_fixed_channel_payload_fields(item)
         updated_card = item
         break
     if updated_card is None:
@@ -646,6 +669,7 @@ def update_card_classification_fields(
             _apply_card_type_override(card, next_card_type)
         if next_topic_labels:
             _apply_topic_label_override(card, next_topic_labels, exact=True)
+        _enforce_fixed_channel_topic_labels([card])
         item.update(
             {
                 "card_type": card.card_type,
@@ -656,6 +680,7 @@ def update_card_classification_fields(
                 "event_facts": card.event_facts or {},
                 "urgency": card.urgency,
                 "topic_labels": normalize_topic_labels(card.topic_labels),
+                "event_wall": bool(card.event_wall),
             }
         )
         updated_card = item
@@ -961,6 +986,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     existing_tags = [str(x).strip() for x in (card.tags or []) if str(x).strip() and str(x).strip() != label]
     card.tags = [label, *existing_tags][:3]
     card.confidence = max(0.6, float(card.confidence or 0.0))
+    _enforce_fixed_channel_topic_labels([card])
     return card
 
 
@@ -1838,6 +1864,7 @@ def sync_accounts(
     merged_total = len(existing_cards) + len(merged_new_cards)
 
     feedback_result = apply_feedback_overrides(existing_cards)
+    _enforce_fixed_channel_topic_labels(existing_cards)
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
     preserved_cards: list[StoryCard] = []
     removed_by_selection = 0
@@ -1856,6 +1883,7 @@ def sync_accounts(
         normalize_cards_semantics(merged_new_cards)
         _enforce_fixed_channel_topic_labels(merged_new_cards)
     new_feedback_result = apply_feedback_overrides(merged_new_cards)
+    _enforce_fixed_channel_topic_labels(merged_new_cards)
     if int(new_feedback_result.get("override_count", 0) or 0):
         feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(new_feedback_result.get("override_count", 0) or 0)
     feedback_excluded_ids |= set(new_feedback_result.get("excluded_ids", set()))
@@ -1953,6 +1981,7 @@ def sync_accounts(
         _enforce_fixed_channel_topic_labels([card])
         card.importance = score_card(card)
     final_feedback_result = apply_feedback_overrides(curated_cards)
+    _enforce_fixed_channel_topic_labels(curated_cards)
     if int(final_feedback_result.get("override_count", 0) or 0):
         feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(final_feedback_result.get("override_count", 0) or 0)
         for card in curated_cards:

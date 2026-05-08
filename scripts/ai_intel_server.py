@@ -57,10 +57,12 @@ STORAGE_STATE = setup_website_storage(ROOT)
 FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
+PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
+PUBLIC_FEEDBACK_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
 SESSIONS_LOCK = Lock()
@@ -94,6 +96,8 @@ BACKUP_STATE: dict[str, object] = {
     "reason": "",
 }
 MAX_JOB_ITEMS = 120
+PUBLIC_FEEDBACK_MAX_ITEMS = 500
+PUBLIC_FEEDBACK_CATEGORIES = {"bug", "suggestion", "data", "translation", "other"}
 POKEMON_NEWS_CACHE_MINUTES = 50
 DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
 DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
@@ -284,6 +288,86 @@ def _trim_jobs_unlocked(jobs: dict) -> None:
     keep = dict(ordered[:MAX_JOB_ITEMS])
     jobs.clear()
     jobs.update(keep)
+
+
+def _clean_public_feedback_text(value: object, max_len: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:max(0, int(max_len or 0))]
+
+
+def _read_public_feedback_unlocked() -> dict:
+    if not PUBLIC_FEEDBACK_PATH.exists():
+        return {"updated_at": "", "items": []}
+    try:
+        raw = json.loads(PUBLIC_FEEDBACK_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"updated_at": "", "items": []}
+    if not isinstance(raw, dict):
+        return {"updated_at": "", "items": []}
+    items = raw.get("items")
+    if not isinstance(items, list):
+        items = []
+    return {
+        "updated_at": str(raw.get("updated_at") or ""),
+        "items": [x for x in items if isinstance(x, dict)],
+    }
+
+
+def _write_public_feedback_unlocked(state: dict) -> None:
+    items = state.get("items") if isinstance(state.get("items"), list) else []
+    payload = {
+        "updated_at": _now_iso(),
+        "items": items[:PUBLIC_FEEDBACK_MAX_ITEMS],
+    }
+    PUBLIC_FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PUBLIC_FEEDBACK_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _public_feedback_snapshot(limit: int = 20) -> dict:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    with PUBLIC_FEEDBACK_LOCK:
+        state = _read_public_feedback_unlocked()
+    items = state.get("items") if isinstance(state.get("items"), list) else []
+    return {
+        "updated_at": str(state.get("updated_at") or ""),
+        "total": len(items),
+        "items": items[:safe_limit],
+    }
+
+
+def _store_public_feedback(payload: dict, *, user_agent: str = "", referer: str = "") -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    # Honeypot field for simple bots. Return success without storing.
+    if str(payload.get("website") or "").strip():
+        return {"stored": False, "id": ""}
+    message = _clean_public_feedback_text(payload.get("message"), 1800)
+    if len(message) < 2:
+        raise ValueError("請輸入回饋內容")
+    category = _clean_public_feedback_text(payload.get("category"), 32).lower()
+    if category not in PUBLIC_FEEDBACK_CATEGORIES:
+        category = "other"
+    page_url = _clean_public_feedback_text(payload.get("page_url"), 520)
+    contact = _clean_public_feedback_text(payload.get("contact"), 180)
+    title = _clean_public_feedback_text(payload.get("title"), 180)
+    item = {
+        "id": uuid4().hex,
+        "status": "new",
+        "category": category,
+        "title": title,
+        "message": message,
+        "contact": contact,
+        "page_url": page_url,
+        "referer": _clean_public_feedback_text(referer, 520),
+        "user_agent": _clean_public_feedback_text(user_agent, 260),
+        "created_at": _now_iso(),
+    }
+    with PUBLIC_FEEDBACK_LOCK:
+        state = _read_public_feedback_unlocked()
+        items = state.get("items") if isinstance(state.get("items"), list) else []
+        state["items"] = [item, *items][:PUBLIC_FEEDBACK_MAX_ITEMS]
+        _write_public_feedback_unlocked(state)
+    return {"stored": True, "item": item}
 
 
 def _normalize_lang_tag(lang: str | None) -> str:
@@ -614,6 +698,152 @@ def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
     }
 
 
+def _sort_cards_for_pipeline(cards: list[dict]) -> list[dict]:
+    def _sort_key(card: dict) -> tuple[float, str]:
+        dt = _parse_iso_utc(card.get("published_at") if isinstance(card, dict) else "")
+        ts = dt.timestamp() if dt else 0.0
+        return (ts, str(card.get("id") or card.get("url") or ""))
+
+    return sorted([c for c in cards if isinstance(c, dict)], key=_sort_key, reverse=True)
+
+
+def _pipeline_card_row(card: dict, *, scan: str = "scanned", curation: str = "done", translation: str = "pending", stage: str = "selected") -> dict:
+    row = {
+        "id": str(card.get("id") or ""),
+        "account": str(card.get("account") or ""),
+        "url": str(card.get("url") or ""),
+        "title": _card_title(card),
+        "published_at": str(card.get("published_at") or ""),
+        "scan": scan,
+        "curation": curation,
+        "translation": translation,
+        "stage": stage,
+    }
+    dedupe_status = str(card.get("dedupe_status") or "").strip().lower()
+    reason = str(card.get("dedupe_reason") or card.get("dedupe_reason_code") or "").strip()
+    if dedupe_status in {"dropped", "dedupe_dropped", "duplicate", "removed"} or reason:
+        row["stage"] = "dedupe_dropped"
+        row["reason"] = reason or "因去重邏輯淘汰"
+        row["winner_post_id"] = str(card.get("dedupe_winner_post_id") or "")
+        row["winner_url"] = str(card.get("dedupe_winner_url") or "")
+        row["winner_title"] = str(card.get("dedupe_winner_title") or "")
+    return row
+
+
+def _build_sync_pipeline_payload(feed: dict, card_rows: list[dict], sync_state: dict, i18n_alignment: dict) -> dict:
+    cards_sorted = _sort_cards_for_pipeline(card_rows)
+    pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
+    source_stats = feed.get("source_stats") if isinstance(feed.get("source_stats"), dict) else {}
+    new_source_stats = feed.get("new_source_stats") if isinstance(feed.get("new_source_stats"), dict) else {}
+    sync_status = str(sync_state.get("status") or "idle").strip().lower()
+    generated_at = str(feed.get("generated_at") or "").strip()
+
+    source_total = len(source_stats)
+    if source_total <= 0:
+        accounts = feed.get("accounts")
+        source_total = len(accounts) if isinstance(accounts, list) else 0
+    source_done = source_total if generated_at and sync_status != "running" else 0
+    source_total_cards = _safe_int(feed.get("source_total_cards"), _safe_int(feed.get("raw_total_cards"), len(card_rows)))
+    new_candidate_total = _safe_int(pipeline_counts.get("new_candidate_total"), _safe_int(new_source_stats.get("x"), 0) + _safe_int(new_source_stats.get("discord"), 0) + _safe_int(new_source_stats.get("manual"), 0))
+    new_item_count = max(0, min(len(cards_sorted), new_candidate_total or min(len(cards_sorted), 20)))
+    latest_items = cards_sorted[:new_item_count]
+
+    lang_rows = i18n_alignment.get("langs") if isinstance(i18n_alignment.get("langs"), dict) else {}
+    translation_langs: list[dict] = []
+    translation_done = 0
+    translation_total = 0
+    pending_ids: list[str] = []
+    for tag, row_raw in lang_rows.items():
+        if tag == I18N_BASE_LANG or not isinstance(row_raw, dict):
+            continue
+        done = _safe_int(row_raw.get("done"), 0)
+        total = _safe_int(row_raw.get("total"), 0)
+        pending = _safe_int(row_raw.get("pending_count"), max(0, total - done))
+        status = str(row_raw.get("build_status") or "").strip().lower()
+        state = str(row_raw.get("state") or "").strip().lower()
+        if state == "aligned_ready":
+            status = "ready"
+        elif state in {"aligned_pending", "stale_misaligned"} and status not in {"running", "queued"}:
+            status = "running" if pending > 0 else "pending"
+        elif state == "failed":
+            status = "failed"
+        if total > 0 and done >= total and status != "failed":
+            status = "ready"
+        percent = round((done / total) * 100) if total > 0 else (100 if state == "aligned_ready" else 0)
+        translation_done += done
+        translation_total += max(total, done)
+        ids = row_raw.get("card_pending_ids")
+        if isinstance(ids, list):
+            pending_ids.extend(str(x) for x in ids if str(x).strip())
+        translation_langs.append(
+            {
+                "lang": tag,
+                "status": status or "pending",
+                "done": done,
+                "total": max(total, done),
+                "percent": percent,
+            }
+        )
+
+    card_by_key = _build_card_index(card_rows)
+    pending_items: list[dict] = []
+    seen_pending: set[str] = set()
+    for pid in pending_ids:
+        if pid in seen_pending:
+            continue
+        seen_pending.add(pid)
+        card = card_by_key.get(pid)
+        if isinstance(card, dict):
+            pending_items.append(_pipeline_card_row(card, translation="translating"))
+
+    translation_percent = round((translation_done / translation_total) * 100) if translation_total > 0 else 0
+    translation_state = "ready" if translation_total > 0 and translation_done >= translation_total and not pending_items else ("running" if pending_items else "pending")
+
+    post_rows = []
+    for card in cards_sorted[:40]:
+        translation = "ready" if translation_state == "ready" else ("translating" if str(card.get("id") or card.get("url") or "") in seen_pending else "pending")
+        post_rows.append(_pipeline_card_row(card, translation=translation))
+
+    run_id_source = str(sync_state.get("started_at") or generated_at or "")
+    run_id = hashlib.sha1(run_id_source.encode("utf-8")).hexdigest()[:12] if run_id_source else "--"
+    curation_total = max(
+        _safe_int(pipeline_counts.get("new_candidate_total"), 0),
+        _safe_int(pipeline_counts.get("new_curated_total"), 0),
+        _safe_int(pipeline_counts.get("final_total"), len(card_rows)),
+    )
+    curation_done = curation_total if generated_at and sync_status != "running" else 0
+
+    return {
+        "run_id": run_id,
+        "scan": {
+            "status": "running" if sync_status == "running" else ("ok" if generated_at else "idle"),
+            "done_sources": source_done,
+            "total_sources": source_total,
+            "found_cards": source_total_cards,
+            "new_items": [_pipeline_card_row(card) for card in latest_items],
+            "source_stats": source_stats,
+            "new_source_stats": new_source_stats,
+        },
+        "curation": {
+            "status": "running" if sync_status == "running" else ("ok" if generated_at else "idle"),
+            "done_cards": curation_done,
+            "total_cards": curation_total,
+            "done_items": [_pipeline_card_row(card) for card in latest_items],
+            "pending_items": [],
+            "counts": pipeline_counts,
+        },
+        "translation": {
+            "status": translation_state,
+            "items_done": translation_done,
+            "items_total": translation_total,
+            "percent": translation_percent,
+            "langs": translation_langs,
+            "pending_items": pending_items[:40],
+        },
+        "post_stages": post_rows,
+    }
+
+
 def _sync_state_snapshot() -> dict:
     with SYNC_STATE_LOCK:
         return dict(SYNC_STATE)
@@ -848,6 +1078,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
     x_source_config = read_x_source_config()
+    public_feedback = _public_feedback_snapshot(limit=12)
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
@@ -883,6 +1114,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     i18n_payload["raw_status"] = i18n_raw_status or "idle"
     i18n_payload["effective_status"] = i18n_effective_status
     i18n_payload["alignment"] = i18n_alignment
+    sync_pipeline = _build_sync_pipeline_payload(feed, card_rows, sync_state, i18n_alignment)
 
     return {
         "server_time": _now_iso(),
@@ -924,6 +1156,7 @@ def _build_admin_status(limit: int = 10) -> dict:
             "pending_processing": queued_jobs + running_jobs + (1 if sync_running else 0),
             "is_processing": bool(queued_jobs + running_jobs + (1 if sync_running else 0)),
         },
+        "sync_pipeline": sync_pipeline,
         "memory": memory_stats,
         "agents": [
             {
@@ -993,6 +1226,7 @@ def _build_admin_status(limit: int = 10) -> dict:
             **backup_status,
             "runtime": backup_state,
         },
+        "public_feedback": public_feedback,
     }
 
 
@@ -1473,6 +1707,17 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to build admin status: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if path == "/api/intel/public-feedback":
+            if not self._require_admin_access():
+                return
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                limit = _safe_int((params.get("limit") or ["30"])[0], 30)
+                self._send_json({"ok": True, "feedback": _public_feedback_snapshot(limit=limit)})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to read public feedback: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
@@ -1518,6 +1763,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
             "/api/intel/translate-texts",
+            "/api/intel/public-feedback",
         }:
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -1608,6 +1854,20 @@ class Handler(SimpleHTTPRequestHandler):
                     "items": translated,
                 }
             )
+            return
+
+        if path == "/api/intel/public-feedback":
+            try:
+                result = _store_public_feedback(
+                    payload,
+                    user_agent=str(self.headers.get("User-Agent") or ""),
+                    referer=str(self.headers.get("Referer") or ""),
+                )
+                self._send_json({"ok": True, **result})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to save feedback: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if not self._require_admin(path):
@@ -1857,7 +2117,7 @@ def main() -> int:
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
-        "POST /api/intel/translate-texts"
+        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback"
     )
     print(
         "[ai-intel] auth mode: "
