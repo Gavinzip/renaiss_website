@@ -182,6 +182,7 @@
   function renderPipeline(status) {
     const sync = status?.sync || {};
     const jobs = status?.jobs || {};
+    const contentRefresh = status?.content_refresh || {};
     const pipeline = status?.sync_pipeline || {};
     const scan = pipeline?.scan || {};
     const curation = pipeline?.curation || {};
@@ -192,7 +193,8 @@
       const runId = String(pipeline?.run_id || "--");
       const trigger = String(sync?.trigger || "manual");
       const syncStatus = String(sync?.status || "idle");
-      runMetaEl.textContent = `run_id=${runId} · trigger=${trigger} · sync=${syncStatus}`;
+      const refreshRunning = Number(contentRefresh?.counts?.running || 0);
+      runMetaEl.textContent = `run_id=${runId} · trigger=${trigger} · sync=${syncStatus} · card_refresh=${refreshRunning}`;
     }
 
     const scanTotal = Number(scan?.total_sources || 0);
@@ -244,6 +246,17 @@
     renderList("tracker-translation-list", translationRows, "目前沒有翻譯中的卡片。");
 
     const jobItems = Array.isArray(jobs?.items) ? jobs.items : [];
+    const refreshItems = Array.isArray(contentRefresh?.items) ? contentRefresh.items : [];
+    const refreshRows = refreshItems.slice(0, 20).map((item) => {
+      const st = statusChip(String(item?.status || "pending").toLowerCase());
+      const title = String(item?.title || item?.card_id || "卡片重新整理").trim();
+      const updated = toLocalTime(item?.updated_at || item?.started_at);
+      const mode = String(item?.mode || "").trim();
+      const message = String(item?.message || "").trim();
+      const error = String(item?.error || "").trim();
+      const meta = [mode, message, error, updated !== "--" ? updated : ""].filter(Boolean).map(escapeHtml).join(" · ");
+      return `${st} ${escapeHtml(title)}${meta ? `<br><span style="color:#6282a4;">卡片重新整理 · ${meta}</span>` : ""}`;
+    });
     const jobRows = jobItems.slice(0, 60).map((job) => {
       const st = statusChip(String(job?.status || "pending").toLowerCase());
       const message = String(job?.message || "").trim();
@@ -257,7 +270,7 @@
         .join(" · ");
       return `${st} ${title}${meta ? `<br><span style="color:#6282a4;">${meta}</span>` : ""}`;
     });
-    renderList("tracker-job-list", jobRows, "目前沒有貼文分析任務。");
+    renderList("tracker-job-list", [...refreshRows, ...jobRows], "目前沒有貼文分析任務。");
 
     const postRows = Array.isArray(pipeline?.post_stages) ? pipeline.post_stages : [];
     renderPostStages(postRows);

@@ -752,6 +752,7 @@
       const adminControls = document.getElementById("intel-admin-controls");
       const adminPanel = document.getElementById("intel-admin-monitor");
       const adminOpenBtn = document.getElementById("nav-admin-monitor-btn");
+      const adminFeedbackBtn = document.getElementById("nav-admin-feedback-btn");
       const adminPipelineLink = document.getElementById("nav-admin-pipeline-link");
       const loginButtons = [
         document.getElementById("intel-login-btn"),
@@ -779,6 +780,7 @@
       if (adminControls) adminControls.style.display = showIntelControls ? "" : "none";
       if (adminPanel) adminPanel.style.display = showAdminPanel ? "grid" : "none";
       if (adminOpenBtn) adminOpenBtn.style.display = showAdminPanel ? "inline-flex" : "none";
+      if (adminFeedbackBtn) adminFeedbackBtn.style.display = showAdminPanel ? "inline-flex" : "none";
       if (adminPipelineLink) adminPipelineLink.style.display = showAdminPanel ? "inline-flex" : "none";
       if (showAdminPanel) startIntelAdminPolling();
       else {
@@ -796,6 +798,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminFeedbackBtn) adminFeedbackBtn.style.display = "none";
         if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
@@ -809,6 +812,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "inline-flex"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminFeedbackBtn) adminFeedbackBtn.style.display = "none";
         if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
@@ -817,6 +821,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminFeedbackBtn) adminFeedbackBtn.style.display = "none";
         if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
@@ -826,6 +831,7 @@
         loginButtons.forEach((btn) => { btn.style.display = "none"; });
         logoutButtons.forEach((btn) => { btn.style.display = "none"; });
         if (adminOpenBtn) adminOpenBtn.style.display = "none";
+        if (adminFeedbackBtn) adminFeedbackBtn.style.display = "none";
         if (adminPipelineLink) adminPipelineLink.style.display = "none";
         return;
       }
@@ -2209,6 +2215,7 @@
       intelAdminState.lastPayload = status && typeof status === "object" ? status : null;
       const sync = status?.sync || {};
       const jobs = status?.jobs || {};
+      const contentRefresh = status?.content_refresh || {};
       const newPosts = status?.new_posts || {};
       const news = status?.news || {};
       const memory = status?.memory || {};
@@ -2282,17 +2289,20 @@
         const syncRunning = Boolean(newPosts?.sync_running);
         const queuedJobs = Number(newPosts?.queued_jobs || 0);
         const runningJobs = Number(newPosts?.running_jobs || 0);
+        const runningRefresh = Number(newPosts?.running_content_refresh || 0);
         newMetaEl.textContent = flag
-          ? `背景整理進行中，待處理 ${pending} 件（同步 ${syncRunning ? "1" : "0"} · 任務 跑中 ${runningJobs} / 排隊 ${queuedJobs}）`
+          ? `背景整理進行中，待處理 ${pending} 件（同步 ${syncRunning ? "1" : "0"} · 任務 跑中 ${runningJobs} / 排隊 ${queuedJobs} · 卡片重整 ${runningRefresh}）`
           : "目前沒有待處理整理任務";
       }
       if (jobsEl) {
         const counts = jobs?.counts || {};
-        jobsEl.textContent = `跑中 ${Number(counts?.running || 0)} / 排隊 ${Number(counts?.queued || 0)}`;
+        const refreshCounts = contentRefresh?.counts || {};
+        jobsEl.textContent = `跑中 ${Number(counts?.running || 0) + Number(refreshCounts?.running || 0)} / 排隊 ${Number(counts?.queued || 0)}`;
       }
       if (jobsMetaEl) {
         const counts = jobs?.counts || {};
-        jobsMetaEl.textContent = `完成 ${Number(counts?.done || 0)} · 失敗 ${Number(counts?.failed || 0)} · 總數 ${Number(jobs?.total || 0)}`;
+        const refreshCounts = contentRefresh?.counts || {};
+        jobsMetaEl.textContent = `完成 ${Number(counts?.done || 0) + Number(refreshCounts?.done || 0)} · 失敗 ${Number(counts?.failed || 0) + Number(refreshCounts?.failed || 0)} · 總數 ${Number(jobs?.total || 0) + Number(contentRefresh?.total || 0)}`;
       }
       if (newsEl) {
         const langs = Array.isArray(news?.langs) ? news.langs : [];
@@ -2394,13 +2404,23 @@
       }
 
       const jobRowsRaw = Array.isArray(jobs?.items) ? jobs.items : [];
+      const refreshRowsRaw = Array.isArray(contentRefresh?.items) ? contentRefresh.items : [];
+      const refreshRows = refreshRowsRaw.slice(0, 8).map((item) => {
+        const st = String(item?.status || "--").toUpperCase();
+        const title = String(item?.title || item?.card_id || "卡片重新整理").trim();
+        const mode = String(item?.mode || "").trim();
+        const msg = String(item?.message || "").trim();
+        const updated = toLocalTime(item?.updated_at || item?.started_at);
+        const error = String(item?.error || "").trim();
+        return `[${st}] 卡片重新整理：${title}${mode ? ` · ${mode}` : ""}${msg ? ` · ${msg}` : ""}${error ? ` · ${error}` : ""} · ${updated}`;
+      });
       const jobRows = jobRowsRaw.slice(0, 8).map((job) => {
         const st = String(job?.status || "--").toUpperCase();
         const msg = String(job?.message || "").trim() || String(job?.url || "").trim() || "無訊息";
         const updated = toLocalTime(job?.updated_at || job?.created_at);
         return `[${st}] ${msg} · ${updated}`;
       });
-      renderIntelAdminList(jobListEl, jobRows, "目前沒有背景整理任務");
+      renderIntelAdminList(jobListEl, [...refreshRows, ...jobRows].slice(0, 12), "目前沒有背景整理任務");
 
       const backupRows = [];
       backupRows.push(`Data root：${String(storage?.website_data_root || backup?.data_root || "--")}`);
@@ -2445,6 +2465,10 @@
       const syncNext = toLocalTime(sync?.next_run_at);
       monitorRows.push(
         `X/Twitter sync：${String(sync?.status || "idle")} · interval ${Number(sync?.schedule_interval_hours || 0.5)}h · window ${Number(sync?.schedule_window_days || 30)}d · next ${syncNext}`
+      );
+      const refreshCounts = contentRefresh?.counts || {};
+      monitorRows.push(
+        `Content refresh：running ${Number(refreshCounts?.running || 0)} · done ${Number(refreshCounts?.done || 0)} · failed ${Number(refreshCounts?.failed || 0)}`
       );
       const xAccounts = Array.isArray(xMonitor?.accounts) ? xMonitor.accounts : [];
       monitorRows.push(

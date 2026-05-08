@@ -40,7 +40,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260508-x-source-feedback1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260508-refresh-feedback1" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
 </head>
 <body>
@@ -71,6 +71,7 @@
           <button id="nav-intel-login-btn" type="button" class="nav-auth-btn intel-auth-stealth" data-i18n-key="auth.login">管理登入</button>
           <button id="nav-intel-logout-btn" type="button" class="nav-auth-btn is-logout" style="display:none;" data-i18n-key="auth.logout">登出</button>
           <button id="nav-admin-monitor-btn" type="button" class="nav-auth-btn is-monitor" style="display:none;" data-i18n-key="auth.aiMonitor">AI 監控</button>
+          <button id="nav-admin-feedback-btn" type="button" class="nav-auth-btn is-monitor" style="display:none;" data-no-i18n="1">使用者回饋</button>
           <a id="nav-admin-pipeline-link" class="nav-auth-btn is-monitor" style="display:none;" href="./intel_pipeline.html" data-no-i18n="1">流程頁</a>
           <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer" data-i18n-key="home.openRenaiss">Open Renaiss</a>
         </div>
@@ -577,7 +578,7 @@
           <div id="intel-admin-x-source-list" class="intel-source-pill-list">等待資料...</div>
           <div id="intel-admin-x-source-meta" class="intel-admin-meta">新增/取消後會影響下一次「立即掃描 / sync」抓取來源；勾選寶可夢來源後，該帳號新貼文會直接進入寶可夢資訊。</div>
         </div>
-        <div class="intel-admin-list-wrap">
+        <div id="intel-admin-public-feedback-section" class="intel-admin-list-wrap">
           <div class="intel-admin-label">使用者回饋</div>
           <div id="intel-admin-public-feedback-meta" class="intel-admin-meta">公開回饋頁送出的內容會顯示在這裡。</div>
           <ul id="intel-admin-public-feedback-list" class="intel-admin-list"><li>等待資料...</li></ul>
@@ -660,7 +661,7 @@
 
   <script src="./assets/index-i18n.js?v=20260507-nav-i18n1"></script>
   <script src="./assets/index-data.js?v=20260508-card-refresh2"></script>
-  <script src="./assets/index-render.js?v=20260508-card-refresh3"></script>
-  <script src="./assets/index-actions.js?v=20260508-sync-bg1"></script>
+  <script src="./assets/index-render.js?v=20260508-admin-feedback-nav1"></script>
+  <script src="./assets/index-actions.js?v=20260508-admin-feedback-nav1"></script>
 </body>
 </html>

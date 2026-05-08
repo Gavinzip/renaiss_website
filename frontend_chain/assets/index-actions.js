@@ -11,6 +11,7 @@
         document.getElementById("nav-intel-logout-btn"),
       ].filter(Boolean);
       const adminOpenBtn = document.getElementById("nav-admin-monitor-btn");
+      const adminFeedbackBtn = document.getElementById("nav-admin-feedback-btn");
       const authModal = document.getElementById("intel-auth-modal");
       const adminModal = document.getElementById("intel-admin-modal");
       const feedbackModal = document.getElementById("intel-feedback-modal");
@@ -64,6 +65,40 @@
         };
       };
 
+      const beginIntelActionFeedback = (btn, action) => {
+        if (!btn || String(action || "") !== "refresh-content") return () => {};
+        const originalText = btn.textContent || "重新整理內容";
+        const host = btn.closest(".intel-card, .intel-master-card, .intel-master-slide, article");
+        const startedAt = Date.now();
+        const updateText = () => {
+          const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+          btn.textContent = `AI 重新整理中 ${seconds}s`;
+        };
+        btn.classList.add("is-loading");
+        btn.setAttribute("aria-busy", "true");
+        if (host) {
+          host.classList.add("is-intel-refreshing");
+          host.setAttribute("data-intel-refresh-status", "AI 重新整理中");
+        }
+        updateText();
+        const timer = window.setInterval(updateText, 1000);
+        return (result = "") => {
+          window.clearInterval(timer);
+          btn.classList.remove("is-loading");
+          btn.removeAttribute("aria-busy");
+          btn.textContent = originalText;
+          if (host) {
+            host.classList.remove("is-intel-refreshing");
+            if (result === "error") {
+              host.setAttribute("data-intel-refresh-status", "重新整理失敗");
+              window.setTimeout(() => host.removeAttribute("data-intel-refresh-status"), 2400);
+            } else {
+              host.removeAttribute("data-intel-refresh-status");
+            }
+          }
+        };
+      };
+
       const readFeedbackTopicLabels = () => {
         const checked = Array.from(document.querySelectorAll("[data-intel-feedback-section-option]:checked"))
           .map((node) => String(node?.value || "").trim().toLowerCase())
@@ -109,6 +144,25 @@
           }
           openIntelAdminModal();
           await refreshIntelAdminStatus();
+        });
+      }
+
+      if (adminFeedbackBtn && !adminFeedbackBtn.dataset.boundAdminFeedback) {
+        adminFeedbackBtn.dataset.boundAdminFeedback = "1";
+        adminFeedbackBtn.addEventListener("click", async () => {
+          if (!intelCanEdit()) {
+            openIntelAuthModal();
+            setIntelMessage("請先登入管理員帳號後再查看使用者回饋。", "error");
+            return;
+          }
+          openIntelAdminModal();
+          await refreshIntelAdminStatus();
+          window.requestAnimationFrame(() => {
+            const feedbackSection = document.getElementById("intel-admin-public-feedback-section");
+            if (feedbackSection) {
+              feedbackSection.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          });
         });
       }
 
@@ -600,11 +654,15 @@
             if (!id || !action) return;
             const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
+            const stopActionFeedback = beginIntelActionFeedback(btn, action);
+            let actionError = null;
             try {
               await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
+              actionError = error;
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
+              stopActionFeedback(actionError ? "error" : "done");
               btn.disabled = false;
             }
             return;
@@ -761,11 +819,15 @@
             if (!id || !action) return;
             const extra = action === "timeline-save" ? readTimelineEditorPayload(btn) : {};
             btn.disabled = true;
+            const stopActionFeedback = beginIntelActionFeedback(btn, action);
+            let actionError = null;
             try {
               await handleIntelAction(action, id, hintLabel, extra);
             } catch (error) {
+              actionError = error;
               setIntelMessage(`設定失敗：${error.message}`, "error");
             } finally {
+              stopActionFeedback(actionError ? "error" : "done");
               btn.disabled = false;
             }
             return;

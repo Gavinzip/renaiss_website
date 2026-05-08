@@ -1164,6 +1164,8 @@ def _removed_cards(before: list[StoryCard], after: list[StoryCard], force_ids: s
 
 def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     reason_key = str(reason or "review").strip().lower()
+    if reason_key in {"dedupe", "source_preference", "ai_dedupe", "local_dedupe"} and _is_official_x_source_card(card):
+        return card
     label_map = {
         "dedupe": "去重淘汰",
         "source_preference": "去重淘汰",
@@ -1199,6 +1201,13 @@ def _public_cards(cards: list[StoryCard]) -> list[StoryCard]:
     return [card for card in cards if not _is_admin_queue_card(card)]
 
 
+def _is_official_x_source_card(card: StoryCard) -> bool:
+    if not is_official_account_handle(card.account):
+        return False
+    provider = str(card.provider or "").strip().lower()
+    return is_x_source_url(card.url) or provider in {"twitter-cli", "tweet-result", "r.jina.ai"}
+
+
 def _queue_new_duplicates_against_existing(
     new_cards: list[StoryCard],
     existing_cards: list[StoryCard],
@@ -1210,7 +1219,7 @@ def _queue_new_duplicates_against_existing(
         primary = _dedupe_signature(card)
         if primary:
             values.add(f"primary:{primary}")
-        topic = dedupe_key(infer_topic_phrase(card.raw_text or card.title, card.card_type) or card.title)
+        topic = _dedupe_topic_key(card)
         if topic:
             values.add(f"topic:{topic[:96]}")
         text_key = dedupe_key(card.raw_text or card.title)
@@ -1226,7 +1235,7 @@ def _queue_new_duplicates_against_existing(
     kept: list[StoryCard] = []
     queued: list[StoryCard] = []
     for card in new_cards:
-        if card.id in force_ids or card.manual_pick:
+        if card.id in force_ids or card.manual_pick or _is_official_x_source_card(card):
             kept.append(card)
             continue
         if signature_candidates(card) & existing_sigs:
@@ -1250,6 +1259,28 @@ def dedupe_key(text: str) -> str:
     t = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", t)
     words = [w for w in t.split() if len(w) >= 2]
     return " ".join(words[:16])
+
+
+GENERIC_DEDUPE_TOPIC_KEYS = {
+    dedupe_key(x)
+    for x in (
+        "官方公告更新",
+        "最新官方更新",
+        "功能進度更新",
+        "市場訊號更新",
+        "分析整理更新",
+        "社群互動更新",
+        "社群活動更新",
+    )
+}
+
+
+def _dedupe_topic_key(card: StoryCard) -> str:
+    topic = infer_topic_phrase(card.raw_text or card.title, card.card_type)
+    key = dedupe_key(topic or "")
+    if not key or key in GENERIC_DEDUPE_TOPIC_KEYS:
+        return ""
+    return key
 
 
 def curate_cards(
@@ -1279,7 +1310,7 @@ def curate_cards(
     seen_signatures: set[str] = set()
     for c in filtered:
         key = dedupe_key(c.raw_text or c.title)
-        if c.id and (c.id in force_ids or c.manual_pick):
+        if c.id and (c.id in force_ids or c.manual_pick or _is_official_x_source_card(c)):
             result.append(c)
             if len(result) >= max_cards:
                 break
@@ -1326,8 +1357,9 @@ def _event_date_hint(card: StoryCard) -> str:
 def _dedupe_signature(card: StoryCard) -> str:
     if card.card_type not in {"event", "feature", "announcement"}:
         return ""
-    topic = infer_topic_phrase(card.raw_text or card.title, card.card_type)
-    topic_key = dedupe_key(topic or card.title)
+    topic_key = _dedupe_topic_key(card)
+    if not topic_key:
+        topic_key = dedupe_key(card.raw_text or card.title)
     date_hint = _event_date_hint(card)
     # Events are often reposted by different accounts for the same session.
     # Cross-account dedupe should still collapse those into one best card.
@@ -1424,7 +1456,7 @@ def drop_redundant_cards_local(cards: list[StoryCard], force_include_ids: set[st
     removed = 0
 
     for card in cards:
-        if card.id in force_ids or card.manual_pick:
+        if card.id in force_ids or card.manual_pick or _is_official_x_source_card(card):
             passthrough.append(card)
             continue
         sig = _dedupe_signature(card)
@@ -1459,6 +1491,7 @@ def apply_minimax_global_dedupe(
     if not cards:
         return cards, 0
     force_ids = set(force_include_ids or set())
+    force_ids.update(str(c.id) for c in cards if c.id and _is_official_x_source_card(c))
     payload_rows: list[dict[str, Any]] = []
     for c in cards:
         facts = normalize_event_facts(c.event_facts)
@@ -1484,8 +1517,9 @@ def apply_minimax_global_dedupe(
         "規則："
         "1) 同主題、同日期（或同場次）且內容高度重疊，跨帳號也可視為重複；"
         "2) 優先保留資訊更完整者（有時間/地點/獎勵/參與方式/圖片）；完整度相近時再優先官方來源；"
-        "3) 不要刪掉跨主題卡片；"
-        "4) 不可捏造。"
+        "3) 官方 X 帳號貼文已列入 force_keep_ids，不可刪除；官方 Discord 仍可依規則去重；"
+        "4) 不要刪掉跨主題卡片；"
+        "5) 不可捏造。"
         "輸出 JSON：{\"drop_ids\":[...],\"notes\":[...]}。\n\n"
         f"force_keep_ids: {sorted(force_ids)}\n"
         f"cards: {json.dumps(payload_rows, ensure_ascii=False)}"

@@ -2381,10 +2381,45 @@
       border-color: rgba(86, 146, 221, 0.68);
     }
 
+    .intel-pick-btn.is-loading {
+      border-color: rgba(39, 126, 205, 0.75);
+      background: rgba(224, 243, 255, 0.96);
+      color: #164e86;
+      cursor: progress;
+      opacity: 0.92;
+    }
+
     .intel-pick-btn.is-picked {
       border-color: rgba(42, 170, 126, 0.65);
       color: #1a7d59;
       background: rgba(235, 255, 245, 0.9);
+    }
+
+    .intel-card.is-intel-refreshing,
+    .intel-master-card.is-intel-refreshing,
+    .intel-master-slide.is-intel-refreshing {
+      position: relative;
+      outline: 2px solid rgba(56, 141, 221, 0.38);
+      outline-offset: 2px;
+    }
+
+    .intel-card.is-intel-refreshing::after,
+    .intel-master-card.is-intel-refreshing::after,
+    .intel-master-slide.is-intel-refreshing::after {
+      content: attr(data-intel-refresh-status);
+      position: absolute;
+      top: 0.72rem;
+      right: 0.72rem;
+      z-index: 4;
+      border: 1px solid rgba(119, 176, 230, 0.78);
+      border-radius: 999px;
+      padding: 0.22rem 0.58rem;
+      background: rgba(239, 249, 255, 0.96);
+      color: #235a89;
+      box-shadow: 0 8px 22px rgba(30, 86, 141, 0.12);
+      font-size: 0.72rem;
+      font-weight: 900;
+      letter-spacing: 0.01em;
     }
 
     .intel-source-link {

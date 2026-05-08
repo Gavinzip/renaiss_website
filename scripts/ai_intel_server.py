@@ -85,6 +85,7 @@ POKEMON_NEWS_STATE_LOCK = Lock()
 SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
+CONTENT_REFRESH_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
@@ -112,7 +113,12 @@ BACKUP_STATE: dict[str, object] = {
     "skipped": False,
     "reason": "",
 }
+CONTENT_REFRESH_STATE: dict[str, object] = {
+    "running": {},
+    "history": [],
+}
 MAX_JOB_ITEMS = 120
+MAX_CONTENT_REFRESH_ITEMS = 40
 PUBLIC_FEEDBACK_MAX_ITEMS = 500
 PUBLIC_FEEDBACK_CATEGORIES = {"bug", "suggestion", "data", "translation", "other"}
 POKEMON_NEWS_CACHE_MINUTES = 50
@@ -537,6 +543,115 @@ def _build_card_index(cards: list[dict] | object) -> dict[str, dict]:
     return out
 
 
+def _find_feed_card_for_refresh(card_id: str) -> dict:
+    target = str(card_id or "").strip()
+    if not target:
+        return {}
+    feed = _read_feed_snapshot()
+    cards = feed.get("cards") if isinstance(feed.get("cards"), list) else []
+    for index, card in enumerate(cards):
+        if not isinstance(card, dict):
+            continue
+        candidates = {
+            str(card.get("id") or "").strip(),
+            str(card.get("url") or "").strip(),
+            str(card.get("_card_key") or "").strip(),
+            _card_lookup_key(card, index),
+        }
+        if target in candidates:
+            return dict(card)
+    return {}
+
+
+def _content_refresh_snapshot(limit: int = 12) -> dict:
+    safe_limit = max(1, min(int(limit or 12), MAX_CONTENT_REFRESH_ITEMS))
+    with CONTENT_REFRESH_LOCK:
+        running = CONTENT_REFRESH_STATE.get("running")
+        history = CONTENT_REFRESH_STATE.get("history")
+        running_map = running if isinstance(running, dict) else {}
+        history_items = history if isinstance(history, list) else []
+        rows = [dict(x) for x in running_map.values() if isinstance(x, dict)]
+        rows.extend(dict(x) for x in history_items if isinstance(x, dict))
+    rows.sort(key=lambda x: str(x.get("updated_at") or x.get("started_at") or ""), reverse=True)
+    counts = {"running": 0, "done": 0, "failed": 0}
+    for row in rows:
+        status = str(row.get("status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+    return {
+        "counts": counts,
+        "total": len(rows),
+        "items": rows[:safe_limit],
+    }
+
+
+def _start_content_refresh_state(card_id: str, *, user: str = "") -> str:
+    task_id = uuid4().hex[:12]
+    card = _find_feed_card_for_refresh(card_id)
+    now = _now_iso()
+    item = {
+        "id": task_id,
+        "kind": "content_refresh",
+        "card_id": str(card_id or "").strip(),
+        "status": "running",
+        "message": "AI 重新整理卡片內容中",
+        "title": _card_title(card) or str(card_id or "").strip(),
+        "url": str(card.get("url") or ""),
+        "account": str(card.get("account") or ""),
+        "user": str(user or ""),
+        "mode": "",
+        "error": "",
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": "",
+    }
+    with CONTENT_REFRESH_LOCK:
+        running = CONTENT_REFRESH_STATE.get("running")
+        if not isinstance(running, dict):
+            running = {}
+            CONTENT_REFRESH_STATE["running"] = running
+        running[task_id] = item
+    return task_id
+
+
+def _finish_content_refresh_state(task_id: str, *, ok: bool, mode: str = "", error: str = "") -> None:
+    now = _now_iso()
+    with CONTENT_REFRESH_LOCK:
+        running = CONTENT_REFRESH_STATE.get("running")
+        running_map = running if isinstance(running, dict) else {}
+        item = running_map.pop(task_id, None)
+        if not isinstance(item, dict):
+            item = {"id": task_id, "kind": "content_refresh", "started_at": now}
+        item["status"] = "done" if ok else "failed"
+        item["message"] = "AI 重新整理完成" if ok else "AI 重新整理失敗"
+        item["mode"] = str(mode or "")
+        item["error"] = str(error or "")
+        item["updated_at"] = now
+        item["finished_at"] = now
+        history = CONTENT_REFRESH_STATE.get("history")
+        history_items = history if isinstance(history, list) else []
+        history_items.insert(0, item)
+        del history_items[MAX_CONTENT_REFRESH_ITEMS:]
+        CONTENT_REFRESH_STATE["history"] = history_items
+
+
+def _pipeline_refresh_row(item: dict) -> dict:
+    status = str(item.get("status") or "").strip().lower()
+    stage = "analyzing" if status == "running" else ("failed" if status == "failed" else "ready")
+    return {
+        "id": str(item.get("card_id") or item.get("id") or ""),
+        "account": str(item.get("account") or ""),
+        "url": str(item.get("url") or ""),
+        "title": str(item.get("title") or item.get("card_id") or item.get("id") or "卡片重新整理"),
+        "published_at": str(item.get("started_at") or item.get("updated_at") or ""),
+        "scan": "done",
+        "curation": "running" if status == "running" else ("failed" if status == "failed" else "done"),
+        "translation": "pending",
+        "stage": stage,
+        "reason": str(item.get("error") or item.get("message") or ""),
+    }
+
+
 def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
     cards_raw = feed.get("cards")
     base_cards = cards_raw if isinstance(cards_raw, list) else []
@@ -748,7 +863,13 @@ def _pipeline_card_row(card: dict, *, scan: str = "scanned", curation: str = "do
     return row
 
 
-def _build_sync_pipeline_payload(feed: dict, card_rows: list[dict], sync_state: dict, i18n_alignment: dict) -> dict:
+def _build_sync_pipeline_payload(
+    feed: dict,
+    card_rows: list[dict],
+    sync_state: dict,
+    i18n_alignment: dict,
+    content_refresh: dict | None = None,
+) -> dict:
     cards_sorted = _sort_cards_for_pipeline(card_rows)
     pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
     source_stats = feed.get("source_stats") if isinstance(feed.get("source_stats"), dict) else {}
@@ -817,6 +938,14 @@ def _build_sync_pipeline_payload(feed: dict, card_rows: list[dict], sync_state: 
     translation_percent = round((translation_done / translation_total) * 100) if translation_total > 0 else 0
     translation_state = "ready" if translation_total > 0 and translation_done >= translation_total and not pending_items else ("running" if pending_items else "pending")
 
+    refresh_items = content_refresh.get("items") if isinstance(content_refresh, dict) else []
+    refresh_items = refresh_items if isinstance(refresh_items, list) else []
+    refresh_running_rows = [
+        _pipeline_refresh_row(item)
+        for item in refresh_items
+        if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "running"
+    ]
+
     post_rows = []
     for card in cards_sorted[:40]:
         translation = "ready" if translation_state == "ready" else ("translating" if str(card.get("id") or card.get("url") or "") in seen_pending else "pending")
@@ -847,7 +976,7 @@ def _build_sync_pipeline_payload(feed: dict, card_rows: list[dict], sync_state: 
             "done_cards": curation_done,
             "total_cards": curation_total,
             "done_items": [_pipeline_card_row(card) for card in latest_items],
-            "pending_items": [],
+            "pending_items": refresh_running_rows,
             "counts": pipeline_counts,
         },
         "translation": {
@@ -858,7 +987,7 @@ def _build_sync_pipeline_payload(feed: dict, card_rows: list[dict], sync_state: 
             "langs": translation_langs,
             "pending_items": pending_items[:40],
         },
-        "post_stages": post_rows,
+        "post_stages": [*refresh_running_rows, *post_rows],
     }
 
 
@@ -1104,6 +1233,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     card_rows = [x for x in cards if isinstance(x, dict)]
     sync_state = _sync_state_snapshot()
     jobs = _collect_jobs_snapshot(limit=limit)
+    content_refresh = _content_refresh_snapshot(limit=limit)
     news_states = _collect_news_state_snapshot()
     i18n_state = i18n_state_snapshot()
     i18n_alignment = _compute_i18n_alignment(feed, i18n_state)
@@ -1123,6 +1253,7 @@ def _build_admin_status(limit: int = 10) -> dict:
 
     running_jobs = _safe_int(jobs.get("counts", {}).get("running"))
     queued_jobs = _safe_int(jobs.get("counts", {}).get("queued"))
+    running_refresh = _safe_int(content_refresh.get("counts", {}).get("running"))
     sync_running = str(sync_state.get("status") or "").strip().lower() == "running"
     pipeline_counts = feed.get("pipeline_counts") if isinstance(feed.get("pipeline_counts"), dict) else {}
     i18n_raw_status = str(i18n_state.get("status") or "idle").strip().lower()
@@ -1147,7 +1278,7 @@ def _build_admin_status(limit: int = 10) -> dict:
     i18n_payload["raw_status"] = i18n_raw_status or "idle"
     i18n_payload["effective_status"] = i18n_effective_status
     i18n_payload["alignment"] = i18n_alignment
-    sync_pipeline = _build_sync_pipeline_payload(feed, card_rows, sync_state, i18n_alignment)
+    sync_pipeline = _build_sync_pipeline_payload(feed, card_rows, sync_state, i18n_alignment, content_refresh)
 
     return {
         "server_time": _now_iso(),
@@ -1180,14 +1311,16 @@ def _build_admin_status(limit: int = 10) -> dict:
             "new_cards_24h": recent_24h,
         },
         "jobs": jobs,
+        "content_refresh": content_refresh,
         "new_posts": {
             "new_cards_6h": recent_6h,
             "new_cards_24h": recent_24h,
             "sync_running": sync_running,
             "queued_jobs": queued_jobs,
             "running_jobs": running_jobs,
-            "pending_processing": queued_jobs + running_jobs + (1 if sync_running else 0),
-            "is_processing": bool(queued_jobs + running_jobs + (1 if sync_running else 0)),
+            "running_content_refresh": running_refresh,
+            "pending_processing": queued_jobs + running_jobs + running_refresh + (1 if sync_running else 0),
+            "is_processing": bool(queued_jobs + running_jobs + running_refresh + (1 if sync_running else 0)),
         },
         "sync_pipeline": sync_pipeline,
         "memory": memory_stats,
@@ -1206,6 +1339,11 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "name": "url_analyzer_agent",
                 "status": "running" if running_jobs > 0 else ("queued" if queued_jobs > 0 else "idle"),
                 "detail": f"queued={queued_jobs} running={running_jobs}",
+            },
+            {
+                "name": "content_refresh_agent",
+                "status": "running" if running_refresh > 0 else "idle",
+                "detail": f"running={running_refresh} recent={_safe_int(content_refresh.get('total'), 0)}",
             },
             {
                 "name": "pokemon_news_agent",
@@ -2024,11 +2162,22 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/intel/refresh-content":
                 tweet_id = str(payload.get("id") or "").strip()
-                result = refresh_card_content(tweet_id)
-                feed = result.get("feed") if isinstance(result, dict) else None
-                if isinstance(feed, dict):
-                    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
-                self._send_json({"ok": True, **result})
+                task_id = _start_content_refresh_state(tweet_id, user=self._current_user() or "admin")
+                try:
+                    result = refresh_card_content(tweet_id)
+                    feed = result.get("feed") if isinstance(result, dict) else None
+                    if isinstance(feed, dict):
+                        build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                    _finish_content_refresh_state(task_id, ok=True, mode=str(result.get("mode") or "") if isinstance(result, dict) else "")
+                except Exception as exc:
+                    message = str(exc or "refresh_failed")
+                    _finish_content_refresh_state(task_id, ok=False, error=message)
+                    self._send_json({"ok": False, "task_id": task_id, "error": message}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                    return
+                response = result if isinstance(result, dict) else {"result": result}
+                payload_out = {"task_id": task_id, **response}
+                payload_out["ok"] = True
+                self._send_json(payload_out)
                 return
 
             if path == "/api/intel/source-config":
