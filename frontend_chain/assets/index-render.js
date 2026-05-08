@@ -115,12 +115,7 @@
       const tag = normalizeUiLang(lang);
       const rows = Array.isArray(texts) ? texts.map((x) => String(x || "")) : [];
       if (tag === "zh-Hant") return rows;
-      if (typeof window.ensureUiTranslationCache === "function") {
-        try {
-          await window.ensureUiTranslationCache();
-        } catch (_error) {}
-      }
-      return rows.map((text) => {
+      const translatedRows = rows.map((text) => {
         const fallback = applyUiTranslationFallback(tag, text, text);
         if (fallback !== text) return fallback;
         if (typeof window.lookupUiCachedTranslation === "function") {
@@ -129,6 +124,54 @@
         }
         return fallback;
       });
+      const pending = [];
+      const pendingIndexes = [];
+      const seen = new Map();
+      translatedRows.forEach((translated, idx) => {
+        const source = String(rows[idx] || "").trim();
+        if (!source || translated !== rows[idx] || source.length > 320) return;
+        if (seen.has(source)) {
+          pendingIndexes[idx] = seen.get(source);
+          return;
+        }
+        if (pending.length >= 220) return;
+        seen.set(source, pending.length);
+        pendingIndexes[idx] = pending.length;
+        pending.push(source);
+      });
+      if (!pending.length) return translatedRows;
+      let timeoutId = 0;
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      try {
+        const endpoint = typeof intelApiUrl === "function" ? intelApiUrl("/api/intel/translate-texts") : "/api/intel/translate-texts";
+        if (controller) {
+          timeoutId = window.setTimeout(() => controller.abort(), 1800);
+        }
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          signal: controller ? controller.signal : undefined,
+          body: JSON.stringify({ lang: tag, texts: pending }),
+        });
+        if (!response.ok) return translatedRows;
+        const payload = await response.json().catch(() => ({}));
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        translatedRows.forEach((current, idx) => {
+          const pendingIdx = pendingIndexes[idx];
+          if (!Number.isInteger(pendingIdx)) return;
+          const next = String(items[pendingIdx] || "").trim();
+          if (!next || next === rows[idx]) return;
+          translatedRows[idx] = next;
+          if (typeof window.rememberUiCachedTranslation === "function") {
+            window.rememberUiCachedTranslation(tag, rows[idx], next);
+          }
+        });
+      } catch (_error) {
+      } finally {
+        if (timeoutId) window.clearTimeout(timeoutId);
+      }
+      return translatedRows;
     }
 
     function updateLangSwitcherUi() {
@@ -2933,9 +2976,6 @@
       try {
         await refreshIntelFeedForCurrentLang();
         prefetchIntelFeeds();
-        if (typeof window.ensureUiTranslationCache === "function") {
-          window.ensureUiTranslationCache().catch(() => {});
-        }
       } catch (error) {
         await attemptIntelAutoRepair(error);
       }

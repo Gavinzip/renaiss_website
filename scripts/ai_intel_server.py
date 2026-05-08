@@ -1465,6 +1465,32 @@ def _enqueue_analyze_job(url: str) -> dict:
     return job
 
 
+def _generated_cover_exists(path: str) -> bool:
+    raw_path = unquote(str(path or "").strip())
+    if not raw_path.startswith("/data/generated_covers/"):
+        return True
+    rel = raw_path.removeprefix("/data/").lstrip("/")
+    root = (DATA_ROOT / "generated_covers").resolve()
+    target = (DATA_ROOT / rel).resolve()
+    try:
+        target.relative_to(root)
+    except Exception:
+        return False
+    return target.exists() and target.is_file()
+
+
+def _strip_missing_cover_images(value: object) -> None:
+    if isinstance(value, dict):
+        cover = value.get("cover_image")
+        if isinstance(cover, str) and cover.startswith("/data/generated_covers/") and not _generated_cover_exists(cover):
+            value["cover_image"] = ""
+        for child in value.values():
+            _strip_missing_cover_images(child)
+    elif isinstance(value, list):
+        for child in value:
+            _strip_missing_cover_images(child)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
@@ -1474,16 +1500,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _send_data_file(self, path: str) -> bool:
         raw_path = unquote(str(path or ""))
-        if not raw_path.startswith("/data/generated_covers/"):
+        if raw_path.startswith("/data/generated_covers/"):
+            rel = raw_path.removeprefix("/data/").lstrip("/")
+            root = (DATA_ROOT / "generated_covers").resolve()
+            target = (DATA_ROOT / rel).resolve()
+            try:
+                target.relative_to(root)
+            except Exception:
+                self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+                return True
+            cache_control = "public, max-age=604800"
+        else:
             return False
-        rel = raw_path.removeprefix("/data/").lstrip("/")
-        root = (DATA_ROOT / "generated_covers").resolve()
-        target = (DATA_ROOT / rel).resolve()
-        try:
-            target.relative_to(root)
-        except Exception:
-            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
-            return True
         if not target.exists() or not target.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return True
@@ -1494,7 +1522,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._set_cors_headers()
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(size))
-            self.send_header("Cache-Control", "public, max-age=604800")
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             with target.open("rb") as fh:
                 self.copyfile(fh, self.wfile)
@@ -1737,6 +1765,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "feed format invalid"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
             localized_feed = localized_feed_from_bundle(feed, request_lang)
+            _strip_missing_cover_images(localized_feed)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
         if path.startswith("/api/"):
@@ -1883,6 +1912,7 @@ class Handler(SimpleHTTPRequestHandler):
                 days = int(payload.get("days", 30) or 30)
                 trigger = self._current_user() or "manual"
                 result = _run_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
+                _strip_missing_cover_images(result)
                 self._send_json({"ok": True, "feed": result})
                 return
 

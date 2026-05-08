@@ -2167,31 +2167,27 @@
       return "";
     }
 
+    function rememberUiCachedTranslation(lang, sourceText, translatedText) {
+      const tag = normalizeUiLang(lang);
+      const raw = String(sourceText || "");
+      const translated = String(translatedText || "");
+      if (!tag || tag === "zh-Hant" || !raw || !translated || translated === raw) return;
+      uiRowTranslationCache.set(`${tag}\n${raw}`, translated);
+      const normalized = normalizeI18nLookupText(raw);
+      if (normalized && normalized !== raw) {
+        uiRowTranslationCache.set(`${tag}\n${normalized}`, translated);
+      }
+      uiRowTranslationCacheReady = uiRowTranslationCache.size > 0;
+    }
+
     async function ensureUiTranslationCache() {
-      if (uiRowTranslationCacheReady) return;
-      if (uiRowTranslationCachePromise) return uiRowTranslationCachePromise;
-      uiRowTranslationCachePromise = (async () => {
-        try {
-          const response = await fetch("./data/i18n_text_cache.json", { cache: "no-store" });
-          if (!response.ok) return;
-          const payload = await response.json().catch(() => ({}));
-          const rows = payload && typeof payload === "object" && payload.rows && typeof payload.rows === "object"
-            ? payload.rows
-            : {};
-          Object.entries(rows).forEach(([key, value]) => {
-            uiRowTranslationCache.set(String(key || ""), String(value || ""));
-          });
-          uiRowTranslationCacheReady = uiRowTranslationCache.size > 0;
-        } catch (_error) {
-        } finally {
-          uiRowTranslationCachePromise = null;
-        }
-      })();
+      uiRowTranslationCacheReady = uiRowTranslationCache.size > 0;
       return uiRowTranslationCachePromise;
     }
 
     window.ensureUiTranslationCache = ensureUiTranslationCache;
     window.lookupUiCachedTranslation = lookupUiCachedTranslation;
+    window.rememberUiCachedTranslation = rememberUiCachedTranslation;
 
     function shouldTranslateTextNode(node) {
       if (!node || node.nodeType !== Node.TEXT_NODE) return false;
