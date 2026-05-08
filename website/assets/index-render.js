@@ -2136,7 +2136,7 @@
             <span class="intel-source-pill ${isPokemon ? "is-pokemon-source" : ""}">
               @${escapeHtml(account)}
               ${isPokemon ? `<span class="intel-source-badge">pokemon</span>` : ""}
-              <button type="button" class="intel-source-remove" data-intel-source-pokemon-action="${isPokemon ? "remove_pokemon" : "add_pokemon"}" data-intel-source-account="${escapeHtml(account)}" aria-label="${isPokemon ? "取消寶可夢來源" : "標記為寶可夢來源"} @${escapeHtml(account)}">${isPokemon ? "移出寶可夢" : "寶可夢"}</button>
+              ${isPokemon ? `<button type="button" class="intel-source-remove" data-intel-source-pokemon-action="remove_pokemon" data-intel-source-account="${escapeHtml(account)}" aria-label="取消寶可夢來源 @${escapeHtml(account)}">取消寶可夢來源</button>` : ""}
               <button type="button" class="intel-source-remove" data-intel-source-remove="${escapeHtml(account)}" aria-label="取消追蹤 @${escapeHtml(account)}">×</button>
             </span>
           `;
