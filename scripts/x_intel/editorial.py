@@ -134,6 +134,7 @@ def infer_sbt_acquisition_line(source: str, facts: dict[str, str] | None = None)
 def infer_topic_phrase(text: str, card_type: str) -> str:
     t = strip_links_mentions(clean_text(text))
     keyword_topics = [
+        (r"community\s+poker\s+night|poker\s+night|lepoker", "Renaiss Community Poker Night"),
         (r"\bmfa\b|2fa|multi[-\s]*factor|authenticator|authentication|帳號安全|账号安全|setting page|設定頁|设置页", "帳號安全與 MFA"),
         (r"threshold update|thresholds?|snapshot|top\s*\d{1,3}\s*%|分位門檻|門檻更新", "SBT 快照門檻更新"),
         (r"web3\s*festival|hong\s*kong", "香港 Web3 Festival 行程"),
@@ -598,6 +599,9 @@ def _english_focus_hint(text: str, card_type: str, topic: str) -> str:
         (r"beta\s*2\.0.*ending|points will be reset", "Beta 2.0 即將結束，積分將重置"),
         (r"one piece.*infinite gacha|moving deeper into one piece", "One Piece Infinite Gacha 進度更新"),
         (r"legacy pack", "Legacy Pack 卡包上新與價格區間更新"),
+        (r"community\s+poker\s+night|poker\s+night|lepoker", "Renaiss Community Poker Night 線上撲克活動"),
+        (r"top\s*100\s+participants.*community\s+event\s+sbt|community\s+event\s+sbt", "Community Event SBT 發放條件更新"),
+        (r"chip\s+bonus|late\s+registration", "撲克活動入場與補報名規則"),
         (r"ama|community session|plaza", "社群直播與互動預告"),
         (r"web3 festival", "Web3 Festival 社群行程更新"),
     ]
@@ -1232,21 +1236,114 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
     card.topic_labels = merged if merged else ["other"]
 
 
+def infer_timeline_range_dates(text: str, base_dt: datetime | None = None) -> tuple[str, str]:
+    """Infer start/end timeline dates from raw text.
+
+    The existing timeline extractor returns the start date and a display label.
+    This helper keeps that behavior, then adds an explicit end date for common
+    date-range formats so event windows can stay visible for every active day.
+    """
+    src = str(text or "")
+    now = (base_dt or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_iso, label = extract_timeline_date(src, base_dt=now)
+    if not start_iso:
+        return "", ""
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        start_dt = start_dt.astimezone(timezone.utc)
+    except Exception:
+        return start_iso, ""
+
+    month_map = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+
+    def _mk_end(mon: int, day: int, year_hint: int | None = None) -> str:
+        if not (1 <= mon <= 12 and 1 <= day <= 31):
+            return ""
+        year = int(year_hint or start_dt.year)
+        try:
+            end_dt = datetime(year, mon, day, 0, 0, tzinfo=timezone.utc)
+            if end_dt < start_dt and (mon, day) >= (start_dt.month, start_dt.day):
+                end_dt = datetime(year + 1, mon, day, 0, 0, tzinfo=timezone.utc)
+            if end_dt < start_dt:
+                return ""
+            return end_dt.isoformat()
+        except Exception:
+            return ""
+
+    label_match = re.fullmatch(r"(\d{2})/(\d{2})-(\d{2})", str(label or "").strip())
+    if label_match:
+        end_iso = _mk_end(int(label_match.group(1)), int(label_match.group(3)), start_dt.year)
+        if end_iso and end_iso != start_iso:
+            return start_iso, end_iso
+
+    patterns = [
+        re.compile(r"\b(?:20\d{2}/)?(\d{1,2})/(\d{1,2})\s*(?:-|~|到|至|to|until|through)\s*(?:(\d{1,2})/)?(\d{1,2})\b", re.I),
+        re.compile(r"(?:\b(20\d{2})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号|號)?\s*(?:-|~|到|至)\s*(?:(\d{1,2})\s*月\s*)?(\d{1,2})\s*(?:日|号|號)?", re.I),
+        re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})\s*(?:-|~|to|until|through)\s*(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{1,2})\b", re.I),
+    ]
+    for pattern in patterns:
+        m = pattern.search(src)
+        if not m:
+            continue
+        if pattern is patterns[0]:
+            start_mon = int(m.group(1))
+            end_mon = int(m.group(3) or start_mon)
+            end_day = int(m.group(4))
+            end_iso = _mk_end(end_mon, end_day, start_dt.year)
+        elif pattern is patterns[1]:
+            year_hint = int(m.group(1)) if m.group(1) else start_dt.year
+            start_mon = int(m.group(2))
+            end_mon = int(m.group(4) or start_mon)
+            end_day = int(m.group(5))
+            end_iso = _mk_end(end_mon, end_day, year_hint)
+        else:
+            start_mon = month_map.get(str(m.group(1)).lower()[:3], start_dt.month)
+            end_mon = month_map.get(str(m.group(3) or m.group(1)).lower()[:3], start_mon)
+            end_day = int(m.group(4))
+            end_iso = _mk_end(end_mon, end_day, start_dt.year)
+        if end_iso and end_iso != start_iso:
+            return start_iso, end_iso
+
+    return start_iso, ""
+
+
+def infer_event_wall(card: StoryCard) -> bool:
+    labels = normalize_topic_labels(card.topic_labels)
+    if labels == ["other"] or "events" not in labels:
+        return False
+    if not str(card.timeline_date or "").strip():
+        return False
+    return True
+
+
+def refresh_card_routing_fields(card: StoryCard, keep_existing_topics: bool = True) -> None:
+    source = card.raw_text or card.summary or card.title
+    base_dt = _parse_iso_safe(card.published_at) or datetime.now(timezone.utc)
+    timeline_start, timeline_end = infer_timeline_range_dates(source, base_dt=base_dt)
+    card.timeline_date = timeline_start
+    card.timeline_end_date = timeline_end
+    assign_topic_labels(card, keep_existing=keep_existing_topics)
+    card.event_wall = infer_event_wall(card)
+
+
 def enrich_card_metadata(card: StoryCard) -> None:
     base_dt = _parse_iso_safe(card.published_at) or datetime.now(timezone.utc)
-    timeline_iso, _timeline_label = extract_timeline_date(card.raw_text or card.title, base_dt=base_dt)
     card.template_id = choose_template_id(card.card_type)
-    card.timeline_date = timeline_iso
     card.event_facts = build_event_facts(card.raw_text or card.title) if card.card_type == "event" else {}
     card.glance = compact_point(build_glance_line(card), 120)
-    card.urgency = compute_urgency(card.card_type, card.importance, timeline_iso)
-    assign_topic_labels(card, keep_existing=True)
+    refresh_card_routing_fields(card, keep_existing_topics=True)
+    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
 
 
 def normalize_card_semantics(card: StoryCard, preserve_type: bool = False) -> None:
     source = card.raw_text or card.summary or card.title
     base_dt = _parse_iso_safe(card.published_at) or datetime.now(timezone.utc)
-    timeline_iso, _ = extract_timeline_date(source, base_dt=base_dt)
+    timeline_iso, timeline_end_iso = infer_timeline_range_dates(source, base_dt=base_dt)
     inferred_type, inferred_layout, inferred_tags = classify_story(source)
 
     if not preserve_type or card.card_type not in ALLOWED_CARD_TYPES:
@@ -1262,6 +1359,7 @@ def normalize_card_semantics(card: StoryCard, preserve_type: bool = False) -> No
         card.timeline_date = timeline_iso
     elif not card.timeline_date:
         card.timeline_date = ""
+    card.timeline_end_date = timeline_end_iso
 
     card.template_id = choose_template_id(card.card_type)
     if card.card_type == "event":
@@ -1275,6 +1373,7 @@ def normalize_card_semantics(card: StoryCard, preserve_type: bool = False) -> No
     card.glance = compact_point(build_glance_line(card), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
     assign_topic_labels(card, keep_existing=True)
+    card.event_wall = infer_event_wall(card)
 
 
 def normalize_cards_semantics(cards: list[StoryCard], preserve_type: bool = False) -> None:

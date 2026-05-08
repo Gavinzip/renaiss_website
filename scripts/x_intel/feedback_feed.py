@@ -698,6 +698,197 @@ def update_card_classification_fields(
     }
 
 
+CONTENT_REFRESH_FIELDS = {
+    "title",
+    "summary",
+    "bullets",
+    "confidence",
+    "tags",
+    "importance",
+    "glance",
+    "event_facts",
+    "timeline_date",
+    "timeline_end_date",
+    "event_wall",
+    "detail_summary",
+    "detail_lines",
+    "urgency",
+}
+
+CONTENT_REFRESH_PRESERVED_FIELDS = {
+    "card_type",
+    "layout",
+    "template_id",
+    "topic_labels",
+    "manual_pick",
+    "manual_pin",
+    "manual_bottom",
+    "sbt_name",
+    "sbt_names",
+    "sbt_acquisition",
+    "dedupe_status",
+    "dedupe_checked",
+    "dedupe_checked_at",
+    "dedupe_version",
+    "dedupe_reason_code",
+    "dedupe_reason",
+    "dedupe_winner_post_id",
+    "dedupe_winner_url",
+    "dedupe_winner_title",
+}
+
+ADMIN_QUEUE_TAG_RE = re.compile(r"(去重淘汰|篩選淘汰|淘汰)")
+
+
+def _refresh_content_signature(card: StoryCard) -> tuple[Any, ...]:
+    return (
+        str(card.title or ""),
+        str(card.summary or ""),
+        tuple(str(x) for x in (card.bullets or [])),
+        str(card.detail_summary or ""),
+        tuple(str(x) for x in (card.detail_lines or [])),
+    )
+
+
+def _merge_refreshed_tags(original_tags: Any, refreshed_tags: Any) -> list[str]:
+    original = [clean_text(str(x)) for x in (original_tags or []) if clean_text(str(x))] if isinstance(original_tags, list) else []
+    refreshed = [clean_text(str(x)) for x in (refreshed_tags or []) if clean_text(str(x))] if isinstance(refreshed_tags, list) else []
+    queue_tags = [tag for tag in original if ADMIN_QUEUE_TAG_RE.search(tag)]
+    merged: list[str] = []
+    for tag in [*queue_tags, *refreshed, *original]:
+        if not tag or tag in merged:
+            continue
+        merged.append(tag[:16])
+        if len(merged) >= 3:
+            break
+    return merged
+
+
+def _apply_local_content_refresh(card: StoryCard) -> None:
+    source = clean_text(card.raw_text or " ".join([card.title or "", card.summary or "", " ".join(card.bullets or [])]))
+    if not source:
+        return
+    fallback = build_editorial_copy(source, card.card_type, card.account)
+    title = clean_text(str(fallback.get("title") or ""))
+    summary = clean_text(str(fallback.get("summary") or ""))
+    bullets_raw = fallback.get("bullets") if isinstance(fallback.get("bullets"), list) else []
+    if title:
+        card.title = title[:120]
+    if summary:
+        card.summary = summary[:320]
+    bullets = [clean_text(str(x))[:120] for x in bullets_raw if clean_text(str(x))]
+    if bullets:
+        card.bullets = bullets[:3]
+    enrich_detail_view(card)
+    card.importance = score_card(card)
+    enrich_card_metadata(card)
+    normalize_card_semantics(card, preserve_type=True)
+
+
+def _align_refreshed_text_year(card: StoryCard) -> None:
+    timeline = _parse_iso_safe(card.timeline_date)
+    published = _parse_iso_safe(card.published_at)
+    reference = timeline or published
+    if not reference:
+        return
+    year = reference.year
+    if not year:
+        return
+    raw_text = str(card.raw_text or "")
+    cn_date_re = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号|號)?")
+
+    def fix_year(match: re.Match[str]) -> str:
+        found_year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        if found_year == year or str(found_year) in raw_text:
+            return match.group(0)
+        return f"{year}年{month}月{day}日"
+
+    def fix(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        return cn_date_re.sub(fix_year, value)
+
+    card.title = fix(card.title)
+    card.summary = fix(card.summary)
+    card.detail_summary = fix(card.detail_summary)
+    card.bullets = [fix(x) for x in (card.bullets or [])]
+    card.detail_lines = [fix(x) for x in (card.detail_lines or [])]
+
+
+def refresh_card_content(tweet_id: str) -> dict[str, Any]:
+    """Regenerate a card's wording without changing its classification or admin fields."""
+    tid = str(tweet_id or "").strip()
+    if not tid:
+        raise ValueError("tweet id is required")
+
+    load_environment()
+    payload = _read_feed_payload()
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        raise ValueError("feed cards are not ready")
+
+    target_index = -1
+    original: dict[str, Any] | None = None
+    for idx, item in enumerate(cards):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "").strip() == tid:
+            target_index = idx
+            original = dict(item)
+            break
+    if target_index < 0 or original is None:
+        raise ValueError("card not found")
+
+    card = _story_card_from_payload(original)
+    preserved = {key: original.get(key) for key in CONTENT_REFRESH_PRESERVED_FIELDS if key in original}
+    original_tags = original.get("tags")
+
+    before_ai = _refresh_content_signature(card)
+    mode = "fallback"
+    api_key = resolve_minimax_key()
+    if api_key:
+        try:
+            refresh_read_timeout = float(os.getenv("MINIMAX_REFRESH_HTTP_READ_TIMEOUT") or "60")
+        except Exception:
+            refresh_read_timeout = 36.0
+        apply_minimax_story_refine(
+            [card],
+            api_key,
+            feedback_context=feedback_training_text(),
+            connect_timeout_override=5.0,
+            read_timeout_override=max(60.0, refresh_read_timeout),
+        )
+        if _refresh_content_signature(card) != before_ai:
+            mode = "ai"
+    if mode != "ai":
+        _apply_local_content_refresh(card)
+
+    normalize_card_semantics(card, preserve_type=True)
+    refresh_card_routing_fields(card, keep_existing_topics=True)
+    _enforce_fixed_channel_topic_labels([card])
+    _align_refreshed_text_year(card)
+    refreshed = card.to_dict()
+    updated = dict(original)
+    for key in CONTENT_REFRESH_FIELDS:
+        if key in refreshed:
+            updated[key] = refreshed.get(key)
+    updated["tags"] = _merge_refreshed_tags(original_tags, updated.get("tags"))
+    updated.update(preserved)
+    _enforce_fixed_channel_payload_fields(updated)
+
+    cards[target_index] = updated
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    write_json(data_dir() / "x_intel_feed.json", payload)
+    return {
+        "id": tid,
+        "mode": mode,
+        "card": updated,
+        "feed": payload,
+    }
+
+
 def feedback_training_text(max_items: int = 8, max_rules: int = 10, max_profiles: int = 5) -> str:
     state = read_feedback_state()
     items = state.get("items", {})
@@ -1899,6 +2090,18 @@ def sync_accounts(
             continue
         new_source_cards.append(c)
 
+    feedback_context = feedback_training_text()
+    # New cards must be readable even if they are later deduped or sent to the admin queue.
+    # Keep this before source preference, curation, and dedupe so queue/other cards are AI-refined too.
+    if api_key and new_source_cards:
+        apply_minimax_story_refine(new_source_cards, api_key, feedback_context=feedback_context)
+        normalize_cards_semantics(new_source_cards, preserve_type=True)
+        _enforce_fixed_channel_topic_labels(new_source_cards)
+        post_refine_feedback_result = apply_feedback_overrides(new_source_cards)
+        if int(post_refine_feedback_result.get("override_count", 0) or 0):
+            feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(post_refine_feedback_result.get("override_count", 0) or 0)
+        _enforce_fixed_channel_topic_labels(new_source_cards)
+
     queue_cards: list[StoryCard] = []
     new_source_cards, queued_existing_dupes = _queue_new_duplicates_against_existing(
         new_source_cards,
@@ -1927,11 +2130,9 @@ def sync_accounts(
     queue_cards.extend(_mark_admin_queue_card(card, "curation") for card in curation_removed_cards)
     removed_count = len(curation_removed_cards)
 
-    feedback_context = feedback_training_text()
     ai_deduped = 0
     local_deduped = 0
     if api_key and curated_cards:
-        apply_minimax_story_refine(curated_cards, api_key, feedback_context=feedback_context)
         normalize_cards_semantics(curated_cards, preserve_type=True)
         _enforce_fixed_channel_topic_labels(curated_cards)
         refined_feedback_result = apply_feedback_overrides(curated_cards)

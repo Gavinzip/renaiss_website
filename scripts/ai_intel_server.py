@@ -25,7 +25,24 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
-from x_intel_core import ALLOWED_CARD_TYPES, ALLOWED_TOPIC_LABELS, add_classification_feedback, add_classification_feedback_fields, add_manual_tweet, feedback_memory_stats, load_environment, read_x_source_config, set_manual_selection, sync_accounts, update_card_classification_fields, update_card_event_wall_field, update_card_sbt_fields, update_card_timeline_fields, update_x_source_accounts
+from x_intel_core import (
+    ALLOWED_CARD_TYPES,
+    ALLOWED_TOPIC_LABELS,
+    add_classification_feedback,
+    add_classification_feedback_fields,
+    add_manual_tweet,
+    feedback_memory_stats,
+    load_environment,
+    read_x_source_config,
+    refresh_card_content,
+    set_manual_selection,
+    sync_accounts,
+    update_card_classification_fields,
+    update_card_event_wall_field,
+    update_card_sbt_fields,
+    update_card_timeline_fields,
+    update_x_source_accounts,
+)
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
 from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
@@ -122,6 +139,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/event-wall",
     "/api/intel/sbt-fields",
     "/api/intel/feedback",
+    "/api/intel/refresh-content",
     "/api/intel/source-config",
     "/api/intel/job-status",
     "/api/intel/backup",
@@ -909,6 +927,21 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     except Exception as sync_error:
         _finish_sync_state_failed(started_monotonic, str(sync_error))
         raise
+
+
+def _spawn_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> bool:
+    with SYNC_STATE_LOCK:
+        if str(SYNC_STATE.get("status") or "").strip().lower() == "running":
+            return False
+
+    def worker() -> None:
+        try:
+            _run_intel_sync(accounts=accounts, days=max(1, int(days)), trigger=trigger)
+        except Exception as exc:
+            print(f"[ai-intel] background sync failed: {exc}")
+
+    Thread(target=worker, daemon=True).start()
+    return True
 
 
 def _warm_i18n_bundle_from_feed() -> None:
@@ -1785,6 +1818,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/event-wall",
             "/api/intel/sbt-fields",
             "/api/intel/feedback",
+            "/api/intel/refresh-content",
             "/api/intel/source-config",
             "/api/intel/job-status",
             "/api/intel/backup",
@@ -1911,6 +1945,10 @@ class Handler(SimpleHTTPRequestHandler):
                     accounts = None
                 days = int(payload.get("days", 30) or 30)
                 trigger = self._current_user() or "manual"
+                if bool(payload.get("background")):
+                    started = _spawn_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
+                    self._send_json({"ok": True, "started": started, "sync": _sync_state_snapshot()})
+                    return
                 result = _run_intel_sync(accounts=accounts, days=max(1, days), trigger=trigger)
                 _strip_missing_cover_images(result)
                 self._send_json({"ok": True, "feed": result})
@@ -1982,6 +2020,15 @@ class Handler(SimpleHTTPRequestHandler):
                 feed = _read_feed_snapshot()
                 build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "feedback": feedback, "update": update, "feed": feed})
+                return
+
+            if path == "/api/intel/refresh-content":
+                tweet_id = str(payload.get("id") or "").strip()
+                result = refresh_card_content(tweet_id)
+                feed = result.get("feed") if isinstance(result, dict) else None
+                if isinstance(feed, dict):
+                    build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, **result})
                 return
 
             if path == "/api/intel/source-config":
@@ -2146,7 +2193,7 @@ def main() -> int:
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
         "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback"
     )
     print(

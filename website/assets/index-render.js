@@ -2747,6 +2747,17 @@
       await refreshIntelFeedForCurrentLang();
     }
 
+    async function submitIntelContentRefresh(id) {
+      const data = await postIntel("/api/intel/refresh-content", { id });
+      if (data?.feed && typeof data.feed === "object") {
+        renderIntelFeed(data.feed);
+        scheduleLangFeedRefresh(data.feed);
+      } else {
+        await refreshIntelFeedForCurrentLang();
+      }
+      return data || {};
+    }
+
     async function handleIntelAction(action, id, hintLabel = "", extra = {}) {
       if (!id || !action) return false;
       if (!intelCanEdit()) {
@@ -2796,6 +2807,15 @@
         setIntelMessage(`正在${actionTextMap[action] || "更新"}設定...`, "");
         await submitIntelPick(id, action);
         setIntelMessage(okTextMap[action] || "設定已更新。", "ok");
+        return true;
+      }
+      if (action === "refresh-content") {
+        const yes = window.confirm("要用 AI 重新分析這張卡的標題、摘要、詳情、日期與活動牆狀態嗎？分區與手動保留/頂選/SBT 設定不會被改動。");
+        if (!yes) return false;
+        setIntelMessage("正在等待 AI 重新整理卡片內容...", "");
+        const data = await submitIntelContentRefresh(id);
+        const mode = String(data?.mode || "").toLowerCase();
+        setIntelMessage(mode === "fallback" ? "AI 未產出可用結果，已改用本地規則保底。" : "已用 AI 重新整理內容，分區未改動。", "ok");
         return true;
       }
       if (action === "feedback") {

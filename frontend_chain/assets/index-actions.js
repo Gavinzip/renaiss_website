@@ -523,16 +523,15 @@
           adminSyncNowBtn.textContent = "掃描中...";
         }
         stopAnalyzePolling(false);
-        setIntelMessage("正在同步最近 30 天資料...", "");
+        setIntelMessage("已送出背景同步，管理面板會持續更新進度。", "");
         startIntelAdminPolling();
         window.setTimeout(() => {
           refreshIntelAdminStatus();
         }, 700);
         try {
-          await postIntel("/api/intel/sync", { days: 30 });
-          await refreshIntelFeedForCurrentLang();
+          const data = await postIntel("/api/intel/sync", { days: 30, background: true });
           refreshIntelAdminStatus();
-          setIntelMessage("同步完成。", "ok");
+          setIntelMessage(data?.started === false ? "已有同步正在執行，請看管理面板進度。" : "背景同步已開始。", "ok");
           return true;
         } catch (error) {
           setIntelMessage(`同步失敗：${error.message}（確認後端 API 可連線）`, "error");

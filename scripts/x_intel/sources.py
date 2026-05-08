@@ -222,7 +222,14 @@ def _cache_discord_cover_image(source_url: str, card_id: str) -> str:
             pass
         return ""
 
-def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> str:
+def minimax_chat(
+    prompt: str,
+    api_key: str,
+    max_tokens: int | None = None,
+    *,
+    connect_timeout_override: float | None = None,
+    read_timeout_override: float | None = None,
+) -> str:
     model_name = str(
         os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
@@ -257,6 +264,10 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
         read_timeout = float(os.getenv("MINIMAX_HTTP_READ_TIMEOUT") or read_timeout)
     except Exception:
         read_timeout = 120.0
+    if connect_timeout_override is not None and connect_timeout_override > 0:
+        connect_timeout = float(connect_timeout_override)
+    if read_timeout_override is not None and read_timeout_override > 0:
+        read_timeout = float(read_timeout_override)
     if connect_timeout <= 0:
         connect_timeout = 15.0
     if read_timeout <= 0:
@@ -286,14 +297,22 @@ def minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> st
     raise RuntimeError(f"MiniMax response missing content; model={model_name}")
 
 
-def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_context: str = "") -> None:
+def apply_minimax_story_refine(
+    cards: list[StoryCard],
+    api_key: str,
+    feedback_context: str = "",
+    *,
+    connect_timeout_override: float | None = None,
+    read_timeout_override: float | None = None,
+) -> None:
     for card in cards:
         prompt = (
             "你是TCG社群編輯。請先完整讀懂內容，再輸出『非抄寫』重整版本。"
             "輸出必須是 JSON，欄位固定為："
             "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline),"
             "confidence(0~1),tags(最多3),event_facts(可選，僅 event 使用: reward/participation/audience/location/schedule),"
-            "topic_labels(可多選: events/official/sbt/pokemon/collectibles/alpha/guides/community/other)。"
+            "topic_labels(可多選: events/official/sbt/pokemon/collectibles/alpha/guides/community/other),"
+            "detail_summary,detail_lines(長度4到6)。"
             "限制："
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
@@ -320,26 +339,46 @@ def apply_minimax_story_refine(cards: list[StoryCard], api_key: str, feedback_co
             "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
             "24) official 只給 Renaiss 官方 X 或官方 Discord 公告來源；不要因為內文提到 @renaissxyz 就標 official；"
             "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
-            "26) 整份 JSON 請控制在約 800 字元內。\n\n"
+            "26) 活動貼文的 title 必須優先抓活動名稱、參與方式、獎勵或截止條件；不要把主辦/主持身份（例如 Ambassador、hosted by）當成主題；"
+            "27) 活動摘要要保留關鍵獎勵、名額、報名限制與操作提醒，例如 Top 100、SBT、booster box、merch、chip bonus、late registration；"
+            "28) detail_summary 要重寫成完整詳情導言，不可沿用舊 summary 或模板句；"
+            "29) detail_lines 要列出活動名稱、時間、參與方式、獎勵、限制/注意事項、下一步；"
+            "30) 原文沒有年份時，不可自行補錯年份；若需要年份，沿用發布時間/活動時間所在年份；"
+            "31) 禁止把純數字 Discord ID、錢包地址或未具名帳號當成人名/主持人名稱；"
+            "32) 禁止自行補充原文未提到的物流、轉運、代購、國籍限制或付款條件；"
+            "33) 整份 JSON 請控制在約 1200 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
             f"內容: {card.raw_text[:4200]}"
         )
         try:
-            raw = minimax_chat(prompt, api_key)
+            raw = minimax_chat(
+                prompt,
+                api_key,
+                connect_timeout_override=connect_timeout_override,
+                read_timeout_override=read_timeout_override,
+            )
             parsed = parse_json_block(raw)
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels。"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,detail_summary,detail_lines。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
+                    "detail_summary 與 detail_lines 必須重新整理詳情，不可沿用模板句。"
+                    "不要捏造年份、人名、物流、轉運、代購或限制條件。"
+                    "活動標題要抓活動名稱與主要獎勵/參與條件，不要把 Ambassador、hosted by 這種主辦身份當主題。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
                     f"內容:{card.raw_text[:3200]}"
                 )
-                raw = minimax_chat(compact_retry_prompt, api_key)
+                raw = minimax_chat(
+                    compact_retry_prompt,
+                    api_key,
+                    connect_timeout_override=connect_timeout_override,
+                    read_timeout_override=read_timeout_override,
+                )
                 parsed = parse_json_block(raw)
             if not parsed:
                 continue
@@ -1032,8 +1071,18 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
         if c.id:
             enqueue_status_id(c.id)
 
-    max_fetch_rounds = max(max_posts * 8, 48)
-    max_collected = max(max_posts * 3, 24)
+    try:
+        max_fetch_rounds = int(os.getenv("X_STATUS_FETCH_MAX_ROUNDS") or "0")
+    except Exception:
+        max_fetch_rounds = 0
+    if max_fetch_rounds <= 0:
+        max_fetch_rounds = max(max_posts * 4, 12)
+    try:
+        max_collected = int(os.getenv("X_STATUS_FETCH_MAX_COLLECTED") or "0")
+    except Exception:
+        max_collected = 0
+    if max_collected <= 0:
+        max_collected = max(max_posts * 2, max_posts + 4)
     while queue and len(processed) < max_fetch_rounds:
         tweet_id = queue.pop(0)
         if tweet_id in processed:

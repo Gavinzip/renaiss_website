@@ -1629,6 +1629,10 @@ def build_event_facts(text: str) -> dict[str, str]:
     reward = _event_token_summary(
         src,
         [
+            (re.compile(r"op09\s+booster\s+box", re.I), "OP09 Booster Box"),
+            (re.compile(r"community\s+event\s+sbt", re.I), "Community Event SBT"),
+            (re.compile(r"depu\s+binance\s+merch|binance\s+merch", re.I), "DePu Binance Merch"),
+            (re.compile(r"\bpack(?:s)?\b|卡包", re.I), "卡包獎勵"),
             (re.compile(r"\bsbt\b", re.I), "SBT"),
             (re.compile(r"積分|积分|points?", re.I), "積分"),
             (re.compile(r"merch|周邊|周边", re.I), "周邊"),
@@ -1641,6 +1645,9 @@ def build_event_facts(text: str) -> dict[str, str]:
     participation_tokens = _event_token_summary(
         src,
         [
+            (re.compile(r"lepoker|register here", re.I), "Lepoker 報名"),
+            (re.compile(r"join\s+5\s+minutes\s+early|5\s+minutes\s+early", re.I), "提前 5 分鐘入場"),
+            (re.compile(r"late\s+registration", re.I), "10 分鐘內補報名"),
             (re.compile(r"discord", re.I), "Discord"),
             (re.compile(r"live|直播", re.I), "直播"),
             (re.compile(r"session|community\s*session", re.I), "社群 Session"),
@@ -1658,6 +1665,9 @@ def build_event_facts(text: str) -> dict[str, str]:
         compact_participation = _event_token_summary(
             src,
             [
+                (re.compile(r"lepoker|register here", re.I), "Lepoker 報名"),
+                (re.compile(r"join\s+5\s+minutes\s+early|5\s+minutes\s+early", re.I), "提前 5 分鐘入場"),
+                (re.compile(r"late\s+registration", re.I), "10 分鐘內補報名"),
                 (re.compile(r"discord", re.I), "Discord"),
                 (re.compile(r"live|直播", re.I), "直播"),
                 (re.compile(r"session|community\s*session", re.I), "社群 Session"),

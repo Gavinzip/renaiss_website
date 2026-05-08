@@ -1507,6 +1507,7 @@
             <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
             <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
             <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-false" data-intel-id="${escapeHtml(id)}">移出活動牆</button>
+            <button class="intel-pick-btn" data-intel-action="refresh-content" data-intel-id="${escapeHtml(id)}">重新整理內容</button>
             <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(id)}">${escapeHtml(uiLabel("exclude"))}</button>
             <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(id)}" data-intel-label="${escapeHtml(feedbackLabel)}">${escapeHtml(uiLabel("feedback"))}</button>
           </div>`
@@ -1695,6 +1696,7 @@
              <button class="intel-pick-btn ${pinned ? "is-picked" : ""}" data-intel-action="${pinned ? "unpin" : "pin"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(pinned ? uiLabel("pinned") : uiLabel("pin"))}</button>
              <button class="intel-pick-btn ${bottomed ? "is-picked" : ""}" data-intel-action="${bottomed ? "unbottom" : "bottom"}" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(bottomed ? uiLabel("bottomed") : uiLabel("bottom"))}</button>
              <button class="intel-pick-btn ${eventWall ? "is-picked" : ""}" data-intel-action="eventwall-true" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(eventWall ? "已在活動牆" : "加入活動牆")}</button>
+             <button class="intel-pick-btn" data-intel-action="refresh-content" data-intel-id="${escapeHtml(card.id)}">重新整理內容</button>
              <button class="intel-pick-btn" data-intel-action="exclude" data-intel-id="${escapeHtml(card.id)}">${escapeHtml(uiLabel("exclude"))}</button>
              <button class="intel-pick-btn" data-intel-action="feedback" data-intel-id="${escapeHtml(card.id)}" data-intel-label="${escapeHtml(String(card.card_type || "insight"))}">${escapeHtml(uiLabel("feedback"))}</button>
            </div>`
