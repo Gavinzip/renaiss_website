@@ -39,7 +39,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260508-x-source-pokemon1" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
 </head>
 <body>
@@ -565,10 +565,14 @@
           <div class="intel-admin-label">追蹤 X 用戶</div>
           <form id="intel-admin-x-source-form" class="intel-source-manager">
             <input id="intel-admin-x-source-input" type="text" placeholder="@username 或 x.com/username" autocomplete="off" />
+            <label class="intel-source-option">
+              <input id="intel-admin-x-source-pokemon" type="checkbox" />
+              <span>寶可夢來源</span>
+            </label>
             <button type="submit" class="intel-auth-btn">新增追蹤</button>
           </form>
           <div id="intel-admin-x-source-list" class="intel-source-pill-list">等待資料...</div>
-          <div id="intel-admin-x-source-meta" class="intel-admin-meta">新增/取消後會影響下一次「立即掃描 / sync」抓取來源。</div>
+          <div id="intel-admin-x-source-meta" class="intel-admin-meta">新增/取消後會影響下一次「立即掃描 / sync」抓取來源；勾選寶可夢來源後，該帳號新貼文會直接進入寶可夢資訊。</div>
         </div>
         <div class="intel-admin-list-wrap">
           <div class="intel-admin-label">最近整理任務</div>
@@ -648,7 +652,7 @@
 
   <script src="./assets/index-i18n.js?v=20260507-nav-i18n1"></script>
   <script src="./assets/index-data.js?v=20260508-cover-priority1"></script>
-  <script src="./assets/index-render.js?v=20260507-lang-prefetch1"></script>
-  <script src="./assets/index-actions.js?v=20260507-logo-original1"></script>
+  <script src="./assets/index-render.js?v=20260508-x-source-pokemon1"></script>
+  <script src="./assets/index-actions.js?v=20260508-x-source-pokemon1"></script>
 </body>
 </html>

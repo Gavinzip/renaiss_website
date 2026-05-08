@@ -965,6 +965,7 @@ def _build_admin_status(limit: int = 10) -> dict:
         "monitors": {
             "x": {
                 "accounts": [str(x) for x in (x_source_config.get("x_accounts") or []) if str(x).strip()],
+                "pokemon_accounts": [str(x) for x in (x_source_config.get("pokemon_accounts") or []) if str(x).strip()],
                 "default_accounts": [str(x) for x in (x_source_config.get("default_x_accounts") or []) if str(x).strip()],
                 "using_default": bool(x_source_config.get("using_default")),
                 "updated_at": str(x_source_config.get("updated_at") or ""),

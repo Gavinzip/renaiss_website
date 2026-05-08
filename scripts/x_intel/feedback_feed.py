@@ -58,13 +58,25 @@ def _is_forced_collectibles_channel_card(card: StoryCard) -> bool:
     return _extract_discord_channel_id_from_card(card) == FORCED_COLLECTIBLES_CHANNEL_ID
 
 
+def _forced_pokemon_account_handles() -> set[str]:
+    return {
+        normalize_account_handle(account)
+        for account in resolve_pokemon_x_accounts()
+        if normalize_account_handle(account)
+    }
+
+
 def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
+    forced_pokemon_accounts = _forced_pokemon_account_handles()
     for card in cards:
         labels = normalize_topic_labels(card.topic_labels)
         if _is_forced_collectibles_channel_card(card):
             labels = normalize_topic_labels([*labels, "collectibles"])
         else:
             labels = [label for label in labels if label != "collectibles"]
+        if normalize_account_handle(card.account) in forced_pokemon_accounts:
+            labels = [label for label in labels if label != "other"]
+            labels = normalize_topic_labels([*labels, "pokemon"])
         card.topic_labels = labels if labels else ["other"]
 
 

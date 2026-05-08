@@ -60,9 +60,11 @@ def read_x_source_config() -> dict[str, Any]:
     raw = read_json(path, {}) if path.exists() else {}
     configured = isinstance(raw, dict) and isinstance(raw.get("x_accounts"), list)
     accounts = normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS)
+    pokemon_accounts = normalize_x_accounts(raw.get("pokemon_accounts") if isinstance(raw, dict) else [])
     updated_at = str(raw.get("updated_at") or "") if isinstance(raw, dict) else ""
     return {
         "x_accounts": accounts,
+        "pokemon_accounts": pokemon_accounts,
         "default_x_accounts": list(DEFAULT_ACCOUNTS),
         "using_default": not configured,
         "updated_at": updated_at,
@@ -70,10 +72,14 @@ def read_x_source_config() -> dict[str, Any]:
     }
 
 
-def write_x_source_config(accounts: list[str]) -> dict[str, Any]:
+def write_x_source_config(accounts: list[str], pokemon_accounts: list[str] | None = None) -> dict[str, Any]:
     normalized = normalize_x_accounts(accounts)
+    pokemon_normalized = normalize_x_accounts(pokemon_accounts if pokemon_accounts is not None else [])
+    account_keys = {x.lower() for x in normalized}
+    pokemon_normalized = [x for x in pokemon_normalized if x.lower() in account_keys]
     payload = {
         "x_accounts": normalized,
+        "pokemon_accounts": pokemon_normalized,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     path = x_source_config_path()
@@ -88,9 +94,15 @@ def resolve_tracked_x_accounts() -> list[str]:
     return list(read_x_source_config().get("x_accounts") or [])
 
 
+def resolve_pokemon_x_accounts() -> list[str]:
+    return list(read_x_source_config().get("pokemon_accounts") or [])
+
+
 def update_x_source_accounts(action: str, account: str = "", accounts: list[str] | None = None) -> dict[str, Any]:
     op = str(action or "").strip().lower()
-    current = list(read_x_source_config().get("x_accounts") or [])
+    source_config = read_x_source_config()
+    current = list(source_config.get("x_accounts") or [])
+    pokemon_current = list(source_config.get("pokemon_accounts") or [])
     changed = False
     normalized_account = normalize_x_account(account)
 
@@ -100,19 +112,38 @@ def update_x_source_accounts(action: str, account: str = "", accounts: list[str]
         if normalized_account.lower() not in {x.lower() for x in current}:
             current.append(normalized_account)
             changed = True
+    elif op in {"add_pokemon", "add-pokemon", "pokemon_add"}:
+        if not normalized_account:
+            raise ValueError("invalid X username")
+        if normalized_account.lower() not in {x.lower() for x in current}:
+            current.append(normalized_account)
+            changed = True
+        if normalized_account.lower() not in {x.lower() for x in pokemon_current}:
+            pokemon_current.append(normalized_account)
+            changed = True
     elif op in {"remove", "delete", "cancel"}:
         if not normalized_account:
             raise ValueError("invalid X username")
         next_rows = [x for x in current if x.lower() != normalized_account.lower()]
-        changed = len(next_rows) != len(current)
+        next_pokemon_rows = [x for x in pokemon_current if x.lower() != normalized_account.lower()]
+        changed = len(next_rows) != len(current) or len(next_pokemon_rows) != len(pokemon_current)
         current = next_rows
+        pokemon_current = next_pokemon_rows
+    elif op in {"remove_pokemon", "remove-pokemon", "pokemon_remove"}:
+        if not normalized_account:
+            raise ValueError("invalid X username")
+        next_pokemon_rows = [x for x in pokemon_current if x.lower() != normalized_account.lower()]
+        changed = len(next_pokemon_rows) != len(pokemon_current)
+        pokemon_current = next_pokemon_rows
     elif op == "replace":
         current = normalize_x_accounts(accounts or [])
+        current_keys = {x.lower() for x in current}
+        pokemon_current = [x for x in pokemon_current if x.lower() in current_keys]
         changed = True
     else:
         raise ValueError("unsupported source config action")
 
-    config = write_x_source_config(current)
+    config = write_x_source_config(current, pokemon_accounts=pokemon_current)
     config["changed"] = changed
     config["action"] = op
     config["account"] = normalized_account

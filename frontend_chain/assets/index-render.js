@@ -2121,16 +2121,26 @@
       const monitor = status?.monitors || {};
       const xInfo = monitor?.x && typeof monitor.x === "object" ? monitor.x : {};
       const accounts = Array.isArray(xInfo?.accounts) ? xInfo.accounts.map((x) => String(x || "").trim()).filter(Boolean) : [];
+      const pokemonAccounts = new Set(
+        (Array.isArray(xInfo?.pokemon_accounts) ? xInfo.pokemon_accounts : [])
+          .map((x) => String(x || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
       if (listEl) {
         if (!accounts.length) {
           listEl.textContent = "目前沒有追蹤 X 用戶。";
         } else {
-          listEl.innerHTML = accounts.map((account) => `
-            <span class="intel-source-pill">
+          listEl.innerHTML = accounts.map((account) => {
+            const isPokemon = pokemonAccounts.has(String(account || "").trim().toLowerCase());
+            return `
+            <span class="intel-source-pill ${isPokemon ? "is-pokemon-source" : ""}">
               @${escapeHtml(account)}
+              ${isPokemon ? `<span class="intel-source-badge">pokemon</span>` : ""}
+              <button type="button" class="intel-source-remove" data-intel-source-pokemon-action="${isPokemon ? "remove_pokemon" : "add_pokemon"}" data-intel-source-account="${escapeHtml(account)}" aria-label="${isPokemon ? "取消寶可夢來源" : "標記為寶可夢來源"} @${escapeHtml(account)}">${isPokemon ? "移出寶可夢" : "寶可夢"}</button>
               <button type="button" class="intel-source-remove" data-intel-source-remove="${escapeHtml(account)}" aria-label="取消追蹤 @${escapeHtml(account)}">×</button>
             </span>
-          `).join("");
+          `;
+          }).join("");
         }
       }
       if (metaEl) {
@@ -2138,7 +2148,7 @@
         const updated = toLocalTime(xInfo?.updated_at);
         const stats = xInfo?.source_stats && typeof xInfo.source_stats === "object" ? xInfo.source_stats : {};
         const countText = accounts.map((account) => `@${account}:${Number(stats?.[account] || 0)}`).join(" · ");
-        metaEl.textContent = `${defaultText} · 共 ${accounts.length} 個來源 · 更新 ${updated}${countText ? ` · ${countText}` : ""}`;
+        metaEl.textContent = `${defaultText} · 共 ${accounts.length} 個來源 · 寶可夢來源 ${pokemonAccounts.size} 個 · 更新 ${updated}${countText ? ` · ${countText}` : ""}`;
       }
     }
 

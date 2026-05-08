@@ -23,6 +23,7 @@
       const adminRestoreRunBtn = document.getElementById("intel-admin-restore-run");
       const xSourceForm = document.getElementById("intel-admin-x-source-form");
       const xSourceInput = document.getElementById("intel-admin-x-source-input");
+      const xSourcePokemonInput = document.getElementById("intel-admin-x-source-pokemon");
       const xSourceList = document.getElementById("intel-admin-x-source-list");
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
@@ -374,9 +375,11 @@
           const submitBtn = xSourceForm.querySelector('button[type="submit"]');
           if (submitBtn) submitBtn.disabled = true;
           try {
-            await updateIntelXSource("add", account);
+            const action = xSourcePokemonInput?.checked ? "add_pokemon" : "add";
+            await updateIntelXSource(action, account);
             if (xSourceInput) xSourceInput.value = "";
-            setIntelMessage(`已新增追蹤來源：${account}`, "ok");
+            if (xSourcePokemonInput) xSourcePokemonInput.checked = false;
+            setIntelMessage(`已新增追蹤來源：${account}${action === "add_pokemon" ? "（寶可夢來源）" : ""}`, "ok");
             await refreshIntelAdminStatus();
           } catch (error) {
             setIntelMessage(`新增追蹤來源失敗：${error.message}`, "error");
@@ -389,6 +392,28 @@
       if (xSourceList && !xSourceList.dataset.boundXSourceRemove) {
         xSourceList.dataset.boundXSourceRemove = "1";
         xSourceList.addEventListener("click", async (event) => {
+          const pokemonBtn = event.target.closest("[data-intel-source-pokemon-action]");
+          if (pokemonBtn) {
+            if (!intelCanEdit()) {
+              openIntelAuthModal();
+              setIntelMessage("請先登入管理員帳號後再更新來源分區。", "error");
+              return;
+            }
+            const account = String(pokemonBtn.dataset.intelSourceAccount || "").trim();
+            const action = String(pokemonBtn.dataset.intelSourcePokemonAction || "").trim();
+            if (!account || !action) return;
+            pokemonBtn.disabled = true;
+            try {
+              await updateIntelXSource(action, account);
+              setIntelMessage(action === "add_pokemon" ? `已標記 @${account} 為寶可夢來源。` : `已取消 @${account} 的寶可夢來源標記。`, "ok");
+              await refreshIntelAdminStatus();
+            } catch (error) {
+              setIntelMessage(`更新來源分區失敗：${error.message}`, "error");
+            } finally {
+              pokemonBtn.disabled = false;
+            }
+            return;
+          }
           const btn = event.target.closest("[data-intel-source-remove]");
           if (!btn) return;
           if (!intelCanEdit()) {

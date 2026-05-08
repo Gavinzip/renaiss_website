@@ -2692,6 +2692,27 @@
       font-family: var(--body-font);
     }
 
+    .intel-source-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.34rem;
+      border: 1px solid rgba(186, 217, 247, 0.88);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.86);
+      color: #2d5a82;
+      font-size: 0.78rem;
+      font-weight: 800;
+      padding: 0.42rem 0.58rem;
+      cursor: pointer;
+    }
+
+    .intel-source-option input {
+      flex: none;
+      width: auto;
+      padding: 0;
+      cursor: pointer;
+    }
+
     .intel-source-pill-list {
       display: flex;
       flex-wrap: wrap;
@@ -2710,6 +2731,23 @@
       font-size: 0.75rem;
       font-weight: 800;
       padding: 0.34rem 0.42rem 0.34rem 0.58rem;
+    }
+
+    .intel-source-pill.is-pokemon-source {
+      border-color: rgba(91, 178, 126, 0.82);
+      background: rgba(243, 255, 248, 0.92);
+      color: #1e6841;
+    }
+
+    .intel-source-badge {
+      border-radius: 999px;
+      background: rgba(46, 172, 101, 0.14);
+      color: #1f7a48;
+      font-size: 0.66rem;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      padding: 0.16rem 0.34rem;
+      text-transform: uppercase;
     }
 
     .intel-source-remove {
