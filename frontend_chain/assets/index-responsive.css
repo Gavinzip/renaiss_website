@@ -296,10 +296,19 @@
       .beginner-sbt-primer,
       .beginner-sbt-primer-grid,
       .beginner-command-grid,
+      .beginner-command-focus-gallery,
       .beginner-source-links,
       .beginner-inline-sbt .sbt-list,
       .beginner-media-split {
         grid-template-columns: 1fr;
+      }
+
+      .beginner-command-focus {
+        padding: 0.72rem;
+      }
+
+      .beginner-command-focus-figure img {
+        max-height: 420px;
       }
 
       .beginner-cover-hero img {
@@ -309,6 +318,10 @@
       .beginner-static-section {
         padding: 0.82rem;
         border-radius: 14px;
+      }
+
+      .beginner-scroll-timeline {
+        display: none;
       }
 
       .beginner-sync-bar {

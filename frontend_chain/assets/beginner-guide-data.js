@@ -95,8 +95,14 @@
       communityToolsTitle: "社群工具與作者",
       communityToolsSubtitle: "依用途整理社群工具；有連結與作者就完整列出。",
       commandsTitle: "TCG Pro Discord 指令清單",
-      commandsSubtitle: "以下只列可在 Discord 直接使用的 slash 指令，不顯示檔案路徑。",
+      commandsSubtitle: "以下整理 Discord 可直接啟用的分析流程與指令，卡圖上傳分析屬於核心流程。",
       commandsOwner: "TCG Pro Discord 由 @treegavin0121 製作。",
+      commandsCriticalTag: "非常重要",
+      commandsCriticalTitle: "卡牌自動分析是核心入口",
+      commandsCriticalDesc: "請在 Discord 的 card-search 頻道直接上傳卡圖，系統會自動完成版本辨識、價格判讀與海報輸出。",
+      commandsCriticalHint: "此流程是判斷卡牌價格與市場定位的關鍵能力，建議優先熟悉並固定使用。",
+      commandsExamplesTitle: "自動分析輸出示意",
+      commandsExamplesNote: "以下示意呈現分析報告與市場參照版型。",
       commandLabel: "Command",
       authorLabel: "作者",
       faqTitle: "新手常見問題（FAQ）",
@@ -117,8 +123,14 @@
       communityToolsTitle: "社群工具与作者",
       communityToolsSubtitle: "按用途整理社群工具；有链接与作者就完整列出。",
       commandsTitle: "TCG Pro Discord 指令清单",
-      commandsSubtitle: "以下只列可在 Discord 直接使用的 slash 指令，不显示文件路径。",
+      commandsSubtitle: "以下整理 Discord 可直接启用的分析流程与指令，卡图上传分析属于核心流程。",
       commandsOwner: "TCG Pro Discord 由 @treegavin0121 制作。",
+      commandsCriticalTag: "非常重要",
+      commandsCriticalTitle: "卡牌自动分析是核心入口",
+      commandsCriticalDesc: "请在 Discord 的 card-search 频道直接上传卡图，系统会自动完成版本识别、价格判读与海报输出。",
+      commandsCriticalHint: "此流程是判断卡牌价格与市场定位的关键能力，建议优先熟悉并固定使用。",
+      commandsExamplesTitle: "自动分析输出示意",
+      commandsExamplesNote: "以下示意展示分析报告与市场参考版型。",
       commandLabel: "Command",
       authorLabel: "作者",
       faqTitle: "新手常见问题（FAQ）",
@@ -139,8 +151,14 @@
       communityToolsTitle: "Community Tools and Authors",
       communityToolsSubtitle: "Tools and official entry points built by community members.",
       commandsTitle: "TCG Pro Discord Command List",
-      commandsSubtitle: "Only slash commands that can be used directly in Discord are listed here. File paths are not shown.",
+      commandsSubtitle: "This section lists direct Discord workflows and commands. Card-image upload analysis is the primary path.",
       commandsOwner: "TCG Pro Discord is built by @treegavin0121.",
+      commandsCriticalTag: "High Priority",
+      commandsCriticalTitle: "Card auto-analysis is the core workflow",
+      commandsCriticalDesc: "Upload a card image directly in the Discord card-search channel. The system will automatically identify the version, evaluate pricing, and generate analysis posters.",
+      commandsCriticalHint: "This capability is central to card valuation and market positioning. Learn this flow first.",
+      commandsExamplesTitle: "Auto-analysis output examples",
+      commandsExamplesNote: "Examples below show report-style and market-reference output layouts.",
       commandLabel: "Command",
       authorLabel: "Authors",
       faqTitle: "Beginner FAQ",
@@ -161,8 +179,14 @@
       communityToolsTitle: "커뮤니티 도구와 제작자",
       communityToolsSubtitle: "용도별 커뮤니티 도구를 링크와 제작자와 함께 정리했습니다.",
       commandsTitle: "TCG Pro 디스코드 명령어 목록",
-      commandsSubtitle: "Discord에서 바로 쓸 수 있는 slash 명령만 표시하며 파일 경로는 숨깁니다.",
+      commandsSubtitle: "Discord에서 바로 실행 가능한 분석 흐름과 명령을 정리했으며, 카드 이미지 업로드 분석이 핵심 흐름입니다.",
       commandsOwner: "TCG Pro Discord 제작자: @treegavin0121",
+      commandsCriticalTag: "매우 중요",
+      commandsCriticalTitle: "카드 자동 분석은 핵심 진입점입니다",
+      commandsCriticalDesc: "Discord의 card-search 채널에 카드 이미지를 직접 업로드하면 버전 식별, 가격 판독, 분석 포스터 생성이 자동으로 실행됩니다.",
+      commandsCriticalHint: "카드 가격 판단과 시장 포지셔닝의 핵심 기능이므로 가장 먼저 익혀야 합니다.",
+      commandsExamplesTitle: "자동 분석 출력 예시",
+      commandsExamplesNote: "아래 예시는 분석 리포트형 및 시장 참조형 출력 레이아웃입니다.",
       commandLabel: "Command",
       authorLabel: "제작자",
       faqTitle: "초보자 FAQ",
@@ -233,15 +257,38 @@
   };
 
   const STATIC_COMMANDS = [
+    { name: { "zh-Hant": "卡牌自動分析", "zh-Hans": "卡牌自动分析", en: "Card Auto Analysis", ko: "카드 자동 분석" }, command: "", meta: { "zh-Hant": "card-search 自動觸發", "zh-Hans": "card-search 自动触发", en: "Auto-triggered in card-search", ko: "card-search 자동 실행" }, icon: "lucide:scan-search", desc: { "zh-Hant": "在 Discord 的 card-search 頻道直接上傳卡圖，系統會自動完成價格分析並輸出海報。", "zh-Hans": "在 Discord 的 card-search 频道直接上传卡图，系统会自动完成价格分析并输出海报。", en: "Upload a card image in Discord card-search and the system automatically produces pricing analysis with poster output.", ko: "Discord card-search 채널에 카드 이미지를 올리면 가격 분석과 포스터 출력이 자동으로 완료됩니다." } },
+    { name: { "zh-Hant": "卡盒報告", "zh-Hans": "卡盒报告", en: "Cardset Report", ko: "카드셋 보고서" }, command: "/cardset", icon: "lucide:package-search", desc: { "zh-Hant": "輸入系列代號（如 op15）生成卡盒 Top10 報告與海報。", "zh-Hans": "输入系列代号（如 op15）生成卡盒 Top10 报告与海报。", en: "Input a series code (e.g. op15) to generate a Top 10 cardset report and poster.", ko: "시리즈 코드(예: op15)를 입력하면 카드셋 Top10 보고서와 포스터를 생성합니다." } },
     { name: { "zh-Hant": "個人海報", "zh-Hans": "个人海报", en: "Profile Poster", ko: "프로필 포스터" }, command: "/profile", icon: "lucide:user-square-2", desc: { "zh-Hant": "輸入錢包地址並開啟互動式海報設定面板。", "zh-Hans": "输入钱包地址并开启互动式海报设定面板。", en: "Input a wallet address and open the interactive poster settings panel.", ko: "지갑 주소를 입력하면 인터랙티브 포스터 설정 패널을 열 수 있습니다." } },
     { name: { "zh-Hant": "Flex 卡包海報", "zh-Hans": "Flex 卡包海报", en: "Flex Pack Poster", ko: "Flex 팩 포스터" }, command: "/flex_pack", icon: "lucide:layout-template", desc: { "zh-Hant": "指定卡包生成 Flex 海報（剛抽排版 / 天堂地獄）。", "zh-Hans": "指定卡包生成 Flex 海报（刚抽排版 / 天堂地狱）。", en: "Generate a Flex poster for a specified pack (fresh-pull layout / heaven-or-hell).", ko: "지정한 팩으로 Flex 포스터를 생성합니다 (방금 뽑기 레이아웃 / 천국-지옥)." } },
-    { name: { "zh-Hant": "手動分析", "zh-Hans": "手动分析", en: "Manual Analyze", ko: "수동 분석" }, command: "/manual_analyze", icon: "lucide:scan-search", desc: { "zh-Hant": "手動選擇版本後，生成報告與海報。", "zh-Hans": "手动选择版本后，生成报告与海报。", en: "Select a version manually, then generate report and poster.", ko: "버전을 수동 선택한 뒤 보고서와 포스터를 생성합니다." } },
-    { name: { "zh-Hant": "卡盒報告", "zh-Hans": "卡盒报告", en: "Cardset Report", ko: "카드셋 보고서" }, command: "/cardset", icon: "lucide:package-search", desc: { "zh-Hant": "輸入系列代號（如 op15）生成卡盒 Top10 報告與海報。", "zh-Hans": "输入系列代号（如 op15）生成卡盒 Top10 报告与海报。", en: "Input a series code (e.g. op15) to generate a Top 10 cardset report and poster.", ko: "시리즈 코드(예: op15)를 입력하면 카드셋 Top10 보고서와 포스터를 생성합니다." } },
     { name: { "zh-Hant": "市場討論串", "zh-Hans": "市场讨论串", en: "Market Threads", ko: "시장 스레드" }, command: "/market", icon: "lucide:store", desc: { "zh-Hant": "瀏覽市場討論串（WTS / WTB）與快取資訊。", "zh-Hans": "浏览市场讨论串（WTS / WTB）与快取资讯。", en: "Browse market threads (WTS / WTB) and cache information.", ko: "시장 스레드(WTS / WTB)와 캐시 정보를 확인합니다." } },
     { name: { "zh-Hant": "使用者設定", "zh-Hans": "用户设置", en: "User Settings", ko: "사용자 설정" }, command: "/settings", icon: "lucide:wallet-cards", desc: { "zh-Hant": "設定你的預設錢包地址，方便後續指令直接帶入。", "zh-Hans": "设定你的默认钱包地址，方便后续指令直接带入。", en: "Set your default wallet address so later commands can reuse it directly.", ko: "기본 지갑 주소를 설정해 이후 명령에서 바로 재사용할 수 있습니다." } },
     { name: { "zh-Hant": "排行榜", "zh-Hans": "排行榜", en: "Top Ranking", ko: "상위 랭킹" }, command: "/ranking", icon: "lucide:trophy", desc: { "zh-Hant": "查看各項排名 Top 10（文字版）。", "zh-Hans": "查看各项排名 Top 10（文字版）。", en: "View Top 10 rankings in text format.", ko: "각종 Top 10 랭킹을 텍스트로 확인합니다." } },
-    { name: { "zh-Hant": "機器人用量", "zh-Hans": "机器人用量", en: "Bot Usage", ko: "봇 사용량" }, command: "/bot_usage", icon: "lucide:chart-column-big", desc: { "zh-Hant": "查看機器人使用次數（總次數 + 各指令）。", "zh-Hans": "查看机器人使用次数（总次数 + 各指令）。", en: "Check bot usage counts, including total and per-command usage.", ko: "봇 사용 횟수(총합 + 명령어별)를 확인합니다." } },
+    { name: { "zh-Hant": "PACK-RANK", "zh-Hans": "PACK-RANK", en: "PACK-RANK", ko: "PACK-RANK" }, command: "/pack_rank", icon: "lucide:chart-column-big", desc: { "zh-Hant": "用於檢視本月抽卡數量排名。", "zh-Hans": "用于查看本月抽卡数量排名。", en: "Use this to review the monthly pack-opening volume ranking.", ko: "이번 달 추첨(팩 오픈) 수량 랭킹을 확인합니다." } },
   ];
+
+  const STATIC_COMMAND_SHOWCASE = {
+    images: [
+      {
+        src: "./assets/beginner-guide/report_Zekrom_ex_profile.png",
+        caption: {
+          "zh-Hant": "分析流程可直接拉取外部市場成交參照，建立價格判讀依據。",
+          "zh-Hans": "分析流程可直接拉取外部市场成交参考，建立价格判读依据。",
+          en: "The pipeline can pull external sale references to ground pricing judgments.",
+          ko: "분석 파이프라인은 외부 실거래 레퍼런스를 즉시 반영해 가격 판단 근거를 제공합니다.",
+        },
+      },
+      {
+        src: "./assets/beginner-guide/report_Zekrom_ex_data.png",
+        caption: {
+          "zh-Hant": "同卡跨版本可同步輸出比較視圖，提升估值判斷效率。",
+          "zh-Hans": "同卡跨版本可同步输出比较视图，提升估值判断效率。",
+          en: "Cross-version comparison views can be generated in one pass to improve valuation decisions.",
+          ko: "동일 카드의 버전 비교 뷰를 동시에 출력해 평가 의사결정을 빠르게 지원합니다.",
+        },
+      },
+    ],
+  };
 
   const SBT_REQUIREMENT_BY_LANG = {
     "zh-Hant": {
@@ -338,6 +385,7 @@
     faq: STATIC_FAQ,
     toolNames: TOOL_NAME_BY_LANG,
     commands: STATIC_COMMANDS,
+    commandShowcase: STATIC_COMMAND_SHOWCASE,
     sbtRequirements: SBT_REQUIREMENT_BY_LANG,
   };
 })();

@@ -8,10 +8,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
-  <script src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260506-events-admin1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260505-localwebp1" />
-  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260505-localwebp1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260509-beginner-cardsearch5" />
+  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260509-beginner-cardsearch5" />
 </head>
 <body>
   <div class="shell">
@@ -41,7 +41,17 @@
       </div>
     </header>
 
-    <section class="panel observe" style="--delay: 34ms;">
+    <aside id="beginner-scroll-timeline" class="beginner-scroll-timeline" aria-label="Beginner Timeline" data-no-i18n="1">
+      <div class="beginner-scroll-timeline-title">快速導覽</div>
+      <div class="beginner-scroll-timeline-line" aria-hidden="true"></div>
+      <button type="button" class="beginner-scroll-timeline-item is-active" data-beginner-anchor="start">開始</button>
+      <button type="button" class="beginner-scroll-timeline-item" data-beginner-anchor="sbt">SBT</button>
+      <button type="button" class="beginner-scroll-timeline-item" data-beginner-anchor="tcg">TCG</button>
+      <button type="button" class="beginner-scroll-timeline-item" data-beginner-anchor="tools">工具</button>
+      <button type="button" class="beginner-scroll-timeline-item" data-beginner-anchor="faq">FAQ</button>
+    </aside>
+
+    <section id="beginner-anchor-start" class="panel observe" style="--delay: 34ms;">
       <article id="beginner-cover" class="beginner-media beginner-cover-hero observe" style="--delay: 42ms; margin-top: 0.12rem;">
         <img id="beginner-cover-img" loading="lazy" src="" alt="Renaiss Guide Cover" />
       </article>
@@ -57,7 +67,7 @@
       <div id="beginner-md-content" class="beginner-static-guide observe" style="--delay: 92ms;"></div>
     </section>
 
-    <section class="panel observe" style="--delay: 56ms;">
+    <section id="beginner-anchor-tools" class="panel observe" style="--delay: 56ms;">
       <div class="section-head" style="margin-bottom: 0.8rem;">
         <div>
           <h2 id="beginner-tools-title" class="section-title">工具與作者</h2>
@@ -70,7 +80,7 @@
       </div>
     </section>
 
-    <section class="panel observe" style="--delay: 68ms;">
+    <section id="beginner-anchor-faq" class="panel observe" style="--delay: 68ms;">
       <div class="section-head" style="margin-bottom: 0.8rem;">
         <div>
           <h2 id="beginner-faq-title" class="section-title">新手常見問題（FAQ）</h2>
@@ -100,7 +110,7 @@
   </div>
 
   <script src="./assets/index-data.js?v=20260508-card-refresh2"></script>
-  <script src="./assets/beginner-guide-data.js?v=20260505-localwebp1"></script>
-  <script src="./assets/beginner-guide.js?v=20260506-sbt-stars1"></script>
+  <script src="./assets/beginner-guide-data.js?v=20260509-beginner-cardsearch5"></script>
+  <script src="./assets/beginner-guide.js?v=20260509-beginner-cardsearch5"></script>
 </body>
 </html>

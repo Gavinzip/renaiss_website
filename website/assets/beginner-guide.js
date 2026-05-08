@@ -9,6 +9,16 @@
   const coverWrap = document.getElementById("beginner-cover");
   const coverImg = document.getElementById("beginner-cover-img");
   const langSelect = document.getElementById("beginner-lang-select");
+  const timelineEl = document.getElementById("beginner-scroll-timeline");
+  const timelineItems = timelineEl ? Array.from(timelineEl.querySelectorAll("[data-beginner-anchor]")) : [];
+
+  const TIMELINE_KEYS = ["start", "sbt", "tcg", "tools", "faq"];
+  const TIMELINE_LABELS = {
+    "zh-Hant": { start: "開始", sbt: "SBT", tcg: "TCG", tools: "工具", faq: "FAQ", title: "快速導覽" },
+    "zh-Hans": { start: "开始", sbt: "SBT", tcg: "TCG", tools: "工具", faq: "FAQ", title: "快速导览" },
+    en: { start: "Start", sbt: "SBT", tcg: "TCG", tools: "Tools", faq: "FAQ", title: "Quick Nav" },
+    ko: { start: "시작", sbt: "SBT", tcg: "TCG", tools: "도구", faq: "FAQ", title: "빠른 이동" },
+  };
 
   function escapeHtml(value) {
     return String(value || "")
@@ -31,6 +41,41 @@
     if (!raw) return "";
     const escaped = escapeHtml(raw);
     return escaped.replace(/\bSBT\b/, '<span class="beginner-sbt-title-accent">SBT</span>');
+  }
+
+  const CARD_SEARCH_HIGHLIGHT_PHRASES = [
+    "Discord 的 card-search 頻道直接上傳卡圖",
+    "Discord 的 card-search 频道直接上传卡图",
+    "Upload a card image in Discord card-search",
+    "Upload a card image directly in the Discord card-search channel",
+    "Discord의 card-search 채널에 카드 이미지를 직접 업로드",
+    "Discord card-search 채널에 카드 이미지를 올리면",
+  ];
+
+  function renderCardSearchHighlight(value) {
+    const raw = String(value || "");
+    if (!raw) return "";
+    for (const phrase of CARD_SEARCH_HIGHLIGHT_PHRASES) {
+      if (!raw.includes(phrase)) continue;
+      return raw
+        .split(phrase)
+        .map((chunk, index, list) => {
+          const tail = index < list.length - 1
+            ? `<span class="beginner-inline-rainbow beginner-cardsearch-highlight">${escapeHtml(phrase)}</span>`
+            : "";
+          return `${escapeHtml(chunk)}${tail}`;
+        })
+        .join("");
+    }
+    return escapeHtml(raw).replace(/card-search/gi, (token) => `<span class="beginner-inline-rainbow beginner-cardsearch-highlight">${token}</span>`);
+  }
+
+  function sectionAnchorId(section) {
+    const type = String(section && section.type || "").trim();
+    if (type === "sbtChecklist") return "beginner-anchor-sbt";
+    const title = String(section && section.title || "").trim();
+    if (type === "intro" && /(?:^|\s)TCG(?:\s|$)|基礎|基础|Basics|기초/i.test(title)) return "beginner-anchor-tcg";
+    return "";
   }
 
   function normalizeLang(raw) {
@@ -143,11 +188,13 @@
   function renderSection(section, index) {
     const type = String(section && section.type || "intro");
     const title = escapeHtml(section && section.title || "");
+    const anchorId = sectionAnchorId(section);
+    const anchorAttr = anchorId ? ` id="${anchorId}" data-beginner-anchor-target="1"` : "";
     const kicker = `<div class="beginner-section-kicker">${String(index + 1).padStart(2, "0")}</div>`;
     if (type === "intro") {
       const bullets = Array.isArray(section.bullets) ? section.bullets : [];
       return `
-        <section class="beginner-static-section beginner-static-intro">
+        <section${anchorAttr} class="beginner-static-section beginner-static-intro">
           ${kicker}
           <h2>${title}</h2>
           <p>${renderInline(section.text || "")}</p>
@@ -158,7 +205,7 @@
     if (type === "steps") {
       const rows = Array.isArray(section.items) ? section.items : [];
       return `
-        <section class="beginner-static-section">
+        <section${anchorAttr} class="beginner-static-section">
           ${kicker}
           <h2>${title}</h2>
           <div class="beginner-step-grid">
@@ -175,7 +222,7 @@
     }
     if (type === "imageText") {
       return `
-        <section class="beginner-static-section beginner-media-split">
+        <section${anchorAttr} class="beginner-static-section beginner-media-split">
           ${imageHtml(Number(section.image || 0), section.title, "is-cover")}
           <div>
             ${kicker}
@@ -188,7 +235,7 @@
     if (type === "ratings") {
       const rows = Array.isArray(section.items) ? section.items : [];
       return `
-        <section class="beginner-static-section">
+        <section${anchorAttr} class="beginner-static-section">
           ${imageHtml(Number(section.image || 0), section.title, "is-contain")}
           ${kicker}
           <h2>${title}</h2>
@@ -208,7 +255,7 @@
       const bullets = Array.isArray(section.bullets) ? section.bullets : [];
       const primer = Array.isArray(section.primer) ? section.primer : [];
       return `
-        <section class="beginner-static-section beginner-sbt-section">
+        <section${anchorAttr} class="beginner-static-section beginner-sbt-section">
           <div class="beginner-sbt-primer">
             <div class="beginner-sbt-primer-copy">
               <span class="beginner-sbt-pill">Soulbound Token</span>
@@ -237,7 +284,7 @@
     }
     const cards = Array.isArray(section.items) ? section.items : [];
     return `
-      <section class="beginner-static-section">
+      <section${anchorAttr} class="beginner-static-section">
         ${kicker}
         <h2>${title}</h2>
         <div class="beginner-info-grid">
@@ -319,9 +366,12 @@
     const commandCards = commands.map((command, idx) => {
       const desc = command.desc && (command.desc[lang] || command.desc["zh-Hant"]) || "";
       const commandName = localized(command.name, lang, "");
+      const commandMeta = localized(command.meta, lang, "");
       const commandLine = command.command
         ? `<div class="beginner-command-meta">${escapeHtml(labels.commandLabel || "Command")}: <code>${escapeHtml(command.command)}</code></div>`
-        : "";
+        : (commandMeta
+          ? `<div class="beginner-command-meta is-auto"><iconify-icon icon="lucide:sparkles"></iconify-icon>${escapeHtml(commandMeta)}</div>`
+          : "");
       return `
         <article class="beginner-command-card">
           <div class="beginner-command-top">
@@ -329,11 +379,40 @@
             <iconify-icon icon="${escapeHtml(command.icon || "lucide:terminal-square")}"></iconify-icon>
           </div>
           <h4>${escapeHtml(commandName)}</h4>
-          <p>${escapeHtml(desc)}</p>
+          <p>${renderCardSearchHighlight(desc)}</p>
           ${commandLine}
         </article>
       `;
     }).join("");
+    const showcase = data.commandShowcase || {};
+    const showcaseImages = Array.isArray(showcase.images) ? showcase.images : [];
+    const showcaseHtml = showcaseImages.length
+      ? `
+      <section class="beginner-command-focus" aria-label="${escapeHtml(labels.commandsCriticalTitle || "Critical Workflow")}">
+        <div class="beginner-command-focus-head">
+          <span class="beginner-command-focus-tag"><iconify-icon icon="lucide:alert-triangle"></iconify-icon>${escapeHtml(labels.commandsCriticalTag || "High Priority")}</span>
+          <h4>${escapeHtml(labels.commandsCriticalTitle || "")}</h4>
+          <p>${renderCardSearchHighlight(labels.commandsCriticalDesc || "")}</p>
+          <p class="beginner-command-focus-note">${escapeHtml(labels.commandsCriticalHint || "")}</p>
+          <div class="beginner-command-focus-gallery-title">${escapeHtml(labels.commandsExamplesTitle || "")}</div>
+          <div class="beginner-command-focus-gallery-note">${escapeHtml(labels.commandsExamplesNote || "")}</div>
+        </div>
+        <div class="beginner-command-focus-gallery">
+          ${showcaseImages.map((item, idx) => {
+            const src = String(item && item.src || "").trim();
+            if (!src) return "";
+            const caption = localized(item.caption, lang, "");
+            return `
+              <figure class="beginner-command-focus-figure">
+                <img loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(caption || `Command showcase ${idx + 1}`)}" />
+                ${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}
+              </figure>
+            `;
+          }).join("")}
+        </div>
+      </section>
+      `
+      : "";
     toolsEl.innerHTML = `
       <div class="beginner-tools-subhead">
         <div>
@@ -344,12 +423,13 @@
       <div class="beginner-tools-grid">${toolCards}</div>
       <div class="beginner-tools-subhead">
         <div>
-          <h3>${escapeHtml(labels.commandsTitle || "TCG Pro Discord 指令清單")}</h3>
+          <h3 class="beginner-commands-title-rainbow">${escapeHtml(labels.commandsTitle || "TCG Pro Discord 指令清單")}</h3>
           <p>${escapeHtml(labels.commandsSubtitle || "")}</p>
           <p class="beginner-command-owner">${escapeHtml(labels.commandsOwner || "")}</p>
         </div>
       </div>
       <div class="beginner-command-grid">${commandCards}</div>
+      ${showcaseHtml}
     `;
   }
 
@@ -373,12 +453,85 @@
     availableCount.innerHTML = `<iconify-icon icon="lucide:clock-3"></iconify-icon>${rows.length} ${labels.items || "items"}`;
   }
 
+  function timelineAnchorId(key) {
+    if (key === "start") return "beginner-anchor-start";
+    if (key === "sbt") return "beginner-anchor-sbt";
+    if (key === "tcg") return "beginner-anchor-tcg";
+    if (key === "tools") return "beginner-anchor-tools";
+    if (key === "faq") return "beginner-anchor-faq";
+    return "";
+  }
+
+  function timelineTarget(key) {
+    const id = timelineAnchorId(key);
+    if (!id) return null;
+    return document.getElementById(id);
+  }
+
+  function setActiveTimelineKey(activeKey) {
+    timelineItems.forEach((item) => {
+      const key = String(item.getAttribute("data-beginner-anchor") || "").trim();
+      item.classList.toggle("is-active", key === activeKey);
+    });
+  }
+
+  function syncTimelineActive() {
+    if (!timelineItems.length) return;
+    const currentY = window.scrollY + 140;
+    let activeKey = "start";
+    TIMELINE_KEYS.forEach((key) => {
+      const el = timelineTarget(key);
+      if (!el) return;
+      if (el.offsetTop <= currentY) activeKey = key;
+    });
+    setActiveTimelineKey(activeKey);
+  }
+
+  let timelineTicking = false;
+  function queueTimelineSync() {
+    if (timelineTicking) return;
+    timelineTicking = true;
+    window.requestAnimationFrame(() => {
+      timelineTicking = false;
+      syncTimelineActive();
+    });
+  }
+
+  function bindTimelineNav() {
+    if (!timelineItems.length) return;
+    timelineItems.forEach((item) => {
+      if (item.dataset.boundTimeline === "1") return;
+      item.dataset.boundTimeline = "1";
+      item.addEventListener("click", () => {
+        const key = String(item.getAttribute("data-beginner-anchor") || "").trim();
+        const target = timelineTarget(key);
+        if (!target) return;
+        setActiveTimelineKey(key);
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  }
+
+  function updateTimelineLocale(lang) {
+    if (!timelineEl || !timelineItems.length) return;
+    const labels = TIMELINE_LABELS[lang] || TIMELINE_LABELS["zh-Hant"];
+    const titleEl = timelineEl.querySelector(".beginner-scroll-timeline-title");
+    if (titleEl) titleEl.textContent = labels.title;
+    timelineItems.forEach((item) => {
+      const key = String(item.getAttribute("data-beginner-anchor") || "").trim();
+      if (!labels[key]) return;
+      item.textContent = labels[key];
+    });
+  }
+
   function renderStaticPage(lang) {
     const tag = saveLang(lang);
     renderStaticGuide(tag);
     renderStaticTools(tag);
     renderStaticFaq(tag);
     renderStaticSbt(tag);
+    updateTimelineLocale(tag);
+    syncTimelineActive();
   }
 
   function observeSections() {
@@ -407,6 +560,9 @@
 
   const requestedLang = new URLSearchParams(window.location.search).get("lang");
   renderStaticPage(requestedLang || currentLang());
+  bindTimelineNav();
+  window.addEventListener("scroll", queueTimelineSync, { passive: true });
+  window.addEventListener("resize", queueTimelineSync);
   if (langSelect) {
     langSelect.addEventListener("change", () => {
       renderStaticPage(langSelect.value);
