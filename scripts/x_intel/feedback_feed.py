@@ -28,6 +28,17 @@ def _feedback_memory_sync_enabled() -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 DEFAULT_MEMORY_RULES = [
     "只有明確有參與行為、時間、地點、直播、報名或 join/register 等訊號，才把 card_type 判成 event。",
     "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；這類內容通常應放入 sbt 與 alpha/topic label。",
@@ -38,6 +49,10 @@ DEFAULT_MEMORY_RULES = [
     "社群精選分區使用 community；只能收 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文。Discord 與官方帳號不放 community。",
     "other 代表無/待人工分類，不是社群精選，也不是 5。",
 ]
+
+
+DEFAULT_FEED_MEMORY_RETENTION_DAYS = 30
+DEFAULT_FEED_QUEUE_RETENTION_DAYS = 30
 
 
 FORCED_COLLECTIBLES_CHANNEL_ID = "1480867987270402149"
@@ -1201,6 +1216,71 @@ def _public_cards(cards: list[StoryCard]) -> list[StoryCard]:
     return [card for card in cards if not _is_admin_queue_card(card)]
 
 
+def _card_memory_datetime(card: StoryCard) -> datetime | None:
+    dates = [
+        _parse_iso_safe(card.timeline_end_date),
+        _parse_iso_safe(card.timeline_date),
+        _parse_iso_safe(card.published_at),
+    ]
+    valid_dates = [dt for dt in dates if dt is not None]
+    if not valid_dates:
+        return None
+    return max(valid_dates)
+
+
+def prune_expired_feed_memory(
+    cards: list[StoryCard],
+    *,
+    force_ids: set[str],
+    now: datetime | None = None,
+    memory_days: int | None = None,
+    queue_days: int | None = None,
+) -> tuple[list[StoryCard], dict[str, int]]:
+    now_dt = now or datetime.now(timezone.utc)
+    memory_retention_days = int(memory_days or _env_positive_int("INTEL_FEED_MEMORY_RETENTION_DAYS", DEFAULT_FEED_MEMORY_RETENTION_DAYS))
+    queue_retention_days = int(queue_days or _env_positive_int("INTEL_FEED_QUEUE_RETENTION_DAYS", DEFAULT_FEED_QUEUE_RETENTION_DAYS))
+    public_cutoff = now_dt - timedelta(days=memory_retention_days)
+    queue_cutoff = now_dt - timedelta(days=queue_retention_days)
+    kept: list[StoryCard] = []
+    removed_public = 0
+    removed_queue = 0
+    kept_forced = 0
+    kept_unknown_date = 0
+
+    for card in cards:
+        cid = str(card.id or "").strip()
+        if cid and (cid in force_ids or card.manual_pick or card.manual_pin or card.manual_bottom):
+            kept.append(card)
+            kept_forced += 1
+            continue
+
+        dt = _card_memory_datetime(card)
+        if dt is None:
+            kept.append(card)
+            kept_unknown_date += 1
+            continue
+
+        if _is_admin_queue_card(card):
+            if dt < queue_cutoff:
+                removed_queue += 1
+                continue
+        elif dt < public_cutoff:
+            removed_public += 1
+            continue
+        kept.append(card)
+
+    return kept, {
+        "memory_retention_days": memory_retention_days,
+        "queue_retention_days": queue_retention_days,
+        "removed_public": removed_public,
+        "removed_queue": removed_queue,
+        "kept_forced": kept_forced,
+        "kept_unknown_date": kept_unknown_date,
+        "input_total": len(cards),
+        "output_total": len(kept),
+    }
+
+
 def _is_official_x_source_card(card: StoryCard) -> bool:
     if not is_official_account_handle(card.account):
         return False
@@ -1999,7 +2079,6 @@ def sync_accounts(
     since_dt = datetime.now(timezone.utc) - timedelta(days=window_days)
     preserved_raw_by_id = _read_existing_feed_card_payloads()
     existing_cards = _read_existing_feed_cards()
-    existing_ids = _card_ids(existing_cards)
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
@@ -2056,6 +2135,8 @@ def sync_accounts(
     pin_ids = set(picks["pin_ids"])
     bottom_ids = set(picks["bottom_ids"])
     force_ids = include_ids | pin_ids | bottom_ids
+    existing_cards, retention_stats = prune_expired_feed_memory(existing_cards, force_ids=force_ids)
+    existing_ids = _card_ids(existing_cards)
 
     manual_path = data_dir() / "x_intel_manual_entries.json"
     manual_raw = read_json(manual_path, [])
@@ -2137,9 +2218,10 @@ def sync_accounts(
         _enforce_fixed_channel_topic_labels(new_source_cards)
 
     queue_cards: list[StoryCard] = []
+    public_existing_memory_cards = _public_cards(preserved_cards)
     new_source_cards, queued_existing_dupes = _queue_new_duplicates_against_existing(
         new_source_cards,
-        preserved_cards,
+        public_existing_memory_cards,
         force_ids=force_ids,
     )
     queue_cards.extend(queued_existing_dupes)
@@ -2291,8 +2373,18 @@ def sync_accounts(
         "ai_removed": int(ai_deduped),
         "local_removed": int(local_deduped),
     }
+    payload["retention_stats"] = retention_stats
     payload["pipeline_counts"] = {
         "merged_total": int(merged_total),
+        "retention_input_total": int(retention_stats.get("input_total", 0)),
+        "retention_output_total": int(retention_stats.get("output_total", 0)),
+        "removed_by_retention": int(retention_stats.get("removed_public", 0)) + int(retention_stats.get("removed_queue", 0)),
+        "removed_by_retention_public": int(retention_stats.get("removed_public", 0)),
+        "removed_by_retention_queue": int(retention_stats.get("removed_queue", 0)),
+        "retention_kept_forced": int(retention_stats.get("kept_forced", 0)),
+        "retention_kept_unknown_date": int(retention_stats.get("kept_unknown_date", 0)),
+        "retention_memory_days": int(retention_stats.get("memory_retention_days", 0)),
+        "retention_queue_days": int(retention_stats.get("queue_retention_days", 0)),
         "preserved_total": int(len(existing_cards)),
         "preserved_visible_total": int(len(preserved_cards)),
         "new_candidate_total": int(len(merged_new_cards)),
