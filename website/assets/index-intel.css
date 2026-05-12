@@ -2020,6 +2020,24 @@
       padding: 1rem 0.8rem;
     }
 
+    .events-author-note {
+      margin: 0.9rem 0 0;
+      color: rgba(58, 83, 111, 0.68);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .events-author-note a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .events-author-note a:hover {
+      color: #246caa;
+      text-decoration: underline;
+    }
+
     .intel-master-card {
       display: flex;
       flex-direction: column;

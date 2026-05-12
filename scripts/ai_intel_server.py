@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import hmac
 import json
@@ -1697,8 +1698,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             with target.open("rb") as fh:
                 self.copyfile(fh, self.wfile)
-        except BrokenPipeError:
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return True
+        except OSError as exc:
+            if exc.errno in {errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT}:
+                return True
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "failed to read data file")
         except Exception:
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "failed to read data file")
         return True
