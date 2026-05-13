@@ -220,6 +220,7 @@
     let intelFeedPrefetchArmed = false;
     let intelFeedPrefetchStarted = false;
     const intelFeedLangInflight = new Map();
+    let intelAuthStateRequest = null;
     let pokemonNewsAutoRequested = false;
 
     function isUsableIntelFeed(feed) {
@@ -845,45 +846,54 @@
     }
 
     async function fetchIntelAuthState() {
-      intelAuthState.checking = true;
-      updateIntelAuthUi();
-      try {
-        const response = await fetch(intelApiUrl("/api/auth/me"), {
-          method: "GET",
-          credentials: "include",
-          headers: buildIntelAuthHeaders(),
-          cache: "no-store",
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.ok) {
-          throw new Error(data?.error || `HTTP ${response.status}`);
-        }
-        const token = String(data?.token || "").trim();
-        if (token) {
-          saveIntelAuthToken(token);
-        }
-        intelAuthState.ready = true;
-        intelAuthState.authRequired = Boolean(data?.auth_required);
-        intelAuthState.authConfigured = Boolean(data?.auth_configured);
-        intelAuthState.authenticated = Boolean(data?.authenticated);
-        intelAuthState.user = String(data?.user || "");
-        intelAuthState.mode = String(data?.mode || "");
-        intelAuthState.error = String(data?.error || "");
-        if (intelAuthState.authRequired && !intelAuthState.authenticated) {
-          clearIntelAuthToken();
-        }
-      } catch (error) {
-        intelAuthState.ready = true;
-        intelAuthState.authRequired = true;
-        intelAuthState.authConfigured = false;
-        intelAuthState.authenticated = false;
-        intelAuthState.user = "";
-        intelAuthState.mode = "auth-check-failed";
-        intelAuthState.error = String(error?.message || "");
-        clearIntelAuthToken();
-      } finally {
-        intelAuthState.checking = false;
+      if (intelAuthStateRequest) return intelAuthStateRequest;
+      intelAuthStateRequest = (async () => {
+        intelAuthState.checking = true;
         updateIntelAuthUi();
+        try {
+          const response = await fetch(intelApiUrl("/api/auth/me"), {
+            method: "GET",
+            credentials: "include",
+            headers: buildIntelAuthHeaders(),
+            cache: "no-store",
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data?.ok) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+          }
+          const token = String(data?.token || "").trim();
+          if (token) {
+            saveIntelAuthToken(token);
+          }
+          intelAuthState.ready = true;
+          intelAuthState.authRequired = Boolean(data?.auth_required);
+          intelAuthState.authConfigured = Boolean(data?.auth_configured);
+          intelAuthState.authenticated = Boolean(data?.authenticated);
+          intelAuthState.user = String(data?.user || "");
+          intelAuthState.mode = String(data?.mode || "");
+          intelAuthState.error = String(data?.error || "");
+          if (intelAuthState.authRequired && !intelAuthState.authenticated) {
+            clearIntelAuthToken();
+          }
+        } catch (error) {
+          intelAuthState.ready = true;
+          intelAuthState.authRequired = true;
+          intelAuthState.authConfigured = false;
+          intelAuthState.authenticated = false;
+          intelAuthState.user = "";
+          intelAuthState.mode = "auth-check-failed";
+          intelAuthState.error = String(error?.message || "");
+          clearIntelAuthToken();
+        } finally {
+          intelAuthState.checking = false;
+          intelAuthStateRequest = null;
+          updateIntelAuthUi();
+        }
+      })();
+      try {
+        return await intelAuthStateRequest;
+      } finally {
+        intelAuthStateRequest = null;
       }
     }
 
@@ -1126,7 +1136,8 @@
       const glance = cardPrimaryHighlight(card);
       const summary = cleanMasterSummary(card?.summary || "");
       const coverRaw = String(card?.cover_image || "").trim();
-      const cover = (typeof resolveCoverImageUrl === "function") ? resolveCoverImageUrl(coverRaw) : coverRaw;
+      const coverResolved = (typeof resolveCoverImageUrl === "function") ? resolveCoverImageUrl(coverRaw) : coverRaw;
+      const cover = safeUrl(coverResolved, "");
       const coverHtml = /^https?:\/\//i.test(cover)
         ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" onerror="this.closest('.intel-detail-cover')?.remove()" />`
         : `<div class="intel-detail-cover-empty">${escapeHtml(uiLabel("noImage"))}</div>`;
@@ -1185,7 +1196,7 @@
       const tagHtml = labels.length
         ? `<div class="intel-detail-tags">${labels.map((x) => `<span class="intel-detail-tag">${escapeHtml(routeLabelName(x) || translateDisplayLabel(x) || String(x))}</span>`).join("")}</div>`
         : "";
-      const url = String(card?.url || "").trim();
+      const url = safeUrl(card?.url || "", "");
       const sourceHtml = url
         ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
@@ -1488,9 +1499,9 @@
       const detailHtml = detailLines.length
         ? `<ul class="intel-detail-list">${detailLines.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
         : "";
-      const url = String(item?.url || "").trim();
+      const url = safeUrl(item?.url || "", "");
       const sourceHtml = url
-        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${uiLabel("originalSource")}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
+        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
       return `
         <div class="intel-detail-top">
@@ -2044,12 +2055,21 @@
       return payload;
     }
 
+    function applyReturnedIntelFeed(data) {
+      const feed = data?.feed;
+      if (!feed || typeof feed !== "object") return false;
+      renderIntelFeed(feed);
+      scheduleLangFeedRefresh(feed);
+      return true;
+    }
+
     function prefetchIntelFeeds() {
-      if (location.protocol === "file:" || intelFeedPrefetchStarted) return;
+      if (location.protocol === "file:" || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchStarted = true;
       const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
       langs.forEach((lang, index) => {
         window.setTimeout(() => {
+          if (intelCanEdit()) return;
           if (isUsableIntelFeed(intelFeedLangCache.get(lang))) return;
           fetchIntelFeed(lang, { allowSnapshot: false })
             .then((payload) => {
@@ -2065,7 +2085,7 @@
     }
 
     function scheduleIntelFeedPrefetchOnActivity() {
-      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted) return;
+      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchArmed = true;
       const events = ["scroll", "pointerdown", "keydown", "touchstart"];
       let timeoutId = 0;
@@ -2548,7 +2568,7 @@
       } else {
         listEl.innerHTML = rows.slice(0, 8).map((item, index) => {
           const title = String(item?.summary_title || item?.title || item?.url || uiLabel("unnamedPost"));
-          const url = String(item?.url || "");
+          const url = safeUrl(item?.url || "", "");
           const source = String(item?.source || "").trim() || "unknown";
           const dateText = String(item?.date || "").trim();
           const summary = String(item?.summary || item?.snippet || "").trim();
@@ -2557,10 +2577,10 @@
           const pointHtml = points.length
             ? `<ul class="pokemon-news-points">${cardPoints.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
             : "";
-          const titleHtml = url.startsWith("http")
+          const titleHtml = /^https?:\/\//i.test(url)
             ? `<a class="pokemon-news-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
             : `<div class="pokemon-news-title">${escapeHtml(title)}</div>`;
-          const linkHtml = url.startsWith("http")
+          const linkHtml = /^https?:\/\//i.test(url)
             ? `<a class="pokemon-news-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>`
             : "";
           return `
@@ -2706,8 +2726,10 @@
     }
 
     async function submitIntelPick(id, action, reason = "") {
-      await postIntel("/api/intel/pick", { id, action, reason });
-      await refreshIntelFeedForCurrentLang();
+      const data = await postIntel("/api/intel/pick", { id, action, reason });
+      if (!applyReturnedIntelFeed(data)) {
+        await refreshIntelFeedForCurrentLang();
+      }
     }
 
     async function submitIntelFeedback(id, defaultLabel = "insight") {
@@ -2736,47 +2758,47 @@
         return false;
       }
       const data = await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
-      if (data?.feed && typeof data.feed === "object") {
-        renderIntelFeed(data.feed);
-        scheduleLangFeedRefresh(data.feed);
-      } else {
+      if (!applyReturnedIntelFeed(data)) {
         await refreshIntelFeedForCurrentLang();
       }
       return true;
     }
 
     async function submitIntelTimelineUpdate(id, timelineDate = "", timelineEndDate = "") {
-      await postIntel("/api/intel/timeline", {
+      const data = await postIntel("/api/intel/timeline", {
         id,
         timeline_date: String(timelineDate || "").trim(),
         timeline_end_date: String(timelineEndDate || "").trim(),
       });
-      await refreshIntelFeedForCurrentLang();
+      if (!applyReturnedIntelFeed(data)) {
+        await refreshIntelFeedForCurrentLang();
+      }
     }
 
     async function submitIntelSbtUpdate(id, sbtNames = "", sbtAcquisition = "") {
-      await postIntel("/api/intel/sbt-fields", {
+      const data = await postIntel("/api/intel/sbt-fields", {
         id,
         sbt_names: String(sbtNames || "").trim(),
         sbt_acquisition: String(sbtAcquisition || "").trim(),
       });
-      await refreshIntelFeedForCurrentLang();
+      if (!applyReturnedIntelFeed(data)) {
+        await refreshIntelFeedForCurrentLang();
+      }
     }
 
     async function submitIntelEventWallUpdate(id, eventWall) {
-      await postIntel("/api/intel/event-wall", {
+      const data = await postIntel("/api/intel/event-wall", {
         id,
         event_wall: Boolean(eventWall),
       });
-      await refreshIntelFeedForCurrentLang();
+      if (!applyReturnedIntelFeed(data)) {
+        await refreshIntelFeedForCurrentLang();
+      }
     }
 
     async function submitIntelContentRefresh(id) {
       const data = await postIntel("/api/intel/refresh-content", { id });
-      if (data?.feed && typeof data.feed === "object") {
-        renderIntelFeed(data.feed);
-        scheduleLangFeedRefresh(data.feed);
-      } else {
+      if (!applyReturnedIntelFeed(data)) {
         await refreshIntelFeedForCurrentLang();
       }
       return data || {};
@@ -3017,6 +3039,11 @@
     });
 
     async function renderIntelOnLoad() {
+      if (!intelAuthState.ready && location.protocol !== "file:") {
+        try {
+          await fetchIntelAuthState();
+        } catch (_error) {}
+      }
       try {
         await refreshIntelFeedForCurrentLang();
         prefetchIntelFeeds();

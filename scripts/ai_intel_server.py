@@ -32,6 +32,7 @@ from x_intel_core import (
     add_classification_feedback,
     add_classification_feedback_fields,
     add_manual_tweet,
+    apply_manual_selection_to_feed_snapshot,
     feedback_memory_stats,
     load_environment,
     read_x_source_config,
@@ -1733,6 +1734,41 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
         self.send_header("Vary", "Origin")
 
+    def _set_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+        )
+
+    def end_headers(self) -> None:
+        self._set_security_headers()
+        super().end_headers()
+
+    def _request_host_origin(self) -> str:
+        host = str(self.headers.get("Host") or "").strip()
+        if not host:
+            return ""
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        if proto not in {"http", "https"}:
+            proto = "https" if self._is_secure_cookie() else "http"
+        return f"{proto}://{host}"
+
+    def _is_trusted_write_origin(self) -> bool:
+        origin = self._request_origin()
+        if not origin:
+            return True
+        if "*" in ALLOWED_ORIGINS or origin in ALLOWED_ORIGINS:
+            return True
+        host_origin = self._request_host_origin()
+        if origin == host_origin:
+            return True
+        host = str(self.headers.get("Host") or "").strip()
+        return bool(host and origin in {f"http://{host}", f"https://{host}"})
+
     def _is_secure_cookie(self) -> bool:
         if COOKIE_SECURE_ENV in {"1", "true", "yes", "y", "on"}:
             return True
@@ -1894,6 +1930,9 @@ class Handler(SimpleHTTPRequestHandler):
     def _require_admin(self, path: str) -> bool:
         if path not in PROTECTED_POST_PATHS:
             return True
+        if not self._is_trusted_write_origin():
+            self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
+            return False
         return self._require_admin_access()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -2114,9 +2153,14 @@ class Handler(SimpleHTTPRequestHandler):
                 feedback = None
                 if action == "exclude" and reason:
                     feedback = add_classification_feedback(tweet_id, "exclude", reason=reason)
-                result = sync_accounts()
+                mode = "snapshot"
+                try:
+                    result = apply_manual_selection_to_feed_snapshot(tweet_id, action)
+                except Exception as exc:
+                    mode = f"resync:{exc}"
+                    result = sync_accounts()
                 build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
-                self._send_json({"ok": True, "selection": selection, "feedback": feedback, "feed": result})
+                self._send_json({"ok": True, "selection": selection, "feedback": feedback, "mode": mode, "feed": result})
                 return
 
             if path == "/api/intel/timeline":

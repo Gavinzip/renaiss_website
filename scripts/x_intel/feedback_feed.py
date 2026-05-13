@@ -53,6 +53,7 @@ DEFAULT_MEMORY_RULES = [
 
 DEFAULT_FEED_MEMORY_RETENTION_DAYS = 30
 DEFAULT_FEED_QUEUE_RETENTION_DAYS = 30
+DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT = 8
 
 
 FORCED_COLLECTIBLES_CHANNEL_ID = "1480867987270402149"
@@ -92,6 +93,8 @@ def _is_forced_pokemon_account(account: Any) -> bool:
 
 def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
     for card in cards:
+        if str(card.classified_by or "").strip().lower() in {"ai", "manual"}:
+            continue
         labels = normalize_topic_labels(card.topic_labels)
         if _is_forced_collectibles_channel_card(card):
             labels = normalize_topic_labels([*labels, "collectibles"])
@@ -105,6 +108,8 @@ def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
 
 def _enforce_fixed_channel_payload_fields(item: dict[str, Any]) -> None:
     if not isinstance(item, dict):
+        return
+    if str(item.get("classified_by") or "").strip().lower() in {"ai", "manual"}:
         return
     if _is_forced_pokemon_account(item.get("account")):
         item["topic_labels"] = ["pokemon"]
@@ -122,11 +127,14 @@ def _ensure_forced_collectibles_cards_in_curated(
     for card in source_cards:
         if not _is_forced_collectibles_channel_card(card):
             continue
+        if str(card.classified_by or "").strip().lower() in {"ai", "manual"} and "collectibles" not in normalize_topic_labels(card.topic_labels):
+            continue
         card_id = str(card.id or "").strip()
         if not card_id or card_id in existing_ids:
             continue
-        labels = normalize_topic_labels([*(card.topic_labels or []), "collectibles"])
-        card.topic_labels = labels if labels else ["collectibles"]
+        if str(card.classified_by or "").strip().lower() not in {"ai", "manual"}:
+            labels = normalize_topic_labels([*(card.topic_labels or []), "collectibles"])
+            card.topic_labels = labels if labels else ["collectibles"]
         out.append(card)
         existing_ids.add(card_id)
     return out
@@ -247,6 +255,15 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         dedupe_winner_post_id=str(item.get("dedupe_winner_post_id") or ""),
         dedupe_winner_url=str(item.get("dedupe_winner_url") or ""),
         dedupe_winner_title=str(item.get("dedupe_winner_title") or ""),
+        number_facts=normalize_number_facts(item.get("number_facts")),
+        classified_by=str(item.get("classified_by") or "legacy"),
+        ai_model=str(item.get("ai_model") or ""),
+        ai_version=str(item.get("ai_version") or ""),
+        ai_confidence=float(item.get("ai_confidence") or 0.0),
+        ai_status=str(item.get("ai_status") or "legacy_unverified"),
+        review_status=str(item.get("review_status") or ""),
+        classification_reason=str(item.get("classification_reason") or ""),
+        classification_error=str(item.get("classification_error") or ""),
     )
 
 
@@ -684,7 +701,6 @@ def update_card_classification_fields(
             _apply_card_type_override(card, next_card_type)
         if next_topic_labels:
             _apply_topic_label_override(card, next_topic_labels, exact=True)
-        _enforce_fixed_channel_topic_labels([card])
         item.update(
             {
                 "card_type": card.card_type,
@@ -696,6 +712,14 @@ def update_card_classification_fields(
                 "urgency": card.urgency,
                 "topic_labels": normalize_topic_labels(card.topic_labels),
                 "event_wall": bool(card.event_wall),
+                "classified_by": card.classified_by,
+                "ai_model": card.ai_model,
+                "ai_version": card.ai_version,
+                "ai_confidence": card.ai_confidence,
+                "ai_status": card.ai_status,
+                "review_status": card.review_status,
+                "classification_reason": card.classification_reason,
+                "classification_error": card.classification_error,
             }
         )
         updated_card = item
@@ -728,6 +752,19 @@ CONTENT_REFRESH_FIELDS = {
     "detail_summary",
     "detail_lines",
     "urgency",
+    "card_type",
+    "layout",
+    "template_id",
+    "topic_labels",
+    "number_facts",
+    "classified_by",
+    "ai_model",
+    "ai_version",
+    "ai_confidence",
+    "ai_status",
+    "review_status",
+    "classification_reason",
+    "classification_error",
 }
 
 CONTENT_REFRESH_PRESERVED_FIELDS = {
@@ -752,88 +789,19 @@ CONTENT_REFRESH_PRESERVED_FIELDS = {
     "dedupe_winner_title",
 }
 
-ADMIN_QUEUE_TAG_RE = re.compile(r"(去重淘汰|篩選淘汰|淘汰)")
-
-
-def _refresh_content_signature(card: StoryCard) -> tuple[Any, ...]:
-    return (
-        str(card.title or ""),
-        str(card.summary or ""),
-        tuple(str(x) for x in (card.bullets or [])),
-        str(card.detail_summary or ""),
-        tuple(str(x) for x in (card.detail_lines or [])),
-    )
-
-
-def _merge_refreshed_tags(original_tags: Any, refreshed_tags: Any) -> list[str]:
-    original = [clean_text(str(x)) for x in (original_tags or []) if clean_text(str(x))] if isinstance(original_tags, list) else []
-    refreshed = [clean_text(str(x)) for x in (refreshed_tags or []) if clean_text(str(x))] if isinstance(refreshed_tags, list) else []
-    queue_tags = [tag for tag in original if ADMIN_QUEUE_TAG_RE.search(tag)]
-    merged: list[str] = []
-    for tag in [*queue_tags, *refreshed, *original]:
-        if not tag or tag in merged:
-            continue
-        merged.append(tag[:16])
-        if len(merged) >= 3:
-            break
-    return merged
-
-
-def _apply_local_content_refresh(card: StoryCard) -> None:
-    source = clean_text(card.raw_text or " ".join([card.title or "", card.summary or "", " ".join(card.bullets or [])]))
-    if not source:
-        return
-    fallback = build_editorial_copy(source, card.card_type, card.account)
-    title = clean_text(str(fallback.get("title") or ""))
-    summary = clean_text(str(fallback.get("summary") or ""))
-    bullets_raw = fallback.get("bullets") if isinstance(fallback.get("bullets"), list) else []
-    if title:
-        card.title = title[:120]
-    if summary:
-        card.summary = summary[:320]
-    bullets = [clean_text(str(x))[:120] for x in bullets_raw if clean_text(str(x))]
-    if bullets:
-        card.bullets = bullets[:3]
-    enrich_detail_view(card)
-    card.importance = score_card(card)
-    enrich_card_metadata(card)
-    normalize_card_semantics(card, preserve_type=True)
-
-
-def _align_refreshed_text_year(card: StoryCard) -> None:
-    timeline = _parse_iso_safe(card.timeline_date)
-    published = _parse_iso_safe(card.published_at)
-    reference = timeline or published
-    if not reference:
-        return
-    year = reference.year
-    if not year:
-        return
-    raw_text = str(card.raw_text or "")
-    cn_date_re = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号|號)?")
-
-    def fix_year(match: re.Match[str]) -> str:
-        found_year = int(match.group(1))
-        month = int(match.group(2))
-        day = int(match.group(3))
-        if found_year == year or str(found_year) in raw_text:
-            return match.group(0)
-        return f"{year}年{month}月{day}日"
-
-    def fix(value: Any) -> Any:
-        if not isinstance(value, str) or not value:
-            return value
-        return cn_date_re.sub(fix_year, value)
-
-    card.title = fix(card.title)
-    card.summary = fix(card.summary)
-    card.detail_summary = fix(card.detail_summary)
-    card.bullets = [fix(x) for x in (card.bullets or [])]
-    card.detail_lines = [fix(x) for x in (card.detail_lines or [])]
-
+CONTENT_REFRESH_CLASSIFICATION_FIELDS = {
+    "card_type",
+    "layout",
+    "template_id",
+    "topic_labels",
+    "event_facts",
+    "timeline_date",
+    "timeline_end_date",
+    "event_wall",
+}
 
 def refresh_card_content(tweet_id: str) -> dict[str, Any]:
-    """Regenerate a card's wording without changing its classification or admin fields."""
+    """Regenerate a card through the AI-first classifier."""
     tid = str(tweet_id or "").strip()
     if not tid:
         raise ValueError("tweet id is required")
@@ -857,11 +825,17 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
         raise ValueError("card not found")
 
     card = _story_card_from_payload(original)
-    preserved = {key: original.get(key) for key in CONTENT_REFRESH_PRESERVED_FIELDS if key in original}
-    original_tags = original.get("tags")
+    manual_locked = (
+        str(original.get("classified_by") or "").strip().lower() == "manual"
+        or str(original.get("review_status") or "").strip() == AI_REVIEW_ADMIN_OVERRIDDEN
+    )
+    preserved = {
+        key: original.get(key)
+        for key in CONTENT_REFRESH_PRESERVED_FIELDS
+        if key in original and (manual_locked or key not in CONTENT_REFRESH_CLASSIFICATION_FIELDS)
+    }
 
-    before_ai = _refresh_content_signature(card)
-    mode = "fallback"
+    mode = "admin_queue"
     api_key = resolve_minimax_key()
     if api_key:
         try:
@@ -875,21 +849,15 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
             connect_timeout_override=5.0,
             read_timeout_override=max(60.0, refresh_read_timeout),
         )
-        if _refresh_content_signature(card) != before_ai:
-            mode = "ai"
-    if mode != "ai":
-        _apply_local_content_refresh(card)
+        mode = "ai" if str(card.ai_status or "") == "ok" else "admin_queue"
+    else:
+        _set_ai_review_queue(card, "missing_ai_key")
 
-    normalize_card_semantics(card, preserve_type=True)
-    refresh_card_routing_fields(card, keep_existing_topics=True)
-    _enforce_fixed_channel_topic_labels([card])
-    _align_refreshed_text_year(card)
     refreshed = card.to_dict()
     updated = dict(original)
     for key in CONTENT_REFRESH_FIELDS:
         if key in refreshed:
             updated[key] = refreshed.get(key)
-    updated["tags"] = _merge_refreshed_tags(original_tags, updated.get("tags"))
     updated.update(preserved)
     _enforce_fixed_channel_payload_fields(updated)
 
@@ -987,6 +955,16 @@ def _mark_feedback_tag(card: StoryCard) -> None:
     card.confidence = max(0.82, float(card.confidence or 0.0))
 
 
+def _mark_manual_classification(card: StoryCard) -> None:
+    card.classified_by = "manual"
+    card.review_status = AI_REVIEW_ADMIN_OVERRIDDEN
+    card.ai_status = "manual_override"
+    card.classification_error = ""
+    card.classification_reason = "管理員手動覆寫分類。"
+    if not card.ai_version:
+        card.ai_version = AI_CLASSIFICATION_VERSION
+
+
 def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
     label = str(card_type or "").strip().lower()
     if label not in ALLOWED_CARD_TYPES:
@@ -1003,6 +981,7 @@ def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
         card.event_facts = {}
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
     _mark_feedback_tag(card)
+    _mark_manual_classification(card)
     return changed
 
 
@@ -1012,6 +991,7 @@ def _apply_topic_label_override(card: StoryCard, labels: list[str], *, exact: bo
         return
     card.topic_labels = normalized if exact else normalize_topic_labels([*(card.topic_labels or []), *normalized])
     _mark_feedback_tag(card)
+    _mark_manual_classification(card)
 
 
 def apply_feedback_overrides(cards: list[StoryCard]) -> dict[str, Any]:
@@ -1143,6 +1123,87 @@ def set_manual_selection(tweet_id: str, action: str) -> dict[str, Any]:
     }
 
 
+def _refresh_snapshot_counts(payload: dict[str, Any]) -> None:
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        return
+    payload["total_cards"] = len(cards)
+    payload["layout_counts"] = {
+        "poster": sum(1 for c in cards if isinstance(c, dict) and c.get("layout") == "poster"),
+        "brief": sum(1 for c in cards if isinstance(c, dict) and c.get("layout") == "brief"),
+        "data": sum(1 for c in cards if isinstance(c, dict) and c.get("layout") == "data"),
+        "timeline": sum(1 for c in cards if isinstance(c, dict) and c.get("layout") == "timeline"),
+    }
+
+
+def apply_manual_selection_to_feed_snapshot(tweet_id: str, action: str) -> dict[str, Any]:
+    """Apply a manual pick to the existing feed without re-crawling external sources."""
+    tid = str(tweet_id or "").strip()
+    if not tid:
+        raise ValueError("tweet id is required")
+
+    payload = _read_feed_payload()
+    cards = payload.get("cards")
+    if not isinstance(cards, list) or not cards:
+        raise ValueError("feed cards are not ready")
+
+    state = read_manual_picks()
+    include_ids = state["include_ids"]
+    exclude_ids = state["exclude_ids"]
+    pin_ids = state["pin_ids"]
+    bottom_ids = state["bottom_ids"]
+    force_ids = include_ids | pin_ids | bottom_ids
+
+    found = False
+    removed = 0
+    next_cards: list[Any] = []
+    for item in cards:
+        if not isinstance(item, dict):
+            next_cards.append(item)
+            continue
+        cid = str(item.get("id") or "").strip()
+        if cid != tid:
+            next_cards.append(item)
+            continue
+
+        found = True
+        if tid in exclude_ids and tid not in force_ids:
+            removed += 1
+            continue
+
+        patched = dict(item)
+        patched["manual_pick"] = tid in include_ids or tid in pin_ids or tid in bottom_ids
+        patched["manual_pin"] = tid in pin_ids
+        patched["manual_bottom"] = tid in bottom_ids
+        next_cards.append(patched)
+
+    if not found:
+        raise ValueError("card not found in feed snapshot")
+
+    payload["cards"] = next_cards
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    payload["manual_picks"] = {
+        "include_ids": sorted(include_ids),
+        "exclude_ids": sorted(exclude_ids),
+        "pin_ids": sorted(pin_ids),
+        "bottom_ids": sorted(bottom_ids),
+        "include_count": len(include_ids),
+        "exclude_count": len(exclude_ids),
+        "pin_count": len(pin_ids),
+        "bottom_count": len(bottom_ids),
+    }
+    if removed:
+        payload["excluded_by_selection"] = int(payload.get("excluded_by_selection") or 0) + removed
+    _refresh_snapshot_counts(payload)
+    write_json(data_dir() / "x_intel_feed.json", payload)
+    return payload
+
+
+def repair_stale_feed_semantics(payload: dict[str, Any]) -> bool:
+    """Compatibility shim: semantic repair is no longer rule-based."""
+    return False
+
+
 def merge_cards(*groups: list[StoryCard]) -> list[StoryCard]:
     merged: dict[str, StoryCard] = {}
     for group in groups:
@@ -1191,6 +1252,15 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     label = label_map.get(reason_key, "待審核")
     card.topic_labels = ["other"]
     card.event_wall = False  # type: ignore[attr-defined]
+    card.review_status = AI_REVIEW_ADMIN_QUEUE
+    card.ai_status = "needs_review"
+    if not card.classified_by:
+        card.classified_by = "ai"
+    if not card.ai_model:
+        card.ai_model = minimax_model_name()
+    if not card.ai_version:
+        card.ai_version = AI_CLASSIFICATION_VERSION
+    card.classification_error = clean_text(reason_key or "admin_queue")[:220]
     existing_tags = [str(x).strip() for x in (card.tags or []) if str(x).strip() and str(x).strip() != label]
     card.tags = [label, *existing_tags][:3]
     card.confidence = max(0.6, float(card.confidence or 0.0))
@@ -1208,12 +1278,55 @@ def _queue_unique(cards: list[StoryCard]) -> list[StoryCard]:
 
 
 def _is_admin_queue_card(card: StoryCard) -> bool:
+    review_status = str(card.review_status or "").strip()
+    ai_status = str(card.ai_status or "").strip().lower()
+    if review_status == AI_REVIEW_ADMIN_QUEUE or ai_status in {"needs_review", "pending", "failed"}:
+        return True
     labels = normalize_topic_labels(card.topic_labels)
     return labels == ["other"]
 
 
 def _public_cards(cards: list[StoryCard]) -> list[StoryCard]:
     return [card for card in cards if not _is_admin_queue_card(card)]
+
+
+def _refresh_runtime_fields(card: StoryCard) -> None:
+    card.template_id = choose_template_id(card.card_type)
+    card.glance = compact_point(card.summary or " ".join(card.bullets or []) or card.title, 120)
+    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
+    card.event_wall = card.card_type == "event" and "events" in normalize_topic_labels(card.topic_labels)
+    card.importance = score_card(card)
+
+
+def _needs_ai_reclassification(card: StoryCard) -> bool:
+    classified_by = str(card.classified_by or "").strip().lower()
+    ai_status = str(card.ai_status or "").strip().lower()
+    if classified_by == "manual" or str(card.review_status or "") == AI_REVIEW_ADMIN_OVERRIDDEN:
+        return False
+    if str(card.review_status or "") == AI_REVIEW_ADMIN_QUEUE or ai_status in {"pending", "needs_review", "failed"}:
+        return False
+    return classified_by != "ai" or card.ai_version != AI_CLASSIFICATION_VERSION or ai_status != "ok"
+
+
+def _reclassify_existing_cards(cards: list[StoryCard], api_key: str, feedback_context: str) -> int:
+    if not api_key:
+        return 0
+    raw_limit = str(os.getenv("AI_RECLASSIFY_EXISTING_LIMIT") or "").strip()
+    if raw_limit:
+        try:
+            limit = max(0, int(raw_limit))
+        except ValueError:
+            limit = DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT
+    else:
+        limit = DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT
+    if limit <= 0:
+        return 0
+    candidates = [card for card in cards if _needs_ai_reclassification(card)]
+    batch = candidates[:limit]
+    if not batch:
+        return 0
+    apply_minimax_story_refine(batch, api_key, feedback_context=feedback_context)
+    return len(batch)
 
 
 def _card_memory_datetime(card: StoryCard) -> datetime | None:
@@ -2137,6 +2250,7 @@ def sync_accounts(
     force_ids = include_ids | pin_ids | bottom_ids
     existing_cards, retention_stats = prune_expired_feed_memory(existing_cards, force_ids=force_ids)
     existing_ids = _card_ids(existing_cards)
+    feedback_context = feedback_training_text()
 
     manual_path = data_dir() / "x_intel_manual_entries.json"
     manual_raw = read_json(manual_path, [])
@@ -2171,6 +2285,7 @@ def sync_accounts(
 
     feedback_result = apply_feedback_overrides(existing_cards)
     _enforce_fixed_channel_topic_labels(existing_cards)
+    reclassified_existing_count = _reclassify_existing_cards(existing_cards, api_key or "", feedback_context)
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
     preserved_cards: list[StoryCard] = []
     removed_by_selection = 0
@@ -2185,11 +2300,7 @@ def sync_accounts(
             continue
         preserved_cards.append(c)
 
-    if merged_new_cards:
-        normalize_cards_semantics(merged_new_cards)
-        _enforce_fixed_channel_topic_labels(merged_new_cards)
     new_feedback_result = apply_feedback_overrides(merged_new_cards)
-    _enforce_fixed_channel_topic_labels(merged_new_cards)
     if int(new_feedback_result.get("override_count", 0) or 0):
         feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(new_feedback_result.get("override_count", 0) or 0)
     feedback_excluded_ids |= set(new_feedback_result.get("excluded_ids", set()))
@@ -2205,17 +2316,16 @@ def sync_accounts(
             continue
         new_source_cards.append(c)
 
-    feedback_context = feedback_training_text()
     # New cards must be readable even if they are later deduped or sent to the admin queue.
     # Keep this before source preference, curation, and dedupe so queue/other cards are AI-refined too.
     if api_key and new_source_cards:
         apply_minimax_story_refine(new_source_cards, api_key, feedback_context=feedback_context)
-        normalize_cards_semantics(new_source_cards, preserve_type=True)
-        _enforce_fixed_channel_topic_labels(new_source_cards)
         post_refine_feedback_result = apply_feedback_overrides(new_source_cards)
         if int(post_refine_feedback_result.get("override_count", 0) or 0):
             feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(post_refine_feedback_result.get("override_count", 0) or 0)
-        _enforce_fixed_channel_topic_labels(new_source_cards)
+    elif new_source_cards:
+        for card in new_source_cards:
+            _set_ai_review_queue(card, "missing_ai_key")
 
     queue_cards: list[StoryCard] = []
     public_existing_memory_cards = _public_cards(preserved_cards)
@@ -2249,13 +2359,9 @@ def sync_accounts(
     ai_deduped = 0
     local_deduped = 0
     if api_key and curated_cards:
-        normalize_cards_semantics(curated_cards, preserve_type=True)
-        _enforce_fixed_channel_topic_labels(curated_cards)
         refined_feedback_result = apply_feedback_overrides(curated_cards)
         if int(refined_feedback_result.get("override_count", 0) or 0):
             feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(refined_feedback_result.get("override_count", 0) or 0)
-        normalize_cards_semantics(curated_cards, preserve_type=True)
-        _enforce_fixed_channel_topic_labels(curated_cards)
         before_ai_dedupe = list(curated_cards)
         curated_cards, _ai_deduped_count = apply_minimax_global_dedupe(curated_cards, api_key, force_include_ids=force_ids)
         ai_removed_cards = _removed_cards(before_ai_dedupe, curated_cards, force_ids)
@@ -2278,7 +2384,9 @@ def sync_accounts(
         queue_cards.extend(_mark_admin_queue_card(card, "curation") for card in final_curation_removed_cards)
         removed_count += len(final_curation_removed_cards)
     else:
-        apply_editorial_fallback(curated_cards)
+        for card in curated_cards:
+            if not _is_admin_queue_card(card):
+                _set_ai_review_queue(card, "missing_ai_key")
         before_local_dedupe = list(curated_cards)
         curated_cards, _local_deduped_count = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
         local_removed_cards = _removed_cards(before_local_dedupe, curated_cards, force_ids)
@@ -2290,13 +2398,7 @@ def sync_accounts(
         card.manual_pick = card.manual_pick or (card.id in include_ids)
         card.manual_pin = card.id in pin_ids
         card.manual_bottom = card.id in bottom_ids
-        card.importance = score_card(card)
-        enrich_card_metadata(card)
-        enrich_detail_view(card)
-        apply_quality_guard(card)
-        normalize_card_semantics(card, preserve_type=True)
-        _enforce_fixed_channel_topic_labels([card])
-        card.importance = score_card(card)
+        _refresh_runtime_fields(card)
     final_feedback_result = apply_feedback_overrides(curated_cards)
     _enforce_fixed_channel_topic_labels(curated_cards)
     if int(final_feedback_result.get("override_count", 0) or 0):
@@ -2387,6 +2489,7 @@ def sync_accounts(
         "retention_queue_days": int(retention_stats.get("queue_retention_days", 0)),
         "preserved_total": int(len(existing_cards)),
         "preserved_visible_total": int(len(preserved_cards)),
+        "existing_ai_reclassified": int(reclassified_existing_count),
         "new_candidate_total": int(len(merged_new_cards)),
         "new_source_total": int(len(new_source_cards)),
         "new_curated_total": int(len(curated_cards)),

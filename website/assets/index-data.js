@@ -195,8 +195,9 @@
     }
 
     function sbtIconSrc(file) {
-      if (/^(?:https?:)?\/\//i.test(file)) return file;
-      return `${sbtIconBase}${file}`;
+      const raw = String(file || "").trim();
+      if (/^(?:https?:)?\/\//i.test(raw)) return safeUrl(raw, "");
+      return safeUrl(`${sbtIconBase}${encodeURIComponent(raw)}`, "");
     }
 
     function sbtDifficultyStars(difficulty) {
@@ -256,9 +257,10 @@
         const iconsHtml = row.icons
           .map((file) => {
             const src = sbtIconSrc(file);
+            if (!src) return "";
             return `
-              <a class="sbt-thumb" href="${src}" target="_blank" rel="noreferrer">
-                <img loading="lazy" src="${src}" alt="${row.name}" />
+              <a class="sbt-thumb" href="${escapeHtml(src)}" target="_blank" rel="noreferrer">
+                <img loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(row.name)}" />
               </a>
             `;
           })
@@ -300,6 +302,40 @@
         .replace(/>/g, "&gt;")
         .replace(/\"/g, "&quot;")
         .replace(/'/g, "&#39;");
+    }
+
+    function safeUrl(raw, fallback = "") {
+      const value = String(raw || "").trim();
+      const safeFallback = String(fallback || "");
+      if (!value) return safeFallback;
+      const compact = value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
+      const scheme = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+      if (scheme) {
+        const protocol = scheme[1].toLowerCase();
+        if (protocol !== "http" && protocol !== "https") return safeFallback;
+        try {
+          return new URL(value).href;
+        } catch (_error) {
+          return safeFallback;
+        }
+      }
+      if (compact.startsWith("//")) {
+        try {
+          return new URL(`https:${value}`).href;
+        } catch (_error) {
+          return safeFallback;
+        }
+      }
+      if (/[<>"'`]/.test(value)) return safeFallback;
+      if (/^(?:[/?#.]|[A-Za-z0-9_-])/.test(value)) return value;
+      return safeFallback;
+    }
+
+    function escapeCssString(text) {
+      return String(text || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/[\r\n\f]/g, " ");
     }
 
     const INTEL_LANG_STORAGE_KEY = "intel_ui_lang";
@@ -1489,11 +1525,13 @@
       const publishText = toLocalTime(item?.published_at);
       const cover = resolveCoverImageUrl(item?.cover_image);
       const coverAttrs = coverImageAttrs(cover);
+      const coverUrl = safeUrl(cover, DEFAULT_COVER_IMAGE);
+      const sourceUrl = safeUrl(item?.url || "", "");
       const backdropStyle = cover
-        ? `background-image: url('${escapeHtml(cover)}');`
+        ? `background-image: ${safeCssUrl(coverUrl)};`
         : "background-image: linear-gradient(140deg, #1f3551, #2b4e73 46%, #29495b 100%);";
       const coverHtml = cover
-        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item?.title || "timeline cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
+        ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(item?.title || "timeline cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" />`
         : "";
       const id = String(item?.id || "");
       const picked = Boolean(item?.manual_pick);
@@ -1535,9 +1573,9 @@
             <span class="intel-master-index">${index + 1} / ${total}</span>
             ${actionHtml}
             ${timelineEditorHtml}
-            <a class="intel-source-link" href="${escapeHtml(item?.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
+            ${sourceUrl ? `<a class="intel-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>` : ""}
           </div>
-          ${item?.url ? `<a class="intel-source-raw" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>` : ""}
+          ${sourceUrl ? `<a class="intel-source-raw" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : ""}
         </article>
       `;
     }
@@ -1676,8 +1714,10 @@
       const cardKey = String(card?._card_key || cardStableKey(card)).trim();
       const cover = resolveCoverImageUrl(card.cover_image);
       const coverAttrs = coverImageAttrs(cover);
+      const coverUrl = safeUrl(cover, DEFAULT_COVER_IMAGE);
+      const sourceUrl = safeUrl(card.url || "", "");
       const coverHtml = cover
-        ? `<div class="intel-cover"><img src="${escapeHtml(cover)}" alt="${escapeHtml(card.title || "intel cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
+        ? `<div class="intel-cover"><img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(card.title || "intel cover")}" ${coverAttrs} onerror="if(this.dataset.fallbackApplied==='1'){this.closest('.intel-cover')?.remove();return;}this.dataset.fallbackApplied='1';this.src='${escapeHtml(DEFAULT_COVER_IMAGE)}';" /></div>`
         : "";
       const tags = Array.isArray(card.tags) ? card.tags.slice(0, 3) : [];
       const tagHtml = tags
@@ -1722,9 +1762,9 @@
               <span class="intel-time">${escapeHtml(timeText)}</span>
               ${actionHtml}
               ${timelineEditorHtml}
-              <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
+              ${sourceUrl ? `<a class="intel-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>` : ""}
             </div>
-            ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
+            ${sourceUrl ? `<a class="intel-source-raw" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : ""}
           </article>
         `;
       }
@@ -1741,9 +1781,9 @@
             <span class="intel-time">${escapeHtml(timeText)}</span>
             ${actionHtml}
             ${timelineEditorHtml}
-            <a class="intel-source-link" href="${escapeHtml(card.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>
+            ${sourceUrl ? `<a class="intel-source-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>` : ""}
           </div>
-          ${card.url ? `<a class="intel-source-raw" href="${escapeHtml(card.url)}" target="_blank" rel="noreferrer">${escapeHtml(card.url)}</a>` : ""}
+          ${sourceUrl ? `<a class="intel-source-raw" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : ""}
         </article>
       `;
     }
@@ -1772,10 +1812,10 @@
         const li = document.createElement("li");
         li.className = "intel-section-item";
         const headline = String(item?.headline || item?.point || "未命名重點");
-        const url = String(item?.url || "");
+        const url = safeUrl(item?.url || "", "");
         const account = String(item?.account || "");
         const engagement = String(item?.engagement || "");
-        if (url.startsWith("http")) {
+        if (/^https?:\/\//i.test(url)) {
           li.innerHTML = `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(headline)}</a>（@${escapeHtml(account)} ${escapeHtml(engagement)}）`;
         } else {
           li.textContent = `${headline}（@${account} ${engagement}）`;
@@ -2113,6 +2153,10 @@
 
     const DEFAULT_COVER_IMAGE = "./image.webp";
 
+    function safeCssUrl(raw, fallback = DEFAULT_COVER_IMAGE) {
+      return `url('${escapeHtml(escapeCssString(safeUrl(raw, fallback)))}')`;
+    }
+
     function coverImageAttrs(src) {
       const isDefault = String(src || "") === DEFAULT_COVER_IMAGE;
       const loading = isDefault ? "eager" : "lazy";
@@ -2125,12 +2169,12 @@
     function resolveCoverImageUrl(value) {
       const raw = String(value || "").trim();
       if (!raw) return DEFAULT_COVER_IMAGE;
-      if (/^https?:\/\//i.test(raw)) return raw;
-      if (raw.startsWith("/data/")) return intelApiUrl(raw);
-      if (raw.startsWith("data/")) return intelApiUrl(`/${raw}`);
-      if (raw.startsWith("/website/")) return raw;
-      if (raw.startsWith("website/")) return `/${raw}`;
-      if (raw.startsWith("/")) return raw;
+      if (/^https?:\/\//i.test(raw)) return safeUrl(raw, DEFAULT_COVER_IMAGE);
+      if (raw.startsWith("/data/")) return safeUrl(intelApiUrl(raw), DEFAULT_COVER_IMAGE);
+      if (raw.startsWith("data/")) return safeUrl(intelApiUrl(`/${raw}`), DEFAULT_COVER_IMAGE);
+      if (raw.startsWith("/website/")) return safeUrl(raw, DEFAULT_COVER_IMAGE);
+      if (raw.startsWith("website/")) return safeUrl(`/${raw}`, DEFAULT_COVER_IMAGE);
+      if (raw.startsWith("/")) return safeUrl(raw, DEFAULT_COVER_IMAGE);
       return DEFAULT_COVER_IMAGE;
     }
 

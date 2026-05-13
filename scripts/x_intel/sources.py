@@ -20,6 +20,224 @@ DISCORD_COVER_EXT_BY_TYPE = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+AI_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight"}
+AI_LAYOUTS = {"poster", "brief", "data", "timeline"}
+AI_MIN_CONFIDENCE_DEFAULT = 0.58
+AI_SPECULATION_RE = re.compile(
+    r"推測|可能|通常|大概|也許|有待|待官方|待確認|尚未公布|尚未揭露|未指定|未於原文|原文未|未提供|以官方公布為準"
+)
+AI_UNSUPPORTED_TOPIC_TERMS = {
+    "Discord": re.compile(r"discord", re.I),
+    "直播": re.compile(r"直播|live\s*stream|livestream", re.I),
+    "線上": re.compile(r"線上|线上|online", re.I),
+    "獎勵": re.compile(r"獎勵|奖励|獎品|奖品|reward|prize", re.I),
+}
+
+
+def minimax_model_name() -> str:
+    return str(
+        os.getenv("MINIMAX_TEXT_MODEL")
+        or os.getenv("MINIMAX_MODEL")
+        or "MiniMax-M2.7"
+    ).strip() or "MiniMax-M2.7"
+
+
+def ai_min_confidence() -> float:
+    try:
+        return float(os.getenv("AI_CLASSIFY_MIN_CONFIDENCE") or AI_MIN_CONFIDENCE_DEFAULT)
+    except Exception:
+        return AI_MIN_CONFIDENCE_DEFAULT
+
+
+def _valid_ai_date(value: Any) -> str:
+    raw = str(value or "").strip().translate(str.maketrans({"‑": "-", "–": "-", "—": "-", "−": "-"}))
+    if not raw:
+        return ""
+    return raw if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else "__INVALID_DATE__"
+
+
+def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> None:
+    card.classified_by = "ai"
+    card.ai_model = model or minimax_model_name()
+    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_status = "needs_review"
+    card.review_status = AI_REVIEW_ADMIN_QUEUE
+    card.classification_error = clean_text(str(error or "ai_needs_review"))[:220]
+    if not card.classification_reason:
+        card.classification_reason = "AI 未產生可安全公開的完整分類，需管理員確認。"
+    card.topic_labels = ["other"]
+    card.tags = ["待審核"]
+    card.template_id = choose_template_id(card.card_type)
+    card.glance = compact_point(card.summary or card.title or card.raw_text, 120)
+    card.importance = score_card(card)
+
+
+def _source_backed_number_facts(facts: list[dict[str, str]], raw_text: str) -> list[dict[str, str]]:
+    source = strip_links_mentions(raw_text).lower()
+    out: list[dict[str, str]] = []
+    for fact in facts:
+        text = clean_text(str(fact.get("text") or ""))
+        meaning = clean_text(str(fact.get("meaning") or ""))
+        if not text or not meaning:
+            continue
+        if text.lower() not in source:
+            continue
+        out.append({"text": text, "meaning": meaning})
+    return out
+
+
+def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
+    errors: list[str] = []
+    if AI_SPECULATION_RE.search(text):
+        errors.append("speculative_copy")
+    raw = raw_text or ""
+    for label, pattern in AI_UNSUPPORTED_TOPIC_TERMS.items():
+        if pattern.search(text) and not pattern.search(raw):
+            errors.append(f"unsupported_{label}")
+    return errors
+
+
+def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, model: str) -> bool:
+    errors: list[str] = []
+    card_type = str(parsed.get("card_type") or "").strip().lower()
+    layout = str(parsed.get("layout") or "").strip().lower()
+    layout = {
+        "event_poster": "poster",
+        "market_signal": "data",
+        "announcement_timeline": "timeline",
+        "community_brief": "brief",
+    }.get(layout, layout)
+    topic_labels = normalize_topic_labels(parsed.get("topic_labels"))
+    event_facts = normalize_event_facts(parsed.get("event_facts"))
+    number_facts = _source_backed_number_facts(
+        normalize_number_facts(parsed.get("number_facts") or parsed.get("numbers")),
+        card.raw_text,
+    )
+    timeline_date = _valid_ai_date(parsed.get("timeline_date"))
+    timeline_end_date = _valid_ai_date(parsed.get("timeline_end_date"))
+    title = clean_text(str(parsed.get("title") or ""))
+    summary = clean_text(str(parsed.get("summary") or ""))
+    bullets_raw = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
+    bullets = [clean_text(str(x))[:120] for x in bullets_raw if clean_text(str(x))][:3]
+    detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
+    detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
+    reason = clean_text(str(parsed.get("classification_reason") or parsed.get("reasoning_note") or ""))[:360]
+    tags_raw = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
+    tags = [clean_text(str(x))[:16] for x in tags_raw if clean_text(str(x))][:3]
+    confidence_raw = parsed.get("confidence")
+    try:
+        confidence = float(confidence_raw)
+    except Exception:
+        confidence = 0.0
+
+    if card_type not in AI_CARD_TYPES:
+        errors.append("invalid_card_type")
+    if layout not in AI_LAYOUTS:
+        errors.append("invalid_layout")
+    if not topic_labels:
+        errors.append("missing_topic_labels")
+    if timeline_date == "__INVALID_DATE__" or timeline_end_date == "__INVALID_DATE__":
+        errors.append("invalid_timeline_date")
+    if confidence < ai_min_confidence():
+        errors.append("low_confidence")
+    if not title or not summary or len(bullets) < 3:
+        errors.append("missing_public_copy")
+    if not detail_summary or len(detail_lines) < 4:
+        errors.append("missing_detail_copy")
+    if not reason:
+        errors.append("missing_classification_reason")
+    if re.search(r"(?:\$|USD|US\$)\s*\d|\d+(?:\.\d+)?\s*[KMB]\+?|\bS\d+\b", card.raw_text, re.I) and not number_facts:
+        errors.append("missing_number_facts")
+    copy_for_grounding = " ".join(
+        [title, summary, " ".join(bullets), detail_summary, " ".join(detail_lines), json.dumps(event_facts, ensure_ascii=False)]
+    )
+    if not re.search(r"[\u4e00-\u9fff]", copy_for_grounding):
+        errors.append("non_chinese_copy")
+    errors.extend(_unsupported_ai_copy_errors(copy_for_grounding, card.raw_text))
+
+    if errors:
+        _set_ai_review_queue(card, ",".join(errors), model=model)
+        if title:
+            card.title = title[:120]
+        if summary:
+            card.summary = summary[:320]
+        if bullets:
+            card.bullets = bullets
+        card.classification_reason = reason or card.classification_reason
+        return False
+
+    card.title = title[:120]
+    card.summary = summary[:320]
+    card.bullets = bullets
+    card.card_type = card_type
+    card.layout = layout
+    card.tags = tags or card.tags
+    card.confidence = max(0.0, min(1.0, confidence))
+    card.event_facts = event_facts if card_type == "event" else {}
+    card.topic_labels = topic_labels
+    card.timeline_date = timeline_date
+    card.timeline_end_date = timeline_end_date
+    card.number_facts = number_facts
+    card.detail_summary = detail_summary
+    card.detail_lines = detail_lines
+    card.classified_by = "ai"
+    card.ai_model = model
+    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_confidence = card.confidence
+    card.ai_status = "ok"
+    card.review_status = AI_REVIEW_AUTO_APPROVED
+    card.classification_reason = reason
+    card.classification_error = ""
+    card.template_id = choose_template_id(card.card_type)
+    card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
+    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
+    card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+    card.importance = score_card(card)
+    return True
+
+
+def build_ai_pending_card(
+    *,
+    card_id: str,
+    account: str,
+    url: str,
+    text: str,
+    published_at: str,
+    provider: str,
+    confidence: float,
+    cover_image: str = "",
+    metrics: dict[str, int] | None = None,
+    reply_to_id: str = "",
+) -> StoryCard:
+    title = compact_point(strip_links_mentions(text), 96) or "待 AI 分類"
+    card = StoryCard(
+        id=card_id,
+        account=account,
+        url=url,
+        title=title[:120],
+        summary="AI 尚未完成分類，需等待模型輸出後才能公開。",
+        bullets=[],
+        published_at=published_at,
+        confidence=confidence,
+        card_type="insight",
+        layout="brief",
+        tags=["待審核"],
+        raw_text=text[:2500],
+        provider=provider,
+        cover_image=cover_image,
+        metrics=metrics or {},
+        reply_to_id=reply_to_id,
+        topic_labels=["other"],
+        classified_by="ai",
+        ai_model=minimax_model_name(),
+        ai_version=AI_CLASSIFICATION_VERSION,
+        ai_status="pending",
+        review_status=AI_REVIEW_ADMIN_QUEUE,
+        classification_error="ai_not_run",
+    )
+    card.template_id = choose_template_id(card.card_type)
+    card.importance = score_card(card)
+    return card
 
 
 def normalize_x_account(value: Any) -> str:
@@ -305,14 +523,18 @@ def apply_minimax_story_refine(
     connect_timeout_override: float | None = None,
     read_timeout_override: float | None = None,
 ) -> None:
+    model_name = minimax_model_name()
     for card in cards:
         prompt = (
-            "你是TCG社群編輯。請先完整讀懂內容，再輸出『非抄寫』重整版本。"
-            "輸出必須是 JSON，欄位固定為："
-            "title,summary,bullets(長度3),card_type(layout可選:poster/brief/data/timeline),"
-            "confidence(0~1),tags(最多3),event_facts(可選，僅 event 使用: reward/participation/audience/location/schedule),"
-            "topic_labels(可多選: events/official/sbt/pokemon/collectibles/alpha/guides/community/other),"
-            "detail_summary,detail_lines(長度4到6)。"
+            "你是TCG社群編輯與分類員。請先完整讀懂內容，再一次完成語意分類、日期解析、數字解讀與公開文案。"
+            "輸出必須是單一 JSON 物件，必須包含以下所有欄位："
+            "{\"title\":\"\",\"summary\":\"\",\"bullets\":[\"\",\"\",\"\"],\"card_type\":\"event|feature|announcement|market|report|insight\","
+            "\"layout\":\"poster|brief|data|timeline\",\"confidence\":0.0,\"tags\":[\"\"],"
+            "\"event_facts\":{\"participation\":\"\",\"audience\":\"\",\"location\":\"\",\"schedule\":\"\"},"
+            "\"topic_labels\":[\"events|official|sbt|pokemon|collectibles|alpha|guides|community|other\"],"
+            "\"timeline_date\":\"YYYY-MM-DD或空字串\",\"timeline_end_date\":\"YYYY-MM-DD或空字串\","
+            "\"number_facts\":[{\"text\":\"原文數字\",\"meaning\":\"這個數字代表什麼\"}],"
+            "\"classification_reason\":\"\",\"detail_summary\":\"\",\"detail_lines\":[\"\",\"\",\"\",\"\"]}。"
             "限制："
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
@@ -346,10 +568,18 @@ def apply_minimax_story_refine(
             "30) 原文沒有年份時，不可自行補錯年份；若需要年份，沿用發布時間/活動時間所在年份；"
             "31) 禁止把純數字 Discord ID、錢包地址或未具名帳號當成人名/主持人名稱；"
             "32) 禁止自行補充原文未提到的物流、轉運、代購、國籍限制或付款條件；"
-            "33) 整份 JSON 請控制在約 1200 字元內。\n\n"
+            "33) 相對日期（例如 This Friday）必須以發布時間推算成 YYYY-MM-DD；無法確認就留空；"
+            "34) 不可把 t.co 或其他短網址尾碼、Discord ID、tweet id、雜湊片段當成 number_facts；"
+            "35) classification_reason 要說明為什麼是該 card_type 與 topic_labels；"
+            "36) number_facts.text 必須是原文中實際出現的數字字串，不要放發布日期或推算日期；"
+            "37) 原文沒有 Discord、直播、線上、報名連結、獎勵或限制時，不可自行補這些資訊；"
+            "38) detail_lines 只列原文有根據的活動名稱、時間、參與方式、獎勵、限制與下一步；缺少的項目直接省略，不要寫未公布/未提供；"
+            "39) number_facts 每項都必須有 meaning，說明該數字在原文的對象與意義；"
+            "40) 整份 JSON 請控制在約 1400 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
+            f"發布時間: {card.published_at}\n"
             f"內容: {card.raw_text[:4200]}"
         )
         try:
@@ -363,14 +593,18 @@ def apply_minimax_story_refine(
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,detail_summary,detail_lines。"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
+                    "timeline_date,timeline_end_date,number_facts,classification_reason,detail_summary,detail_lines。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
                     "detail_summary 與 detail_lines 必須重新整理詳情，不可沿用模板句。"
                     "不要捏造年份、人名、物流、轉運、代購或限制條件。"
                     "活動標題要抓活動名稱與主要獎勵/參與條件，不要把 Ambassador、hosted by 這種主辦身份當主題。"
+                    "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
+                    "number_facts.text 只能放原文實際出現的數字；原文沒有 Discord、直播、線上或獎勵時不可補。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
+                    f"發布時間:{card.published_at}\n"
                     f"內容:{card.raw_text[:3200]}"
                 )
                 raw = minimax_chat(
@@ -381,57 +615,36 @@ def apply_minimax_story_refine(
                 )
                 parsed = parse_json_block(raw)
             if not parsed:
+                _set_ai_review_queue(card, "ai_json_parse_failed", model=model_name)
                 continue
-            title = str(parsed.get("title") or "").strip()
-            summary = str(parsed.get("summary") or "").strip()
-            bullets = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
-            card_type = str(parsed.get("card_type") or "").strip().lower()
-            layout = str(parsed.get("layout") or "").strip().lower()
-            tags = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
-            confidence = parsed.get("confidence")
-            event_facts = normalize_event_facts(parsed.get("event_facts"))
-            topic_labels = normalize_topic_labels(parsed.get("topic_labels"))
-            detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
-            detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
-
-            if title:
-                card.title = title[:120]
-            if summary:
-                card.summary = summary[:320]
-            if bullets:
-                card.bullets = [clean_text(str(x))[:120] for x in bullets if str(x).strip()][:3] or card.bullets
-            if card_type in {"event", "market", "report", "announcement", "feature", "insight"}:
-                card.card_type = card_type
-            if layout in {"poster", "brief", "data", "timeline"}:
-                card.layout = layout
-            if tags:
-                card.tags = [clean_text(str(x))[:16] for x in tags if str(x).strip()][:3]
-            if isinstance(confidence, (int, float)):
-                card.confidence = float(max(0.0, min(1.0, confidence)))
-            if card.card_type == "event" and event_facts:
-                card.event_facts = event_facts
-            if topic_labels:
-                card.topic_labels = topic_labels
-            if detail_summary:
-                card.detail_summary = detail_summary
-            if detail_lines:
-                card.detail_lines = detail_lines
-            if (
-                similarity_ratio(card.summary, card.raw_text) > 0.92
-                or _summary_needs_rewrite(card.summary, card.raw_text)
-                or _bullets_need_rewrite([clean_text(str(x)) for x in (card.bullets or [])], card.raw_text)
-                or (card.card_type == "market" and _market_is_number_dump(card.summary, [clean_text(str(x)) for x in (card.bullets or [])]))
-            ):
-                fallback = build_editorial_copy(card.raw_text, card.card_type, card.account)
-                card.summary = str(fallback.get("summary") or card.summary)[:320]
-                fb = fallback.get("bullets")
-                if isinstance(fb, list) and fb:
-                    card.bullets = [clean_text(str(x))[:120] for x in fb if str(x).strip()][:3]
-            enrich_detail_view(card)
-            card.importance = score_card(card)
-            enrich_card_metadata(card)
-            normalize_card_semantics(card, preserve_type=True)
-        except Exception:
+            if not _finalize_ai_classified_card(card, parsed, model=model_name):
+                retry_reason = card.classification_error
+                strict_retry_prompt = (
+                    "上一版 JSON 未通過資料驗證，原因："
+                    f"{retry_reason}。請重新輸出合法 JSON，不要任何前後文字，不要 ```。"
+                    "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
+                    "timeline_date,timeline_end_date,number_facts,classification_reason,detail_summary,detail_lines。"
+                    "topic_labels 必須是陣列，event 類活動至少包含 events；官方帳號 @renaissxyz 至少包含 official。"
+                    "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"
+                    "layout 只能是 poster/brief/data/timeline，不可輸出 event_poster 等 template 名稱。"
+                    "只能依原文，不可補 Discord、直播、線上、報名連結、獎勵或限制；"
+                    "不得使用推測/可能/待官方/尚未公布/以官方公布為準等語氣。"
+                    "缺少地點、獎勵、限制時直接不要列那一項，不要寫未提供。"
+                    "number_facts.text 只能是原文實際出現的數字字串，meaning 不可空白；不能放發布日或推算日，不能取短網址尾碼。"
+                    "如果 event 資訊不足，就只列原文有的活動名稱、時間、社群聚會與下一步。\n\n"
+                    f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n內容:{card.raw_text[:3200]}"
+                )
+                raw = minimax_chat(
+                    strict_retry_prompt,
+                    api_key,
+                    connect_timeout_override=connect_timeout_override,
+                    read_timeout_override=read_timeout_override,
+                )
+                parsed = parse_json_block(raw)
+                if parsed:
+                    _finalize_ai_classified_card(card, parsed, model=model_name)
+        except Exception as exc:
+            _set_ai_review_queue(card, f"ai_request_failed:{type(exc).__name__}", model=model_name)
             continue
 
 
@@ -652,29 +865,18 @@ def build_storycard_from_twitter_cli_item(item: dict[str, Any], username: str) -
         or ""
     ).strip()
 
-    card_type, layout, tags = classify_story(text)
-    shaped = build_editorial_copy(text, card_type, username)
-    card = StoryCard(
-        id=sid,
+    card = build_ai_pending_card(
+        card_id=sid,
         account=username,
+        provider="twitter-cli",
         url=url,
-        title=str(shaped.get("title") or summarize_naive(text, 180)),
-        summary=str(shaped.get("summary") or summarize_naive(text, 280)),
-        bullets=shaped.get("bullets") if isinstance(shaped.get("bullets"), list) else extract_bullets(text),
+        text=text,
         published_at=created_dt.isoformat(),
         confidence=0.7,
-        card_type=card_type,
-        layout=layout,
-        tags=tags,
-        raw_text=text[:2500],
-        provider="twitter-cli",
         cover_image=cover,
         metrics=metrics,
         reply_to_id=reply_to_id,
     )
-    card.importance = score_card(card)
-    enrich_card_metadata(card)
-    enrich_detail_view(card)
     return card
 
 
@@ -894,29 +1096,18 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
     card_id = f"discord-{channel_id}-{mid}"
     cover_image = _cache_discord_cover_image(_discord_first_image(item), card_id)
 
-    card_type, layout, tags = classify_story(text)
-    shaped = build_editorial_copy(text, card_type, account)
-    card = StoryCard(
-        id=card_id,
+    card = build_ai_pending_card(
+        card_id=card_id,
         account=account,
         url=_discord_message_url(item, channel_id, mid),
-        title=str(shaped.get("title") or summarize_naive(text, 180)),
-        summary=str(shaped.get("summary") or summarize_naive(text, 280)),
-        bullets=shaped.get("bullets") if isinstance(shaped.get("bullets"), list) else extract_bullets(text),
+        text=text,
         published_at=created_dt.isoformat(),
         confidence=0.66,
-        card_type=card_type,
-        layout=layout,
-        tags=tags,
-        raw_text=text[:2500],
         provider="discord-rest",
         cover_image=cover_image,
         metrics={},
         reply_to_id=reply_to_id,
     )
-    card.importance = score_card(card)
-    enrich_card_metadata(card)
-    enrich_detail_view(card)
     return card
 
 
@@ -1245,10 +1436,15 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         cover_image=cover,
         metrics=_sum_metrics(rows),
         reply_to_id=str(first.reply_to_id or ""),
+        topic_labels=["other"],
+        classified_by="ai",
+        ai_model=last.ai_model or first.ai_model or minimax_model_name(),
+        ai_version=AI_CLASSIFICATION_VERSION,
+        ai_status="pending",
+        review_status=AI_REVIEW_ADMIN_QUEUE,
+        classification_error="ai_not_run",
     )
     merged.importance = max(float(c.importance or 0.0) for c in rows) + 0.8
-    enrich_card_metadata(merged)
-    enrich_detail_view(merged)
     return merged
 
 

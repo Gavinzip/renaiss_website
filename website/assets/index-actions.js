@@ -534,10 +534,16 @@
         });
       }
 
-      fetchIntelAuthState().then(() => {
-        if (intelFeedCache) renderIntelFeed(intelFeedCache);
-        else updateIntelAuthUi();
-      });
+      if (!intelAuthState.ready) {
+        fetchIntelAuthState().then(() => {
+          if (intelFeedCache) renderIntelFeed(intelFeedCache);
+          else updateIntelAuthUi();
+        });
+      } else if (intelFeedCache) {
+        renderIntelFeed(intelFeedCache);
+      } else {
+        updateIntelAuthUi();
+      }
 
       analyzeBtn.addEventListener("click", async () => {
         if (!intelCanEdit()) {

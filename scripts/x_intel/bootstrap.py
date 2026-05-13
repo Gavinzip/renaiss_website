@@ -99,6 +99,10 @@ X_SOURCE_URL_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/", re.I)
 OFFICIAL_ACCOUNT_RE = re.compile(r"^renaiss(?:_|cn|xyz|official)?", re.I)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
+AI_CLASSIFICATION_VERSION = "20260513-ai-first1"
+AI_REVIEW_AUTO_APPROVED = "auto_approved"
+AI_REVIEW_ADMIN_QUEUE = "admin_queue"
+AI_REVIEW_ADMIN_OVERRIDDEN = "admin_overridden"
 LIVE_REWARD_RE = re.compile(
     r"((?:直播|live\s+(?:attendees?|session|stream)|ama|community\s*session).{0,42}(?:sbt|积分|積分|reward|rewards|奖励|獎勵|merch|周邊|周边))|"
     r"((?:sbt|积分|積分|reward|rewards|奖励|獎勵|merch|周邊|周边).{0,42}(?:直播|live\s+(?:attendees?|session|stream)|ama|community\s*session))",
@@ -154,6 +158,10 @@ STRICT_EVENT_CALL_RE = re.compile(
     r"join us|join on|register|signup|報名|报名|參加|参加|參與|参与|attend|attendees?|live\s+(?:session|stream|ama)|community\s*session|ama|space|tour|festival|meetup|線下|线下|venue|booth|地點|地点",
     re.I,
 )
+EN_RELATIVE_DAY_RE = re.compile(
+    r"\b(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)\b",
+    re.I,
+)
 SBT_THRESHOLD_NOTICE_RE = re.compile(
     r"((?:sbt|soulbound|points?|積分|积分).{0,42}(?:threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank))|"
     r"((?:threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank).{0,42}(?:sbt|soulbound|points?|積分|积分))",
@@ -205,6 +213,15 @@ class StoryCard:
     dedupe_winner_post_id: str = ""
     dedupe_winner_url: str = ""
     dedupe_winner_title: str = ""
+    number_facts: list[dict[str, str]] | None = None
+    classified_by: str = "legacy"
+    ai_model: str = ""
+    ai_version: str = ""
+    ai_confidence: float = 0.0
+    ai_status: str = "legacy_unverified"
+    review_status: str = ""
+    classification_reason: str = ""
+    classification_error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -250,6 +267,15 @@ class StoryCard:
             "dedupe_winner_post_id": self.dedupe_winner_post_id,
             "dedupe_winner_url": self.dedupe_winner_url,
             "dedupe_winner_title": self.dedupe_winner_title,
+            "number_facts": self.number_facts or [],
+            "classified_by": self.classified_by,
+            "ai_model": self.ai_model,
+            "ai_version": self.ai_version,
+            "ai_confidence": self.ai_confidence,
+            "ai_status": self.ai_status,
+            "review_status": self.review_status,
+            "classification_reason": self.classification_reason,
+            "classification_error": self.classification_error,
         }
 
 
@@ -403,6 +429,8 @@ def extract_numeric_facts(text: str, limit: int = 3) -> list[str]:
             continue
         if h in {"0", "00"}:
             continue
+        if re.search(r"(?:https?://|t\.co/)\S*$", src[max(0, m.start() - 80):m.start()].lower()):
+            continue
         ctx = src[max(0, m.start() - 12) : min(len(src), m.end() + 12)].lower()
         has_unit = bool(
             re.search(
@@ -457,7 +485,7 @@ def extract_schedule_facts(text: str, limit: int = 3) -> list[str]:
         re.compile(r"(?<![:\d])(?:1[0-2]|0?[1-9])\s*(?:am|pm)\b", re.I),
         re.compile(r"(?<![:\d])(?:[01]?\d|2[0-3])[:：][0-5]\d(?![:\d])", re.I),
         re.compile(r"\b(?:utc|gmt)\s*[+-]?\d+\b|utc[+＋−-]\d+", re.I),
-        re.compile(r"(?:本週|下週|週末|明天|今晚|即將|今天|今日|稍後|稍后|tonight|tomorrow|today|live now|this week|next week)", re.I),
+        re.compile(r"(?:本週|下週|週末|明天|今晚|即將|今天|今日|稍後|稍后|tonight|tomorrow|today|live now|this week|next week|\b(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)\b)", re.I),
     ]
     found: list[str] = []
     for pat in pats:
@@ -1032,12 +1060,6 @@ def parse_status_page(
         content_source = meta_text
     if is_noise_text(content_source):
         return None
-    card_type, layout, tags = classify_story(content_source)
-    shaped = build_editorial_copy(content_source, card_type, username)
-    summary = str(shaped.get("summary") or summarize_naive(content_source, max_len=220))
-    bullets = shaped.get("bullets") if isinstance(shaped.get("bullets"), list) else extract_bullets(content_source)
-    normalized_title = str(shaped.get("title") or "").strip()
-
     published_at = ""
     if published_match:
         try:
@@ -1068,23 +1090,28 @@ def parse_status_page(
         id=tweet_id,
         account=username,
         url=url,
-        title=normalized_title or title or f"@{username} update",
-        summary=summary,
-        bullets=bullets,
+        title=(summarize_naive(content_source, max_len=96) or title or f"@{username} update")[:120],
+        summary="AI 尚未完成分類，需等待模型輸出後才能公開。",
+        bullets=[],
         published_at=published_at,
         confidence=0.56,
-        card_type=card_type,
-        layout=layout,
-        tags=tags,
+        card_type="insight",
+        layout="brief",
+        tags=["待審核"],
         raw_text=content_source[:2500],
         provider=provider,
         cover_image=cover,
         metrics={},
         reply_to_id=reply_to_id,
+        topic_labels=["other"],
+        classified_by="ai",
+        ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M2.7").strip(),
+        ai_version=AI_CLASSIFICATION_VERSION,
+        ai_status="pending",
+        review_status=AI_REVIEW_ADMIN_QUEUE,
+        classification_error="ai_not_run",
     )
     card.importance = score_card(card)
-    enrich_card_metadata(card)
-    enrich_detail_view(card)
     return card
 
 
@@ -1162,7 +1189,7 @@ def _has_actionable_event_schedule(text: str) -> bool:
     has_date = _contains_calendar_date(joined)
     has_time = bool(re.search(r"\b\d{1,2}\s*(?:am|pm)\b|(?<![:\d])(?:[01]?\d|2[0-3])[:：][0-5]\d(?![:\d])", joined, re.I))
     has_zone = bool(re.search(r"(?:utc|gmt)\s*[+＋−-]?\d+", joined, re.I))
-    has_relative = bool(re.search(r"tonight|today|tomorrow|今晚|今天|明天|本週|下週|週末|即將", src, re.I))
+    has_relative = bool(re.search(r"tonight|today|tomorrow|今晚|今天|明天|本週|下週|週末|即將", src, re.I) or EN_RELATIVE_DAY_RE.search(src))
     has_event_context = bool(STRICT_EVENT_CALL_RE.search(src))
     if has_date:
         return True
@@ -1445,6 +1472,28 @@ def normalize_topic_labels(value: Any) -> list[str]:
     return out
 
 
+def normalize_number_facts(value: Any) -> list[dict[str, str]]:
+    rows = value if isinstance(value, list) else []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        text = clean_text(str(item.get("text") or item.get("value") or ""))[:40]
+        meaning = clean_text(str(item.get("meaning") or item.get("context") or ""))[:140]
+        if not text and not meaning:
+            continue
+        key = dedupe_key(f"{text}|{meaning}")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append({"text": text, "meaning": meaning})
+        if len(out) >= 6:
+            break
+    return out
+
+
 def _event_token_summary(text: str, token_map: list[tuple[re.Pattern[str], str]], max_items: int = 4) -> str:
     out: list[str] = []
     seen: set[str] = set()
@@ -1671,6 +1720,7 @@ def build_event_facts(text: str) -> dict[str, str]:
                 (re.compile(r"discord", re.I), "Discord"),
                 (re.compile(r"live|直播", re.I), "直播"),
                 (re.compile(r"session|community\s*session", re.I), "社群 Session"),
+                (re.compile(r"gather(?:ing)?(?:\s+with\s+the\s+community)?", re.I), "社群聚會"),
                 (re.compile(r"join us|join", re.I), "參與活動"),
                 (re.compile(r"報名|报名|register|signup", re.I), "報名"),
                 (re.compile(r"填表", re.I), "填表"),

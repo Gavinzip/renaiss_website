@@ -73,6 +73,33 @@
       .replace(/'/g, "&#39;");
   }
 
+  function safeUrl(raw, fallback = "") {
+    const value = String(raw || "").trim();
+    const safeFallback = String(fallback || "");
+    if (!value) return safeFallback;
+    const compact = value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
+    const scheme = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (scheme) {
+      const protocol = scheme[1].toLowerCase();
+      if (protocol !== "http" && protocol !== "https") return safeFallback;
+      try {
+        return new URL(value).href;
+      } catch (_error) {
+        return safeFallback;
+      }
+    }
+    if (compact.startsWith("//")) {
+      try {
+        return new URL(`https:${value}`).href;
+      } catch (_error) {
+        return safeFallback;
+      }
+    }
+    if (/[<>"'`]/.test(value)) return safeFallback;
+    if (/^(?:[/?#.]|[A-Za-z0-9_-])/.test(value)) return value;
+    return safeFallback;
+  }
+
   function normalizePercent(value) {
     const num = Number(value);
     if (!Number.isFinite(num)) return 0;
@@ -105,8 +132,9 @@
     const info = [account ? `@${escapeHtml(account)}` : "", publishedAt !== "--" ? escapeHtml(publishedAt) : ""]
       .filter(Boolean)
       .join(" · ");
-    const titleHtml = row.url
-      ? `<a class="link" href="${escapeHtml(String(row.url))}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
+    const url = safeUrl(row.url || "", "");
+    const titleHtml = url
+      ? `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
       : escapeHtml(title);
     if (!info) return titleHtml;
     return `${titleHtml}<br><span style="color:#6282a4;">${info}</span>`;
@@ -147,7 +175,7 @@
     const stage = String(row.stage || "").trim().toLowerCase();
     if (stage !== "dedupe_dropped") return "--";
     const reason = String(row.reason || "").trim();
-    const winnerUrl = String(row.winner_url || "").trim();
+    const winnerUrl = safeUrl(row.winner_url || "", "");
     const winnerId = String(row.winner_post_id || "").trim();
     const winnerTitle = String(row.winner_title || "").trim();
     const winnerLabel = winnerTitle || winnerId || winnerUrl || "勝出貼文";
@@ -260,7 +288,7 @@
     const jobRows = jobItems.slice(0, 60).map((job) => {
       const st = statusChip(String(job?.status || "pending").toLowerCase());
       const message = String(job?.message || "").trim();
-      const url = String(job?.url || "").trim();
+      const url = safeUrl(job?.url || "", "");
       const updated = toLocalTime(job?.updated_at || job?.created_at);
       const title = url
         ? `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`

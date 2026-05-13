@@ -134,6 +134,7 @@ def infer_sbt_acquisition_line(source: str, facts: dict[str, str] | None = None)
 def infer_topic_phrase(text: str, card_type: str) -> str:
     t = strip_links_mentions(clean_text(text))
     keyword_topics = [
+        (r"after graduation|easy\s+residency|yzi\s+labs", "Renaiss Plaza 畢業聚會"),
         (r"community\s+poker\s+night|poker\s+night|lepoker", "Renaiss Community Poker Night"),
         (r"\bmfa\b|2fa|multi[-\s]*factor|authenticator|authentication|帳號安全|账号安全|setting page|設定頁|设置页", "帳號安全與 MFA"),
         (r"threshold update|thresholds?|snapshot|top\s*\d{1,3}\s*%|分位門檻|門檻更新", "SBT 快照門檻更新"),
@@ -356,11 +357,21 @@ def build_universal_digest_frame(
     if card_type == "event":
         reward = _clean_fact_value(str(facts.get("reward") or ""), max_len=72)
         participation = _clean_fact_value(str(facts.get("participation") or ""), max_len=72)
+        milestone = ""
+        if numbers and re.search(r"platform\s+volume|trading\s+volume|交易量|成交量", source, re.I):
+            meanings = _market_number_meanings(source, numbers)
+            milestone = next(
+                (line for line in meanings if re.search(r"平台|交易量|成交", line, re.I)),
+                meanings[0] if meanings else "",
+            )
+        milestone_inline = clean_text(milestone).rstrip("。；; ")
         summary = f"{who}釋出「{topic}」活動資訊。"
         if when:
             summary += f"時間為 {when}。"
         if where:
             summary += f"地點在 {where}。"
+        if milestone_inline:
+            summary += f"里程碑是 {milestone_inline}。"
         if reward:
             summary += f"主要誘因是 {reward}。"
         if sbt_how and re.search(r"\bsbt\b|soulbound", clean_text(reward), re.I):
@@ -377,6 +388,7 @@ def build_universal_digest_frame(
             f"{who} 這則活動主軸是「{what}」，"
             f"{('時間在 ' + when + '，') if when else ''}"
             f"{('地點在 ' + where + '，') if where else ''}"
+            f"{('里程碑是 ' + milestone_inline + '，') if milestone_inline else ''}"
             f"{('主要誘因是 ' + reward + '，') if reward else ''}"
             f"{('參與方式為 ' + participation + '。') if participation else '參與方式請以原文公告為準。'}"
             f"{why}"
@@ -388,6 +400,8 @@ def build_universal_digest_frame(
             f"參與方式：{participation}" if participation else "參與方式：先確認報名方式、截止時間與名額。",
             f"影響：{why}",
         ]
+        if milestone:
+            detail_lines.insert(2, f"里程碑：{milestone}")
         if sbt_how:
             detail_lines.insert(3, sbt_how)
         return _finish(summary, bullets, detail_summary, detail_lines)
@@ -602,6 +616,7 @@ def _english_focus_hint(text: str, card_type: str, topic: str) -> str:
         (r"community\s+poker\s+night|poker\s+night|lepoker", "Renaiss Community Poker Night 線上撲克活動"),
         (r"top\s*100\s+participants.*community\s+event\s+sbt|community\s+event\s+sbt", "Community Event SBT 發放條件更新"),
         (r"chip\s+bonus|late\s+registration", "撲克活動入場與補報名規則"),
+        (r"after graduation|easy\s+residency|yzi\s+labs|this\s+friday.*gather", "Renaiss Plaza 畢業聚會與 YZi Labs 里程碑回顧"),
         (r"ama|community session|plaza", "社群直播與互動預告"),
         (r"web3 festival", "Web3 Festival 社群行程更新"),
     ]
@@ -778,6 +793,8 @@ def _market_number_meanings(source: str, numbers: list[str]) -> list[str]:
             line = f"{display_n} 代表單筆交易收益或利潤規模。"
         elif re.search(r"market size|市場規模|forecast|預估|by\s*2030|2030", context, re.I):
             line = f"{display_n} 代表市場規模的預估值。"
+        elif re.search(r"platform\s+volume|trading\s+volume|volume|交易量|成交量", context, re.I):
+            line = f"{display_n} 代表平台交易量或成交規模里程碑。"
         elif re.search(r"sold|sale|成交|售出|拍出|record|acquired|deal|交易", context, re.I):
             line = f"{display_n} 代表成交金額或價格里程碑。"
         elif re.search(r"per\s*(pack|pull)|每包|每抽|單包|售價|price|top value|最高價值", context, re.I):
@@ -803,6 +820,8 @@ def _market_impact_line(source: str) -> str:
         return "這會強化高端收藏市場信心，並提高 One Piece 相關標的的關注度。"
     if re.search(r"market size|forecast|預估|成長|growth", src, re.I):
         return "這則內容會提高社群對市場成長議題的關注度。"
+    if re.search(r"platform\s+volume|trading\s+volume|交易量|成交量", src, re.I):
+        return "這代表平台交易活躍度累積到新的里程碑，適合搭配活動節點一起觀察。"
     if re.search(r"sold|成交|拍出|record", src, re.I):
         return "這則內容會把討論焦點拉到高價成交與估值區間。"
     if re.search(r"pack|卡包|launch|上新|release", src, re.I):
@@ -1345,15 +1364,22 @@ def normalize_card_semantics(card: StoryCard, preserve_type: bool = False) -> No
     base_dt = _parse_iso_safe(card.published_at) or datetime.now(timezone.utc)
     timeline_iso, timeline_end_iso = infer_timeline_range_dates(source, base_dt=base_dt)
     inferred_type, inferred_layout, inferred_tags = classify_story(source)
+    type_changed = False
 
     if not preserve_type or card.card_type not in ALLOWED_CARD_TYPES:
+        type_changed = card.card_type != inferred_type
         card.card_type = inferred_type
     elif card.card_type in {"event", "insight"} and inferred_type != card.card_type:
         # 允許用語意規則修正 AI 在 event/insight 之間的誤分，避免「活動被判成觀點」或反向誤判。
         card.card_type = inferred_type
-    if not str(card.layout or "").strip() or str(card.layout).lower() not in {"poster", "brief", "data", "timeline"}:
+        type_changed = True
+    elif card.card_type == "market" and inferred_type == "event":
+        # 有明確活動時間與 Plaza/gather 等參與證據時，避免單純因成交量數字落入市場模板。
+        card.card_type = inferred_type
+        type_changed = True
+    if type_changed or not str(card.layout or "").strip() or str(card.layout).lower() not in {"poster", "brief", "data", "timeline"}:
         card.layout = inferred_layout
-    if not card.tags or card.tags == ["觀點"]:
+    if type_changed or not card.tags or card.tags == ["觀點"]:
         card.tags = inferred_tags[:]
     if timeline_iso:
         card.timeline_date = timeline_iso
