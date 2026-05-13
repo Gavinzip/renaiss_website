@@ -53,7 +53,6 @@ DEFAULT_MEMORY_RULES = [
 
 DEFAULT_FEED_MEMORY_RETENTION_DAYS = 30
 DEFAULT_FEED_QUEUE_RETENTION_DAYS = 30
-DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT = 8
 
 
 FORCED_COLLECTIBLES_CHANNEL_ID = "1480867987270402149"
@@ -1298,37 +1297,6 @@ def _refresh_runtime_fields(card: StoryCard) -> None:
     card.importance = score_card(card)
 
 
-def _needs_ai_reclassification(card: StoryCard) -> bool:
-    classified_by = str(card.classified_by or "").strip().lower()
-    ai_status = str(card.ai_status or "").strip().lower()
-    if classified_by == "manual" or str(card.review_status or "") == AI_REVIEW_ADMIN_OVERRIDDEN:
-        return False
-    if str(card.review_status or "") == AI_REVIEW_ADMIN_QUEUE or ai_status in {"pending", "needs_review", "failed"}:
-        return False
-    return classified_by != "ai" or card.ai_version != AI_CLASSIFICATION_VERSION or ai_status != "ok"
-
-
-def _reclassify_existing_cards(cards: list[StoryCard], api_key: str, feedback_context: str) -> int:
-    if not api_key:
-        return 0
-    raw_limit = str(os.getenv("AI_RECLASSIFY_EXISTING_LIMIT") or "").strip()
-    if raw_limit:
-        try:
-            limit = max(0, int(raw_limit))
-        except ValueError:
-            limit = DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT
-    else:
-        limit = DEFAULT_AI_RECLASSIFY_EXISTING_LIMIT
-    if limit <= 0:
-        return 0
-    candidates = [card for card in cards if _needs_ai_reclassification(card)]
-    batch = candidates[:limit]
-    if not batch:
-        return 0
-    apply_minimax_story_refine(batch, api_key, feedback_context=feedback_context)
-    return len(batch)
-
-
 def _card_memory_datetime(card: StoryCard) -> datetime | None:
     dates = [
         _parse_iso_safe(card.timeline_end_date),
@@ -2060,6 +2028,18 @@ def build_official_overview(cards: list[StoryCard], api_key: str | None = None) 
         return fallback
 
 
+AI_METADATA_PRESERVED_FIELDS = {
+    "number_facts",
+    "classified_by",
+    "ai_model",
+    "ai_version",
+    "ai_confidence",
+    "ai_status",
+    "review_status",
+    "classification_reason",
+    "classification_error",
+}
+
 PRESERVED_CARD_MUTABLE_FIELDS = {
     "card_type",
     "layout",
@@ -2079,6 +2059,7 @@ PRESERVED_CARD_MUTABLE_FIELDS = {
     "sbt_name",
     "sbt_names",
     "sbt_acquisition",
+    *AI_METADATA_PRESERVED_FIELDS,
 }
 
 LEGACY_CARD_FIELDS = {
@@ -2097,9 +2078,26 @@ def _strip_legacy_card_fields(row: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _empty_ai_metadata_value(key: str, value: Any) -> bool:
+    if key == "classified_by":
+        return str(value or "").strip().lower() in {"", "legacy"}
+    if key == "ai_status":
+        return str(value or "").strip().lower() in {"", "legacy_unverified"}
+    if key == "ai_confidence":
+        try:
+            return float(value or 0) <= 0
+        except Exception:
+            return True
+    if isinstance(value, list | dict):
+        return not value
+    return not str(value or "").strip()
+
+
 def _preserved_card_changed(card: StoryCard, raw: dict[str, Any]) -> bool:
     row = card.to_dict()
     for key in PRESERVED_CARD_MUTABLE_FIELDS:
+        if key in AI_METADATA_PRESERVED_FIELDS and key not in raw and _empty_ai_metadata_value(key, row.get(key)):
+            continue
         if row.get(key) != raw.get(key):
             return True
     return any(key in raw for key in LEGACY_CARD_FIELDS)
@@ -2118,6 +2116,8 @@ def _serialize_feed_cards(cards: list[StoryCard], preserved_raw: dict[str, dict[
         if raw is not None:
             merged = _strip_legacy_card_fields(raw)
             for key in PRESERVED_CARD_MUTABLE_FIELDS:
+                if key in AI_METADATA_PRESERVED_FIELDS and key not in merged and _empty_ai_metadata_value(key, row.get(key)):
+                    continue
                 if key in row or key in merged:
                     merged[key] = row.get(key)
             rows.append(merged)
@@ -2285,7 +2285,7 @@ def sync_accounts(
 
     feedback_result = apply_feedback_overrides(existing_cards)
     _enforce_fixed_channel_topic_labels(existing_cards)
-    reclassified_existing_count = _reclassify_existing_cards(existing_cards, api_key or "", feedback_context)
+    reclassified_existing_count = 0
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
     preserved_cards: list[StoryCard] = []
     removed_by_selection = 0

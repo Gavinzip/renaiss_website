@@ -32,6 +32,42 @@ AI_UNSUPPORTED_TOPIC_TERMS = {
     "線上": re.compile(r"線上|线上|online", re.I),
     "獎勵": re.compile(r"獎勵|奖励|獎品|奖品|reward|prize", re.I),
 }
+AI_TOPIC_SUPPORT_TERMS = {
+    "Discord": re.compile(r"discord|discord\.com|discord-rest", re.I),
+    "線上": re.compile(r"線上|线上|online|オンライン|web|www\.|https?://", re.I),
+    "獎勵": re.compile(
+        r"獎勵|奖励|獎品|奖品|reward|prize|sbt|badge|unlock|claim|top\s+value|value\s+up\s+to|"
+        r"booster|merch|pack|抽|限量|名額|排名|top\s*\d+",
+        re.I,
+    ),
+}
+AI_CARD_TYPE_ALIASES = {
+    "drop": "announcement",
+    "sale": "announcement",
+    "product": "announcement",
+    "promo": "announcement",
+    "promotion": "announcement",
+    "release": "announcement",
+    "launch": "announcement",
+    "sbt": "announcement",
+    "news": "announcement",
+    "update": "announcement",
+    "events": "event",
+    "activity": "event",
+    "campaign": "event",
+    "lottery": "event",
+    "raffle": "event",
+    "competition": "event",
+    "tournament": "event",
+    "card_info": "feature",
+    "card info": "feature",
+    "card": "feature",
+    "illustration": "feature",
+    "profile": "feature",
+    "opinion": "insight",
+    "discussion": "insight",
+    "comment": "insight",
+}
 
 
 def minimax_model_name() -> str:
@@ -53,7 +89,12 @@ def _valid_ai_date(value: Any) -> str:
     raw = str(value or "").strip().translate(str.maketrans({"‑": "-", "–": "-", "—": "-", "−": "-"}))
     if not raw:
         return ""
-    return raw if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else "__INVALID_DATE__"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    m = re.search(r"(20\d{2})[-/.年]\s*(\d{1,2})[-/.月]\s*(\d{1,2})", raw)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return "__INVALID_DATE__"
 
 
 def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> None:
@@ -80,10 +121,50 @@ def _source_backed_number_facts(facts: list[dict[str, str]], raw_text: str) -> l
         meaning = clean_text(str(fact.get("meaning") or ""))
         if not text or not meaning:
             continue
+        if not re.search(r"\d|[$€£¥]|usd|us\$|rmb|u\b", text, re.I):
+            continue
         if text.lower() not in source:
+            continue
+        date_time_text = bool(re.search(r"月|日|時|分|點|pm|am|utc|gmt", text, re.I))
+        date_time_meaning = bool(re.search(r"日期|時間|開賣|發售|發布|截止|公布|購買期間|年份|年度|月|日|pm|utc", meaning, re.I))
+        value_meaning = bool(re.search(r"價格|售價|定價|美元|美金|rmb|價值|估值|數量|總量|限量|名額|上限|門檻|成交|比例|積分|排名|top|周年|第|種|款|包|盒|%|percent", meaning, re.I))
+        if date_time_text:
+            continue
+        if date_time_meaning and not value_meaning and re.fullmatch(r"\d{1,4}", text):
             continue
         out.append({"text": text, "meaning": meaning})
     return out
+
+
+def _raw_needs_number_facts(raw_text: str) -> bool:
+    source = strip_links_mentions(raw_text)
+    if re.search(r"(?:\$|USD|US\$|RMB)\s*\d|\d+(?:,\d{3})*(?:\.\d+)?\s*(?:USD|RMB|u\b)", source, re.I):
+        return True
+    if re.search(r"\d+(?:\.\d+)?\s*[KMB]\+?(?![A-Za-z])", source, re.I):
+        return True
+    if re.search(r"\btop\s*\d+\b|前\s*\d+\s*(?:名|位|%|percent)", source, re.I):
+        return True
+    if re.search(r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:packs?|boxes|包|盒|張|名|slots?|spots?|points?|pts|積分|%)", source, re.I):
+        return True
+    return False
+
+
+def _normalize_ai_topic_labels(card: StoryCard, labels: list[str], card_type: str, ai_title: str) -> list[str]:
+    normalized = normalize_topic_labels(labels)
+    if "other" in normalized and len(normalized) > 1:
+        normalized = [label for label in normalized if label != "other"]
+    if card_type == "event":
+        if "events" not in normalized:
+            normalized.append("events")
+    else:
+        normalized = [label for label in normalized if label != "events"]
+    if "official" in normalized and not is_official_source_card(card):
+        normalized = [label for label in normalized if label != "official"]
+    if is_official_source_card(card) and "official" not in normalized:
+        normalized.append("official")
+    if "community" in normalized and not is_community_pick_source_card(card):
+        normalized = [label for label in normalized if label != "community"]
+    return normalized or ["other"]
 
 
 def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
@@ -92,7 +173,8 @@ def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
         errors.append("speculative_copy")
     raw = raw_text or ""
     for label, pattern in AI_UNSUPPORTED_TOPIC_TERMS.items():
-        if pattern.search(text) and not pattern.search(raw):
+        raw_support_pattern = AI_TOPIC_SUPPORT_TERMS.get(label, pattern)
+        if pattern.search(text) and not raw_support_pattern.search(raw):
             errors.append(f"unsupported_{label}")
     return errors
 
@@ -100,6 +182,7 @@ def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
 def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, model: str) -> bool:
     errors: list[str] = []
     card_type = str(parsed.get("card_type") or "").strip().lower()
+    card_type = AI_CARD_TYPE_ALIASES.get(card_type, card_type)
     layout = str(parsed.get("layout") or "").strip().lower()
     layout = {
         "event_poster": "poster",
@@ -107,7 +190,8 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         "announcement_timeline": "timeline",
         "community_brief": "brief",
     }.get(layout, layout)
-    topic_labels = normalize_topic_labels(parsed.get("topic_labels"))
+    title = clean_text(str(parsed.get("title") or ""))
+    topic_labels = _normalize_ai_topic_labels(card, normalize_topic_labels(parsed.get("topic_labels")), card_type, title)
     event_facts = normalize_event_facts(parsed.get("event_facts"))
     number_facts = _source_backed_number_facts(
         normalize_number_facts(parsed.get("number_facts") or parsed.get("numbers")),
@@ -115,7 +199,6 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     )
     timeline_date = _valid_ai_date(parsed.get("timeline_date"))
     timeline_end_date = _valid_ai_date(parsed.get("timeline_end_date"))
-    title = clean_text(str(parsed.get("title") or ""))
     summary = clean_text(str(parsed.get("summary") or ""))
     bullets_raw = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
     bullets = [clean_text(str(x))[:120] for x in bullets_raw if clean_text(str(x))][:3]
@@ -146,14 +229,15 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         errors.append("missing_detail_copy")
     if not reason:
         errors.append("missing_classification_reason")
-    if re.search(r"(?:\$|USD|US\$)\s*\d|\d+(?:\.\d+)?\s*[KMB]\+?|\bS\d+\b", card.raw_text, re.I) and not number_facts:
+    if _raw_needs_number_facts(card.raw_text) and not number_facts:
         errors.append("missing_number_facts")
     copy_for_grounding = " ".join(
         [title, summary, " ".join(bullets), detail_summary, " ".join(detail_lines), json.dumps(event_facts, ensure_ascii=False)]
     )
     if not re.search(r"[\u4e00-\u9fff]", copy_for_grounding):
         errors.append("non_chinese_copy")
-    errors.extend(_unsupported_ai_copy_errors(copy_for_grounding, card.raw_text))
+    source_for_grounding = " ".join([str(card.raw_text or ""), str(card.url or ""), str(card.provider or "")])
+    errors.extend(_unsupported_ai_copy_errors(copy_for_grounding, source_for_grounding))
 
     if errors:
         _set_ai_review_queue(card, ",".join(errors), model=model)
@@ -545,6 +629,8 @@ def apply_minimax_story_refine(
             "7) 產品進度、版本更新、開放計畫優先標為 feature 或 announcement，不算 event；"
             "8) 單句互動、祝賀、表情、聊天回覆通常是 insight；"
             "9) topic_labels 可以多選，允許同時屬於 events 與 sbt（例如活動獎勵包含 SBT）；"
+            "9a) other 只能單獨出現；如果已經有 official/pokemon/sbt/events 等有效分區，不可同時輸出 other；"
+            "9b) events 分區只在 card_type=event 時使用；一般商品發售、預購、抽選銷售、結果公布、店鋪公告不可只因為有日期就加 events；"
             "10) 繁體中文，不可捏造；"
             "11) 禁止使用『核心訊號/關鍵數字/決策建議/判讀建議/分析主題/文中數據/使用方式』這種模板詞；"
             "12) 若出現數字，必須說明它代表什麼（單位/情境/用途），不能只列數字；"
@@ -559,8 +645,11 @@ def apply_minimax_story_refine(
             "21) pokemon 只放寶可夢/Pokemon/PoGo/PTCG 或明確寶可夢角色與卡牌市場，不能只因為出現 TCG、pack、卡包、PSA 就標 pokemon；"
             "22) guides 只放教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊；一般心得、行情、公告、活動不能標 guides；"
             "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
-            "24) official 只給 Renaiss 官方 X 或官方 Discord 公告來源；不要因為內文提到 @renaissxyz 就標 official；"
+            "24) official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord 公告來源；Pokemon Center、零售商、媒體或一般情報帳號不算 official；不要因為內文提到 @renaissxyz 就標 official；"
             "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
+            "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
+            "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；官方來源要加 official，限量/發售/alpha 測試相關可加 alpha；"
+            "這類有發售日期但沒有 join/register/直播/聚會參與流程時，不要標 event；"
             "26) 活動貼文的 title 必須優先抓活動名稱、參與方式、獎勵或截止條件；不要把主辦/主持身份（例如 Ambassador、hosted by）當成主題；"
             "27) 活動摘要要保留關鍵獎勵、名額、報名限制與操作提醒，例如 Top 100、SBT、booster box、merch、chip bonus、late registration；"
             "28) detail_summary 要重寫成完整詳情導言，不可沿用舊 summary 或模板句；"
@@ -569,9 +658,10 @@ def apply_minimax_story_refine(
             "31) 禁止把純數字 Discord ID、錢包地址或未具名帳號當成人名/主持人名稱；"
             "32) 禁止自行補充原文未提到的物流、轉運、代購、國籍限制或付款條件；"
             "33) 相對日期（例如 This Friday）必須以發布時間推算成 YYYY-MM-DD；無法確認就留空；"
+            "33a) 發售日、開賣日、claim/unlock 日期也要填 timeline_date；欄位只輸出 YYYY-MM-DD，不要輸出時間或時區；"
             "34) 不可把 t.co 或其他短網址尾碼、Discord ID、tweet id、雜湊片段當成 number_facts；"
             "35) classification_reason 要說明為什麼是該 card_type 與 topic_labels；"
-            "36) number_facts.text 必須是原文中實際出現的數字字串，不要放發布日期或推算日期；"
+            "36) number_facts.text 必須是原文中實際出現的數字字串；只收價格、數量、名額、比例、成交價、積分門檻等有解讀價值的數字，不要放發布日期、發售日、推算日期、時間、時區或純年份；"
             "37) 原文沒有 Discord、直播、線上、報名連結、獎勵或限制時，不可自行補這些資訊；"
             "38) detail_lines 只列原文有根據的活動名稱、時間、參與方式、獎勵、限制與下一步；缺少的項目直接省略，不要寫未公布/未提供；"
             "39) number_facts 每項都必須有 meaning，說明該數字在原文的對象與意義；"
@@ -580,6 +670,7 @@ def apply_minimax_story_refine(
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
             f"發布時間: {card.published_at}\n"
+            f"既有標題: {card.title}\n"
             f"內容: {card.raw_text[:4200]}"
         )
         try:
@@ -600,11 +691,14 @@ def apply_minimax_story_refine(
                     "不要捏造年份、人名、物流、轉運、代購或限制條件。"
                     "活動標題要抓活動名稱與主要獎勵/參與條件，不要把 Ambassador、hosted by 這種主辦身份當主題。"
                     "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
-                    "number_facts.text 只能放原文實際出現的數字；原文沒有 Discord、直播、線上或獎勵時不可補。"
+                    "number_facts.text 只能放原文實際出現的價格、數量、名額、比例、成交價、積分門檻，不要放日期/時間/時區/純年份；原文沒有 Discord、直播、線上或獎勵時不可補。"
+                    "official 只給 Renaiss 官方來源；other 只能單獨出現；events 只在 card_type=event 時使用。"
+                    "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
                     f"發布時間:{card.published_at}\n"
+                    f"既有標題:{card.title}\n"
                     f"內容:{card.raw_text[:3200]}"
                 )
                 raw = minimax_chat(
@@ -625,14 +719,18 @@ def apply_minimax_story_refine(
                     "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
                     "timeline_date,timeline_end_date,number_facts,classification_reason,detail_summary,detail_lines。"
                     "topic_labels 必須是陣列，event 類活動至少包含 events；官方帳號 @renaissxyz 至少包含 official。"
+                    "other 只能單獨出現；events 只在 card_type=event 時使用；official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord。"
+                    "Pokemon Center、零售商、媒體或一般情報帳號不算 official。"
+                    "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
+                    "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
                     "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"
                     "layout 只能是 poster/brief/data/timeline，不可輸出 event_poster 等 template 名稱。"
                     "只能依原文，不可補 Discord、直播、線上、報名連結、獎勵或限制；"
                     "不得使用推測/可能/待官方/尚未公布/以官方公布為準等語氣。"
                     "缺少地點、獎勵、限制時直接不要列那一項，不要寫未提供。"
-                    "number_facts.text 只能是原文實際出現的數字字串，meaning 不可空白；不能放發布日或推算日，不能取短網址尾碼。"
+                    "number_facts.text 只能是原文實際出現的價格、數量、名額、比例、成交價、積分門檻，meaning 不可空白；不能放發布日、發售日、推算日、時間、時區、純年份，不能取短網址尾碼。"
                     "如果 event 資訊不足，就只列原文有的活動名稱、時間、社群聚會與下一步。\n\n"
-                    f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n內容:{card.raw_text[:3200]}"
+                    f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n既有標題:{card.title}\n內容:{card.raw_text[:3200]}"
                 )
                 raw = minimax_chat(
                     strict_retry_prompt,
