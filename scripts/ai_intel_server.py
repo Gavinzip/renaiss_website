@@ -1663,6 +1663,12 @@ def _strip_missing_cover_images(value: object) -> None:
             _strip_missing_cover_images(child)
 
 
+def _is_client_disconnect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
@@ -1698,10 +1704,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             with target.open("rb") as fh:
                 self.copyfile(fh, self.wfile)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            return True
         except OSError as exc:
-            if exc.errno in {errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT}:
+            if _is_client_disconnect_error(exc):
                 return True
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "failed to read data file")
         except Exception:
@@ -1868,19 +1872,24 @@ class Handler(SimpleHTTPRequestHandler):
         extra_headers: dict[str, str] | list[tuple[str, str]] | None = None,
     ) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(int(status))
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(raw)))
-        if isinstance(extra_headers, dict):
-            for key, value in extra_headers.items():
-                self.send_header(str(key), str(value))
-        elif isinstance(extra_headers, list):
-            for key, value in extra_headers:
-                self.send_header(str(key), str(value))
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.send_response(int(status))
+            self._set_cors_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            if isinstance(extra_headers, dict):
+                for key, value in extra_headers.items():
+                    self.send_header(str(key), str(value))
+            elif isinstance(extra_headers, list):
+                for key, value in extra_headers:
+                    self.send_header(str(key), str(value))
+            self.end_headers()
+            self.wfile.write(raw)
+        except OSError as exc:
+            if _is_client_disconnect_error(exc):
+                return
+            raise
 
     def _require_admin(self, path: str) -> bool:
         if path not in PROTECTED_POST_PATHS:
