@@ -97,7 +97,144 @@ def _valid_ai_date(value: Any) -> str:
     return "__INVALID_DATE__"
 
 
+def _is_official_x_public_source(card: StoryCard) -> bool:
+    provider = str(card.provider or "").strip().lower()
+    return bool(
+        is_official_account_handle(card.account)
+        and (is_x_source_url(card.url) or provider in {"twitter-cli", "tweet-result", "r.jina.ai"})
+    )
+
+
+def _fallback_public_copy(card: StoryCard) -> tuple[str, str, list[str], str, list[str]]:
+    raw = clean_text(strip_links_mentions(card.raw_text or card.title or card.summary))
+    existing_summary = clean_text(card.summary or "")
+    if re.search(r"AI\s*尚未完成|待\s*AI|等待模型", existing_summary, re.I):
+        existing_summary = ""
+    title = compact_point(card.title or raw, 96) or "Renaiss 官方更新"
+    summary = compact_point(existing_summary or raw or title, 220)
+    source_lines = [clean_text(strip_links_mentions(x)) for x in split_sentences(raw)]
+    bullets: list[str] = []
+    for line in [*(card.bullets or []), *source_lines]:
+        item = compact_point(line, 88)
+        if item and item not in bullets:
+            bullets.append(item)
+        if len(bullets) >= 3:
+            break
+    while len(bullets) < 3:
+        fallback = [
+            summary or title,
+            "來源：Renaiss 官方 X。",
+            "請查看官方原文確認完整細節。",
+        ][len(bullets)]
+        if fallback not in bullets:
+            bullets.append(fallback)
+        else:
+            bullets.append(f"官方來源補充 {len(bullets) + 1}")
+    detail_summary = compact_point(card.detail_summary or summary or raw or title, 360)
+    detail_lines = normalize_detail_lines(card.detail_lines, limit=6)
+    for line in bullets:
+        if line and line not in detail_lines:
+            detail_lines.append(line)
+        if len(detail_lines) >= 4:
+            break
+    while len(detail_lines) < 4:
+        fallback = [
+            "來源：Renaiss 官方 X",
+            f"主題：{title}",
+            f"重點：{summary or title}",
+            "下一步：查看官方原文確認完整細節。",
+        ][len(detail_lines)]
+        if fallback not in detail_lines:
+            detail_lines.append(fallback)
+        else:
+            detail_lines.append(f"官方來源補充 {len(detail_lines) + 1}")
+    return title[:120], summary[:320], bullets[:3], detail_summary[:420], detail_lines[:6]
+
+
+def _publish_official_x_public_fallback(
+    card: StoryCard,
+    error: str,
+    *,
+    model: str = "",
+    title: str = "",
+    summary: str = "",
+    bullets: list[str] | None = None,
+    card_type: str = "",
+    layout: str = "",
+    tags: list[str] | None = None,
+    confidence: float | None = None,
+    event_facts: dict[str, str] | None = None,
+    topic_labels: list[str] | None = None,
+    timeline_date: str = "",
+    timeline_end_date: str = "",
+    number_facts: list[dict[str, str]] | None = None,
+    detail_summary: str = "",
+    detail_lines: list[str] | None = None,
+    reason: str = "",
+) -> None:
+    fallback_title, fallback_summary, fallback_bullets, fallback_detail_summary, fallback_detail_lines = _fallback_public_copy(card)
+    final_type = AI_CARD_TYPE_ALIASES.get(str(card_type or card.card_type or "").strip().lower(), str(card_type or card.card_type or "").strip().lower())
+    if final_type not in AI_CARD_TYPES:
+        final_type = "announcement"
+    final_layout = str(layout or card.layout or "").strip().lower()
+    if final_layout not in AI_LAYOUTS:
+        final_layout = "brief" if final_type != "event" else "timeline"
+    labels = normalize_topic_labels(topic_labels or card.topic_labels or [])
+    labels = [label for label in labels if label not in {"other", "community"}]
+    if final_type == "event":
+        if "events" not in labels:
+            labels.append("events")
+    else:
+        labels = [label for label in labels if label != "events"]
+    if "official" not in labels:
+        labels.insert(0, "official")
+    cleaned_tags = [clean_text(str(x))[:16] for x in (tags or card.tags or []) if clean_text(str(x))]
+    cleaned_tags = [tag for tag in cleaned_tags if tag not in {"待審核", "去重淘汰", "篩選淘汰"}]
+    if "official" not in [x.lower() for x in cleaned_tags]:
+        cleaned_tags.insert(0, "official")
+    valid_timeline_date = "" if timeline_date == "__INVALID_DATE__" else str(timeline_date or card.timeline_date or "")
+    valid_timeline_end_date = "" if timeline_end_date == "__INVALID_DATE__" else str(timeline_end_date or card.timeline_end_date or "")
+    try:
+        final_confidence = float(confidence if confidence is not None else card.confidence or 0.0)
+    except Exception:
+        final_confidence = 0.0
+
+    card.title = clean_text(title or fallback_title)[:120]
+    card.summary = clean_text(summary or fallback_summary or card.title)[:320]
+    card.bullets = [clean_text(str(x))[:120] for x in (bullets or fallback_bullets) if clean_text(str(x))][:3] or fallback_bullets[:3]
+    card.card_type = final_type
+    card.layout = final_layout
+    card.tags = cleaned_tags[:3]
+    card.confidence = max(0.55, min(1.0, final_confidence or 0.55))
+    card.event_facts = normalize_event_facts(event_facts or card.event_facts) if final_type == "event" else {}
+    card.topic_labels = labels or ["official"]
+    card.timeline_date = valid_timeline_date
+    card.timeline_end_date = valid_timeline_end_date
+    card.number_facts = number_facts or card.number_facts or []
+    card.detail_summary = clean_text(detail_summary or fallback_detail_summary or card.summary)[:420]
+    card.detail_lines = normalize_detail_lines(detail_lines or fallback_detail_lines, limit=6)
+    card.classified_by = "ai"
+    card.ai_model = model or card.ai_model or minimax_model_name()
+    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_confidence = card.confidence
+    card.ai_status = "ok"
+    card.review_status = AI_REVIEW_AUTO_APPROVED
+    card.classification_reason = (
+        clean_text(reason)
+        or "官方 X 來源即使 AI 驗證未完整通過，也先公開；後台仍保留錯誤原因供人工修正。"
+    )[:360]
+    card.classification_error = clean_text(str(error or "official_x_public_fallback"))[:220]
+    card.template_id = choose_template_id(card.card_type)
+    card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
+    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
+    card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+    card.importance = score_card(card)
+
+
 def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> None:
+    if _is_official_x_public_source(card):
+        _publish_official_x_public_fallback(card, error, model=model)
+        return
     card.classified_by = "ai"
     card.ai_model = model or minimax_model_name()
     card.ai_version = AI_CLASSIFICATION_VERSION
@@ -240,6 +377,28 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     errors.extend(_unsupported_ai_copy_errors(copy_for_grounding, source_for_grounding))
 
     if errors:
+        if _is_official_x_public_source(card):
+            _publish_official_x_public_fallback(
+                card,
+                ",".join(errors),
+                model=model,
+                title=title,
+                summary=summary,
+                bullets=bullets,
+                card_type=card_type,
+                layout=layout,
+                tags=tags,
+                confidence=confidence,
+                event_facts=event_facts,
+                topic_labels=topic_labels,
+                timeline_date=timeline_date,
+                timeline_end_date=timeline_end_date,
+                number_facts=number_facts,
+                detail_summary=detail_summary,
+                detail_lines=detail_lines,
+                reason=reason,
+            )
+            return True
         _set_ai_review_queue(card, ",".join(errors), model=model)
         if title:
             card.title = title[:120]
@@ -319,6 +478,8 @@ def build_ai_pending_card(
         review_status=AI_REVIEW_ADMIN_QUEUE,
         classification_error="ai_not_run",
     )
+    if _is_official_x_public_source(card):
+        _publish_official_x_public_fallback(card, "ai_not_run", model=card.ai_model)
     card.template_id = choose_template_id(card.card_type)
     card.importance = score_card(card)
     return card

@@ -1239,7 +1239,17 @@ def _removed_cards(before: list[StoryCard], after: list[StoryCard], force_ids: s
 
 def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     reason_key = str(reason or "review").strip().lower()
-    if reason_key in {"dedupe", "source_preference", "ai_dedupe", "local_dedupe"} and _is_official_x_source_card(card):
+    if _is_official_x_source_card(card):
+        card.review_status = AI_REVIEW_AUTO_APPROVED
+        if str(card.ai_status or "").strip().lower() in {"needs_review", "pending", "failed"}:
+            card.ai_status = "ok"
+        labels = normalize_topic_labels(card.topic_labels)
+        labels = [label for label in labels if label != "other"]
+        if "official" not in labels:
+            labels.insert(0, "official")
+        card.topic_labels = labels or ["official"]
+        card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+        card.classification_error = clean_text(card.classification_error or reason_key or "official_x_kept_public")[:220]
         return card
     label_map = {
         "dedupe": "去重淘汰",
@@ -1454,6 +1464,10 @@ def curate_cards(
     removed = 0
     for c in cards:
         c.importance = score_card(c)
+        if _is_official_x_source_card(c):
+            c.importance = max(c.importance, 99.0)
+            filtered.append(c)
+            continue
         if c.id and (c.id in force_ids or c.manual_pick):
             c.importance = max(c.importance, 99.0)
             filtered.append(c)
