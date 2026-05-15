@@ -220,11 +220,20 @@
     let intelFeedPrefetchArmed = false;
     let intelFeedPrefetchStarted = false;
     const intelFeedLangInflight = new Map();
+    let intelFeedRefreshSeq = 0;
+    let intelLatestFeedGeneratedMs = 0;
     let intelAuthStateRequest = null;
     let pokemonNewsAutoRequested = false;
 
     function isUsableIntelFeed(feed) {
       return Boolean(feed && typeof feed === "object" && Array.isArray(feed.cards) && feed.cards.length > 0);
+    }
+
+    function intelFeedGeneratedAtMs(feed) {
+      const raw = String(feed?.generated_at || "").trim();
+      if (!raw) return 0;
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) ? parsed : 0;
     }
 
     function scheduleIdleTask(callback, delay = 0) {
@@ -363,7 +372,28 @@
       }
     }
 
+    function clearIntelFeedSnapshots(lang = "") {
+      try {
+        const tag = String(lang || "").trim();
+        if (tag) {
+          localStorage.removeItem(intelFeedSnapshotKey(tag));
+          return;
+        }
+        const keys = [];
+        for (let idx = 0; idx < localStorage.length; idx += 1) {
+          keys.push(localStorage.key(idx));
+        }
+        keys.forEach((key) => {
+          if (String(key || "").startsWith(INTEL_FEED_SNAPSHOT_PREFIX)) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch (_error) {
+      }
+    }
+
     function saveIntelFeedSnapshot(lang, feed) {
+      if (intelCanEdit()) return;
       if (!feed || typeof feed !== "object") return;
       const tag = normalizeUiLang(lang || feed.lang || currentUiLang);
       const cards = Array.isArray(feed.cards) ? feed.cards : null;
@@ -379,6 +409,7 @@
     }
 
     function readCachedIntelFeed(lang, allowBaseFallback = true) {
+      if (intelCanEdit()) return null;
       const tag = normalizeUiLang(lang || currentUiLang);
       const inMemory = intelFeedLangCache.get(tag);
       if (isUsableIntelFeed(inMemory)) return inMemory;
@@ -397,8 +428,7 @@
       const tag = normalizeUiLang(lang || currentUiLang);
       const cached = readCachedIntelFeed(tag, false);
       if (!isUsableIntelFeed(cached)) return false;
-      renderIntelFeed({ ...cached, lang: tag, _from_lang_cache: true });
-      return true;
+      return renderIntelFeed({ ...cached, lang: tag, _from_lang_cache: true }, { allowStale: true });
     }
 
     const LANG_MORPH_LATIN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -1745,9 +1775,23 @@
       scheduleIntelDeferredCategoryRender(6200);
     }
 
-    function renderIntelFeed(payload) {
-      intelFeedCache = payload && typeof payload === "object" ? payload : null;
-      const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
+    function renderIntelFeed(payload, options = {}) {
+      const renderOptions = options && typeof options === "object" ? options : {};
+      const nextFeed = payload && typeof payload === "object" ? payload : null;
+      if (!nextFeed) return false;
+      const generatedMs = intelFeedGeneratedAtMs(nextFeed);
+      if (
+        !renderOptions.force
+        && !renderOptions.allowStale
+        && !nextFeed?._recovered_from_snapshot
+        && generatedMs
+        && intelLatestFeedGeneratedMs
+        && generatedMs < intelLatestFeedGeneratedMs
+      ) {
+        return false;
+      }
+      intelFeedCache = nextFeed;
+      const payloadLang = normalizeUiLang(nextFeed?.lang || currentUiLang || "zh-Hant");
       const payloadMode = String(payload?._i18n?.mode || "");
       const shouldPersistSnapshot = !payload?._recovered_from_snapshot && !(
         payloadLang !== "zh-Hant"
@@ -1757,6 +1801,9 @@
         intelFeedLangCache.set(payloadLang, intelFeedCache);
         if (shouldPersistSnapshot) {
           saveIntelFeedSnapshot(payloadLang, intelFeedCache);
+        }
+        if (generatedMs && !intelFeedCache?._recovered_from_snapshot) {
+          intelLatestFeedGeneratedMs = Math.max(intelLatestFeedGeneratedMs, generatedMs);
         }
       }
       const generatedAt = document.getElementById("intel-generated-at");
@@ -1778,7 +1825,7 @@
       const communityList = document.getElementById("intel-community-list");
       const growthList = document.getElementById("intel-growth-list");
       const recentList = document.getElementById("intel-recent-list");
-      if (!generatedAt || !latestSourceAt || !cardCount || !accountCount || !headline || !conclusion || !takeaways || !sourceStatus) return;
+      if (!generatedAt || !latestSourceAt || !cardCount || !accountCount || !headline || !conclusion || !takeaways || !sourceStatus) return false;
 
       const cards = Array.isArray(payload?.cards) ? payload.cards : [];
       const routed = routeIntelCards(cards);
@@ -1986,24 +2033,26 @@
       if (payload?._recovered_from_snapshot) {
         setIntelMessage(uiLabel("feedFailedUsingSnapshot"), "");
       }
+      return true;
     }
 
     async function fetchIntelFeed(langOverride = "", options = {}) {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
       const opts = options && typeof options === "object" ? options : {};
-      const shouldDedupe = opts.dedupe !== false && !opts.cacheBust;
+      const adminMode = Boolean(opts.adminMode) || intelCanEdit();
+      const shouldDedupe = opts.dedupe !== false && !opts.cacheBust && !adminMode;
       if (shouldDedupe && intelFeedLangInflight.has(requestLang)) {
         return intelFeedLangInflight.get(requestLang);
       }
       const fetchPromise = (async () => {
-        const allowSnapshot = opts.allowSnapshot !== false;
+        const allowSnapshot = !adminMode && opts.allowSnapshot !== false;
         const canUseApi = window.location.protocol !== "file:";
         let apiError = null;
         if (canUseApi) {
           try {
             const controller = new AbortController();
             const timeout = window.setTimeout(() => controller.abort(), 12000);
-            const cacheBust = opts.cacheBust ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
+            const cacheBust = (opts.cacheBust || adminMode) ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
             const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}${cacheBust}`), {
               cache: "no-store",
               credentials: "include",
@@ -2049,18 +2098,42 @@
     }
 
     async function refreshIntelFeedForCurrentLang(options = {}) {
-      const payload = await fetchIntelFeed(currentUiLang, options);
-      renderIntelFeed(payload);
-      scheduleLangFeedRefresh(payload);
+      const opts = options && typeof options === "object" ? options : {};
+      const adminMode = Boolean(opts.adminMode) || intelCanEdit();
+      const fetchOptions = adminMode
+        ? { ...opts, adminMode: true, cacheBust: true, allowSnapshot: false, dedupe: false }
+        : opts;
+      const refreshSeq = ++intelFeedRefreshSeq;
+      const payload = await fetchIntelFeed(currentUiLang, fetchOptions);
+      if (refreshSeq < intelFeedRefreshSeq && !fetchOptions.allowOutOfOrder) return payload;
+      if (renderIntelFeed(payload)) {
+        scheduleLangFeedRefresh(payload);
+      }
       return payload;
     }
 
-    function applyReturnedIntelFeed(data) {
+    function applyReturnedIntelFeed(data, options = {}) {
       const feed = data?.feed;
       if (!feed || typeof feed !== "object") return false;
-      renderIntelFeed(feed);
+      if (!renderIntelFeed(feed, options)) return false;
       scheduleLangFeedRefresh(feed);
       return true;
+    }
+
+    async function refreshIntelFeedAfterAdminMutation(data) {
+      clearIntelFeedSnapshots();
+      intelFeedLangInflight.clear();
+      const renderedReturnedFeed = applyReturnedIntelFeed(data, { force: true });
+      try {
+        await refreshIntelFeedForCurrentLang({
+          adminMode: true,
+          cacheBust: true,
+          allowSnapshot: false,
+          dedupe: false,
+        });
+      } catch (error) {
+        if (!renderedReturnedFeed) throw error;
+      }
     }
 
     function prefetchIntelFeeds() {
@@ -2727,9 +2800,7 @@
 
     async function submitIntelPick(id, action, reason = "") {
       const data = await postIntel("/api/intel/pick", { id, action, reason });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelFeedback(id, defaultLabel = "insight") {
@@ -2758,9 +2829,7 @@
         return false;
       }
       const data = await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
       return true;
     }
 
@@ -2770,9 +2839,7 @@
         timeline_date: String(timelineDate || "").trim(),
         timeline_end_date: String(timelineEndDate || "").trim(),
       });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelSbtUpdate(id, sbtNames = "", sbtAcquisition = "") {
@@ -2781,9 +2848,7 @@
         sbt_names: String(sbtNames || "").trim(),
         sbt_acquisition: String(sbtAcquisition || "").trim(),
       });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelEventWallUpdate(id, eventWall) {
@@ -2791,16 +2856,12 @@
         id,
         event_wall: Boolean(eventWall),
       });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelContentRefresh(id) {
       const data = await postIntel("/api/intel/refresh-content", { id });
-      if (!applyReturnedIntelFeed(data)) {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
       return data || {};
     }
 
