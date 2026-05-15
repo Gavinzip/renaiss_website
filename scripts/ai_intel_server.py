@@ -1744,8 +1744,21 @@ class Handler(SimpleHTTPRequestHandler):
             "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
         )
 
+    def _static_cache_control(self) -> str:
+        path = self._request_path()
+        if path.startswith("/api/") or path.startswith("/data/generated_covers/"):
+            return ""
+        if path == "/" or path.endswith(".html"):
+            return "no-store"
+        if path.endswith((".js", ".css")):
+            return "no-cache, max-age=0, must-revalidate"
+        return ""
+
     def end_headers(self) -> None:
         self._set_security_headers()
+        cache_control = self._static_cache_control()
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         super().end_headers()
 
     def _request_host_origin(self) -> str:

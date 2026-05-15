@@ -256,6 +256,12 @@
       }
     }
 
+    function delayMs(ms) {
+      return new Promise((resolve) => {
+        window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
+    }
+
     function normalizeIntelCategoryName(category) {
       const value = String(category || "").trim().toLowerCase();
       return INTEL_CATEGORY_RENDER_ORDER.includes(value) ? value : "events";
@@ -393,7 +399,6 @@
     }
 
     function saveIntelFeedSnapshot(lang, feed) {
-      if (intelCanEdit()) return;
       if (!feed || typeof feed !== "object") return;
       const tag = normalizeUiLang(lang || feed.lang || currentUiLang);
       const cards = Array.isArray(feed.cards) ? feed.cards : null;
@@ -408,8 +413,9 @@
       }
     }
 
-    function readCachedIntelFeed(lang, allowBaseFallback = true) {
-      if (intelCanEdit()) return null;
+    function readCachedIntelFeed(lang, allowBaseFallback = true, options = {}) {
+      const opts = options && typeof options === "object" ? options : {};
+      if (intelCanEdit() && !opts.allowAdminSnapshot) return null;
       const tag = normalizeUiLang(lang || currentUiLang);
       const inMemory = intelFeedLangCache.get(tag);
       if (isUsableIntelFeed(inMemory)) return inMemory;
@@ -426,7 +432,7 @@
 
     function renderCachedIntelFeedForLang(lang) {
       const tag = normalizeUiLang(lang || currentUiLang);
-      const cached = readCachedIntelFeed(tag, false);
+      const cached = readCachedIntelFeed(tag, false, { allowAdminSnapshot: true });
       if (!isUsableIntelFeed(cached)) return false;
       return renderIntelFeed({ ...cached, lang: tag, _from_lang_cache: true }, { allowStale: true });
     }
@@ -880,12 +886,15 @@
       intelAuthStateRequest = (async () => {
         intelAuthState.checking = true;
         updateIntelAuthUi();
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 6000);
         try {
           const response = await fetch(intelApiUrl("/api/auth/me"), {
             method: "GET",
             credentials: "include",
             headers: buildIntelAuthHeaders(),
             cache: "no-store",
+            signal: controller.signal,
           });
           const data = await response.json().catch(() => ({}));
           if (!response.ok || !data?.ok) {
@@ -915,6 +924,7 @@
           intelAuthState.error = String(error?.message || "");
           clearIntelAuthToken();
         } finally {
+          window.clearTimeout(timeout);
           intelAuthState.checking = false;
           intelAuthStateRequest = null;
           updateIntelAuthUi();
@@ -2182,10 +2192,27 @@
     }
 
     async function attemptIntelAutoRepair(error) {
+      const cached = readCachedIntelFeed(currentUiLang, true, { allowAdminSnapshot: true });
+      if (cached && isUsableIntelFeed(cached)) {
+        renderIntelFeed(
+          {
+            ...cached,
+            lang: normalizeUiLang(cached.lang || currentUiLang),
+            _recovered_from_snapshot: true,
+            _recover_error: String(error?.message || "api_fetch_failed"),
+          },
+          { allowStale: true },
+        );
+        scheduleLangFeedRefresh(cached);
+      }
       try {
         const alreadyTried = sessionStorage.getItem(INTEL_AUTO_REPAIR_SESSION_KEY);
-        if (alreadyTried) return false;
-        await clearIntelAppState({ preserveLang: true, preserveApiBase: true, clearCacheStorage: false });
+        if (alreadyTried) {
+          if (!cached) {
+            setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
+          }
+          return Boolean(cached);
+        }
         sessionStorage.setItem(INTEL_AUTO_REPAIR_SESSION_KEY, new Date().toISOString());
         const payload = await fetchIntelFeed(currentUiLang, { cacheBust: true, allowSnapshot: false });
         renderIntelFeed(payload);
@@ -2194,8 +2221,10 @@
         prefetchIntelFeeds();
         return true;
       } catch (_repairError) {
-        setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
-        return false;
+        if (!cached) {
+          setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
+        }
+        return Boolean(cached);
       }
     }
 
@@ -3100,10 +3129,14 @@
     });
 
     async function renderIntelOnLoad() {
+      let authReadySoon = Promise.resolve();
       if (!intelAuthState.ready && location.protocol !== "file:") {
-        try {
-          await fetchIntelAuthState();
-        } catch (_error) {}
+        authReadySoon = fetchIntelAuthState().catch(() => {});
+        await Promise.race([authReadySoon, delayMs(1500)]);
+      }
+      const renderedCached = renderCachedIntelFeedForLang(currentUiLang);
+      if (renderedCached) {
+        setLangBuildStatus(`${langDisplayName(currentUiLang)} updating`, "working");
       }
       try {
         await refreshIntelFeedForCurrentLang();
@@ -3111,5 +3144,6 @@
       } catch (error) {
         await attemptIntelAutoRepair(error);
       }
+      authReadySoon.catch(() => {});
       maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
     }
