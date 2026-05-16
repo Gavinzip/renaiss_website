@@ -199,7 +199,9 @@
       el.classList.toggle("is-ready", mode === "ready");
     }
 
-    const INTEL_AUTO_REPAIR_SESSION_KEY = "intel_auto_repair_attempt_v1";
+    const INTEL_POST_TIMEOUT_MS = 25000;
+    const INTEL_LONG_POST_TIMEOUT_MS = 75000;
+    const INTEL_ADMIN_STATUS_TIMEOUT_MS = 9000;
     const INTEL_CATEGORY_RENDER_ORDER = Object.freeze([
       "events",
       "official",
@@ -223,6 +225,7 @@
     let intelFeedRefreshSeq = 0;
     let intelLatestFeedGeneratedMs = 0;
     let intelAuthStateRequest = null;
+    let intelAutoRepairInFlight = false;
     let pokemonNewsAutoRequested = false;
 
     function isUsableIntelFeed(feed) {
@@ -2134,15 +2137,22 @@
       clearIntelFeedSnapshots();
       intelFeedLangInflight.clear();
       const renderedReturnedFeed = applyReturnedIntelFeed(data, { force: true });
-      try {
-        await refreshIntelFeedForCurrentLang({
-          adminMode: true,
-          cacheBust: true,
-          allowSnapshot: false,
-          dedupe: false,
+      const refreshPromise = refreshIntelFeedForCurrentLang({
+        adminMode: true,
+        cacheBust: true,
+        allowSnapshot: false,
+        dedupe: false,
+      });
+      if (renderedReturnedFeed) {
+        refreshPromise.catch((error) => {
+          setIntelMessage(`已套用修改；背景刷新失敗：${String(error?.message || error)}`, "error");
         });
+        return;
+      }
+      try {
+        await refreshPromise;
       } catch (error) {
-        if (!renderedReturnedFeed) throw error;
+        throw error;
       }
     }
 
@@ -2205,15 +2215,11 @@
         );
         scheduleLangFeedRefresh(cached);
       }
+      if (intelAutoRepairInFlight) {
+        return Boolean(cached);
+      }
+      intelAutoRepairInFlight = true;
       try {
-        const alreadyTried = sessionStorage.getItem(INTEL_AUTO_REPAIR_SESSION_KEY);
-        if (alreadyTried) {
-          if (!cached) {
-            setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
-          }
-          return Boolean(cached);
-        }
-        sessionStorage.setItem(INTEL_AUTO_REPAIR_SESSION_KEY, new Date().toISOString());
         const payload = await fetchIntelFeed(currentUiLang, { cacheBust: true, allowSnapshot: false });
         renderIntelFeed(payload);
         scheduleLangFeedRefresh(payload);
@@ -2225,42 +2231,76 @@
           setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
         }
         return Boolean(cached);
+      } finally {
+        intelAutoRepairInFlight = false;
       }
     }
 
     async function postIntel(path, body) {
-      const response = await fetch(intelApiUrl(path), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(body || {}),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        if (response.status === 401) {
-          handleIntelUnauthorized();
+      const postPath = String(path || "");
+      const timeoutMs = (
+        postPath === "/api/intel/refresh-content"
+        || postPath === "/api/intel/pokemon-news"
+        || postPath === "/api/intel/restore"
+      )
+        ? INTEL_LONG_POST_TIMEOUT_MS
+        : INTEL_POST_TIMEOUT_MS;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(intelApiUrl(path), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body || {}),
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          if (response.status === 401) {
+            handleIntelUnauthorized();
+          }
+          throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        return data;
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("request_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-      return data;
     }
 
     async function fetchIntelAdminStatus(limit = 10) {
       const safeLimit = Math.max(4, Math.min(Number(limit) || 10, 30));
-      const response = await fetch(intelApiUrl(`/api/intel/admin-status?limit=${safeLimit}`), {
-        method: "GET",
-        credentials: "include",
-        headers: buildIntelAuthHeaders(),
-        cache: "no-store",
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok || typeof data?.status !== "object") {
-        if (response.status === 401) {
-          handleIntelUnauthorized();
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_ADMIN_STATUS_TIMEOUT_MS);
+      try {
+        const response = await fetch(intelApiUrl(`/api/intel/admin-status?limit=${safeLimit}`), {
+          method: "GET",
+          credentials: "include",
+          headers: buildIntelAuthHeaders(),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok || typeof data?.status !== "object") {
+          if (response.status === 401) {
+            handleIntelUnauthorized();
+          }
+          throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        return data.status;
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("admin_status_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-      return data.status;
     }
 
     async function triggerWebsiteBackup() {
