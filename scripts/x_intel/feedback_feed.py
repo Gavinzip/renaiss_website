@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+import os
+
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 from . import sources as _sources
+from .embedding_cache import embedding_cosine_similarity, ensure_embeddings_for_rows
+from .knowledge_memory import (
+    knowledge_embedding_model,
+    knowledge_row_for_card,
+    memory_window_for_card,
+    resolve_openai_embedding_key,
+    write_knowledge_memory,
+)
 
 globals().update(vars(_bootstrap))
 globals().update(vars(_editorial))
 globals().update(vars(_sources))
 
 # Domain: feedback memory, manual picks, curation, feed payload, sync entrypoints
+
+def _emit_sync_progress(progress_callback: Any | None, event_name: str, **payload: Any) -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(event_name, payload)
+    except Exception:
+        return
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,11 +76,132 @@ DEFAULT_MEMORY_RULES = [
 
 DEFAULT_FEED_MEMORY_RETENTION_DAYS = 30
 DEFAULT_FEED_QUEUE_RETENTION_DAYS = 30
+DISCORD_MONITOR_STATE_FILENAME = "x_intel_discord_monitor_state.json"
+DEFAULT_DISCORD_INITIAL_LOOKBACK_HOURS = 48
 
 
 FORCED_COLLECTIBLES_CHANNEL_ID = "1480867987270402149"
 FORCED_DISCORD_CARD_ID_RE = re.compile(r"^discord-(\d+)-\d+$", re.I)
 FORCED_DISCORD_URL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
+
+
+def _discord_monitor_state_path() -> Path:
+    return data_dir() / DISCORD_MONITOR_STATE_FILENAME
+
+
+def _read_discord_monitor_state() -> dict[str, Any]:
+    raw = read_json(_discord_monitor_state_path(), {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_discord_monitor_state(state: dict[str, Any]) -> None:
+    payload = state if isinstance(state, dict) else {}
+    payload["updated_at"] = _now_iso()
+    write_json(_discord_monitor_state_path(), payload)
+
+
+def _discord_initial_since_dt(window_since_dt: datetime) -> datetime:
+    try:
+        hours = int(os.getenv("DISCORD_MONITOR_INITIAL_LOOKBACK_HOURS") or DEFAULT_DISCORD_INITIAL_LOOKBACK_HOURS)
+    except Exception:
+        hours = DEFAULT_DISCORD_INITIAL_LOOKBACK_HOURS
+    recent_floor = datetime.now(timezone.utc) - timedelta(hours=max(1, min(hours, 24 * 30)))
+    return max(window_since_dt, recent_floor)
+
+
+def _discord_card_message_id(card: StoryCard) -> str:
+    mid = str(getattr(card, "source_message_id", "") or "").strip()
+    if mid:
+        return mid
+    parts = str(card.id or "").split("-")
+    return parts[-1] if len(parts) >= 3 and parts[-1].isdigit() else ""
+
+
+def _discord_checkpoint_from_existing(cards: list[StoryCard]) -> dict[str, dict[str, str]]:
+    checkpoints: dict[str, dict[str, str]] = {}
+    for card in cards:
+        channel_id = _extract_discord_channel_id_from_card(card)
+        if not channel_id:
+            continue
+        published = str(
+            getattr(card, "source_message_timestamp", "")
+            or card.published_at
+            or ""
+        ).strip()
+        dt = parse_datetime_guess(published)
+        if not dt:
+            continue
+        mid = _discord_card_message_id(card)
+        current = checkpoints.get(channel_id) or {}
+        current_dt = parse_datetime_guess(str(current.get("last_seen_timestamp") or ""))
+        if current_dt is None or dt > current_dt or (dt == current_dt and mid > str(current.get("last_seen_message_id") or "")):
+            checkpoints[channel_id] = {
+                "last_seen_message_id": mid,
+                "last_seen_timestamp": dt.isoformat(),
+                "source": "existing_feed",
+            }
+    return checkpoints
+
+
+def _discord_channel_checkpoint(
+    state: dict[str, Any],
+    existing_checkpoints: dict[str, dict[str, str]],
+    channel_id: str,
+) -> dict[str, str]:
+    channels = state.get("channels") if isinstance(state.get("channels"), dict) else {}
+    row = channels.get(channel_id) if isinstance(channels.get(channel_id), dict) else {}
+    state_id = str(row.get("last_seen_message_id") or "").strip()
+    state_ts = str(row.get("last_seen_timestamp") or "").strip()
+    if state_id or state_ts:
+        return {
+            "last_seen_message_id": state_id,
+            "last_seen_timestamp": state_ts,
+            "source": "state",
+        }
+    return existing_checkpoints.get(channel_id, {})
+
+
+def _update_discord_monitor_state(
+    *,
+    state: dict[str, Any],
+    configured_ids: list[str],
+    collect_meta: dict[str, dict[str, Any]],
+    checkpoints: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    channels = state.get("channels") if isinstance(state.get("channels"), dict) else {}
+    updated_channels = dict(channels)
+    now = _now_iso()
+    for channel_id in configured_ids:
+        meta = collect_meta.get(channel_id) if isinstance(collect_meta.get(channel_id), dict) else {}
+        previous = _discord_channel_checkpoint(state, checkpoints, channel_id)
+        latest_id = str(meta.get("latest_message_id") or previous.get("last_seen_message_id") or "").strip()
+        latest_ts = str(meta.get("latest_message_timestamp") or previous.get("last_seen_timestamp") or "").strip()
+        row = dict(updated_channels.get(channel_id) if isinstance(updated_channels.get(channel_id), dict) else {})
+        row.update(
+            {
+                "channel_id": channel_id,
+                "last_checked_at": now,
+                "last_seen_message_id": latest_id,
+                "last_seen_timestamp": latest_ts,
+                "last_after_message_id": str(meta.get("after_message_id") or previous.get("last_seen_message_id") or ""),
+                "last_since_timestamp": str(meta.get("since_timestamp") or ""),
+                "last_fetched_count": int(meta.get("fetched_count", 0) or 0),
+                "last_produced_count": int(meta.get("produced_count", 0) or 0),
+                "checkpoint_source": str(previous.get("source") or "initial"),
+            }
+        )
+        if meta.get("error"):
+            row["last_error"] = str(meta.get("error") or "")
+        else:
+            row["last_error"] = ""
+        updated_channels[channel_id] = row
+    next_state = {
+        **state,
+        "version": 1,
+        "channels": updated_channels,
+    }
+    _write_discord_monitor_state(next_state)
+    return next_state
 
 
 def _extract_discord_channel_id_from_card(card: StoryCard) -> str:
@@ -254,6 +398,8 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         dedupe_winner_post_id=str(item.get("dedupe_winner_post_id") or ""),
         dedupe_winner_url=str(item.get("dedupe_winner_url") or ""),
         dedupe_winner_title=str(item.get("dedupe_winner_title") or ""),
+        dedupe_similarity=float(item.get("dedupe_similarity") or 0.0),
+        dedupe_basis=[str(x) for x in item.get("dedupe_basis", []) if str(x).strip()][:10] if isinstance(item.get("dedupe_basis"), list) else [],
         number_facts=normalize_number_facts(item.get("number_facts")),
         classified_by=str(item.get("classified_by") or "legacy"),
         ai_model=str(item.get("ai_model") or ""),
@@ -263,6 +409,9 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         review_status=str(item.get("review_status") or ""),
         classification_reason=str(item.get("classification_reason") or ""),
         classification_error=str(item.get("classification_error") or ""),
+        source_channel_id=str(item.get("source_channel_id") or ""),
+        source_message_id=str(item.get("source_message_id") or ""),
+        source_message_timestamp=str(item.get("source_message_timestamp") or ""),
     )
 
 
@@ -786,6 +935,8 @@ CONTENT_REFRESH_PRESERVED_FIELDS = {
     "dedupe_winner_post_id",
     "dedupe_winner_url",
     "dedupe_winner_title",
+    "dedupe_similarity",
+    "dedupe_basis",
 }
 
 CONTENT_REFRESH_CLASSIFICATION_FIELDS = {
@@ -1237,9 +1388,25 @@ def _removed_cards(before: list[StoryCard], after: list[StoryCard], force_ids: s
     return out
 
 
+DEFAULT_PROTECTED_OFFICIAL_X_HANDLES = {"renaissxyz", "renaissofficial", "renaisscn", "renaiss_cn"}
+
+
+def _protected_official_x_handles() -> set[str]:
+    raw = str(os.getenv("INTEL_PROTECTED_OFFICIAL_X_HANDLES") or "").strip()
+    handles = set(DEFAULT_PROTECTED_OFFICIAL_X_HANDLES)
+    if raw:
+        handles.update(normalize_account_handle(part) for part in re.split(r"[,;\s]+", raw) if part.strip())
+    return {handle for handle in handles if handle}
+
+
+def _is_protected_official_x_source_card(card: StoryCard) -> bool:
+    handle = normalize_account_handle(card.account)
+    return bool(handle and handle in _protected_official_x_handles() and _is_official_x_source_card(card))
+
+
 def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     reason_key = str(reason or "review").strip().lower()
-    if _is_official_x_source_card(card):
+    if _is_protected_official_x_source_card(card):
         card.review_status = AI_REVIEW_AUTO_APPROVED
         if str(card.ai_status or "").strip().lower() in {"needs_review", "pending", "failed"}:
             card.ai_status = "ok"
@@ -1256,6 +1423,8 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
         "source_preference": "去重淘汰",
         "ai_dedupe": "去重淘汰",
         "local_dedupe": "去重淘汰",
+        "duplicate_existing_public": "去重淘汰",
+        "duplicate_batch_candidate": "去重淘汰",
         "curation": "篩選淘汰",
     }
     label = label_map.get(reason_key, "待審核")
@@ -1330,8 +1499,6 @@ def prune_expired_feed_memory(
     now_dt = now or datetime.now(timezone.utc)
     memory_retention_days = int(memory_days or _env_positive_int("INTEL_FEED_MEMORY_RETENTION_DAYS", DEFAULT_FEED_MEMORY_RETENTION_DAYS))
     queue_retention_days = int(queue_days or _env_positive_int("INTEL_FEED_QUEUE_RETENTION_DAYS", DEFAULT_FEED_QUEUE_RETENTION_DAYS))
-    public_cutoff = now_dt - timedelta(days=memory_retention_days)
-    queue_cutoff = now_dt - timedelta(days=queue_retention_days)
     kept: list[StoryCard] = []
     removed_public = 0
     removed_queue = 0
@@ -1345,17 +1512,18 @@ def prune_expired_feed_memory(
             kept_forced += 1
             continue
 
-        dt = _card_memory_datetime(card)
-        if dt is None:
+        retention_days = queue_retention_days if _is_admin_queue_card(card) else memory_retention_days
+        window = memory_window_for_card(card, now=now_dt, retention_days=retention_days)
+        if str(window.get("basis") or "") == "unknown":
             kept.append(card)
             kept_unknown_date += 1
             continue
 
         if _is_admin_queue_card(card):
-            if dt < queue_cutoff:
+            if bool(window.get("expired")):
                 removed_queue += 1
                 continue
-        elif dt < public_cutoff:
+        elif bool(window.get("expired")):
             removed_public += 1
             continue
         kept.append(card)
@@ -1363,6 +1531,7 @@ def prune_expired_feed_memory(
     return kept, {
         "memory_retention_days": memory_retention_days,
         "queue_retention_days": queue_retention_days,
+        "memory_window_mode": "event_date_minus_plus_days_or_published_plus_days",
         "removed_public": removed_public,
         "removed_queue": removed_queue,
         "kept_forced": kept_forced,
@@ -1379,41 +1548,461 @@ def _is_official_x_source_card(card: StoryCard) -> bool:
     return is_x_source_url(card.url) or provider in {"twitter-cli", "tweet-result", "r.jina.ai"}
 
 
+DEDUPE_ENGINE_VERSION = "20260518-knowledge-memory1"
+DEDUPE_STOPWORDS = {
+    "renaiss", "official", "community", "event", "events", "update", "updates", "card", "cards",
+    "https", "http", "com", "the", "and", "with", "this", "that", "your", "here", "from",
+    "官方", "社群", "活動", "更新", "公告", "貼文", "原文", "參與", "报名", "報名",
+}
+
+
+def _dedupe_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dedupe_blob(card: StoryCard, *, include_raw: bool = True) -> str:
+    facts = normalize_event_facts(card.event_facts)
+    pieces = [
+        card.title,
+        card.summary,
+        card.detail_summary,
+        " ".join(card.bullets or []),
+        facts.get("schedule", ""),
+        facts.get("location", ""),
+        facts.get("participation", ""),
+        facts.get("reward", ""),
+    ]
+    if include_raw:
+        pieces.append(card.raw_text)
+    return clean_text(" | ".join(str(part or "") for part in pieces if str(part or "").strip()))
+
+
+def _dedupe_terms(card: StoryCard) -> set[str]:
+    out: set[str] = set()
+    text = strip_links_mentions(_dedupe_blob(card)).lower()
+    for token in re.findall(r"[a-z0-9][a-z0-9_+#-]{2,}|[\u4e00-\u9fff]{2,16}", text):
+        t = token.strip().lower()
+        if len(t) < 3 or t in DEDUPE_STOPWORDS:
+            continue
+        if re.fullmatch(r"\d{1,2}", t):
+            continue
+        out.add(t)
+    return out
+
+
+def _dedupe_event_date_hint(card: StoryCard) -> str:
+    for raw in (card.timeline_date, card.timeline_end_date):
+        dt = _parse_iso_safe(str(raw or ""))
+        if dt:
+            return dt.date().isoformat()
+    facts = normalize_event_facts(card.event_facts)
+    published_dt = _parse_iso_safe(card.published_at)
+    for text in (facts.get("schedule", ""), _dedupe_blob(card)):
+        if not text:
+            continue
+        iso, _label = extract_timeline_date(text, base_dt=published_dt)
+        dt = _parse_iso_safe(iso)
+        if dt:
+            return dt.date().isoformat()
+    return ""
+
+
+def _canonical_dedupe_priority(card: StoryCard) -> float:
+    score = _card_quality_score(card)
+    if _is_protected_official_x_source_card(card):
+        score += 180.0
+    elif _is_official_x_source_card(card):
+        score += 65.0
+    if card.manual_pin:
+        score += 120.0
+    if card.manual_pick:
+        score += 100.0
+    if card.manual_bottom:
+        score += 40.0
+    if _dedupe_event_date_hint(card):
+        score += 8.0
+    return round(score, 3)
+
+
+def _dedupe_direct_reference(card: StoryCard, winner: StoryCard) -> bool:
+    source = f"{card.raw_text} {card.summary} {card.detail_summary} {card.url}".lower()
+    winner_id = str(winner.id or "").strip().lower()
+    winner_url = str(winner.url or "").strip().lower()
+    if winner_id and winner_id in source:
+        return True
+    return bool(winner_url and winner_url in source)
+
+
+def _dedupe_embedding_enabled() -> bool:
+    raw = str(os.getenv("INTEL_DEDUPE_EMBEDDING_ENABLED", "1") or "").strip().lower()
+    return raw not in {"0", "false", "no", "n", "off"}
+
+
+def _dedupe_embedding_env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _dedupe_embedding_env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _dedupe_embedding_thresholds() -> dict[str, float]:
+    return {
+        "candidate": _dedupe_embedding_env_float("INTEL_DEDUPE_EMBEDDING_CANDIDATE_THRESHOLD", 0.62),
+        "strong": _dedupe_embedding_env_float("INTEL_DEDUPE_EMBEDDING_STRONG_THRESHOLD", 0.86),
+        "same_date": _dedupe_embedding_env_float("INTEL_DEDUPE_EMBEDDING_SAME_DATE_THRESHOLD", 0.74),
+        "term_overlap": _dedupe_embedding_env_float("INTEL_DEDUPE_EMBEDDING_TERM_THRESHOLD", 0.68),
+    }
+
+
+def _build_embedding_dedupe_score_map(
+    new_cards: list[StoryCard],
+    canonical_cards: list[StoryCard],
+) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+    thresholds = _dedupe_embedding_thresholds()
+    stats: dict[str, Any] = {
+        "status": "empty",
+        "enabled": _dedupe_embedding_enabled(),
+        "candidate_threshold": float(thresholds["candidate"]),
+    }
+    if not stats["enabled"]:
+        stats["status"] = "disabled"
+        return {}, stats
+    if not new_cards or not canonical_cards:
+        return {}, stats
+
+    api_key = resolve_openai_embedding_key()
+    if not api_key:
+        stats["status"] = "missing_api_key"
+        return {}, stats
+
+    model = knowledge_embedding_model()
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    new_ids: list[str] = []
+    canonical_ids: list[str] = []
+    for card in new_cards:
+        cid = str(card.id or "").strip()
+        if not cid:
+            continue
+        new_ids.append(cid)
+        rows_by_id[cid] = knowledge_row_for_card(card, embedding_model=model)
+    for card in canonical_cards:
+        cid = str(card.id or "").strip()
+        if not cid:
+            continue
+        canonical_ids.append(cid)
+        rows_by_id.setdefault(cid, knowledge_row_for_card(card, embedding_model=model))
+    if not new_ids or not canonical_ids:
+        return {}, stats
+
+    try:
+        vectors_by_id, ensure_stats = ensure_embeddings_for_rows(
+            list(rows_by_id.values()),
+            api_key=api_key,
+            model=model,
+            timeout_seconds=_dedupe_embedding_env_int("INTEL_DEDUPE_EMBEDDING_TIMEOUT_SECONDS", 80),
+            batch_size=_dedupe_embedding_env_int("INTEL_DEDUPE_EMBEDDING_BATCH_SIZE", 40),
+        )
+    except Exception as exc:
+        stats.update(
+            {
+                "status": "failed",
+                "model": model,
+                "error": clean_text(str(exc))[:220],
+                "new_total": len(new_ids),
+                "canonical_total": len(canonical_ids),
+            }
+        )
+        return {}, stats
+
+    score_map: dict[str, dict[str, float]] = {}
+    pair_count = 0
+    candidate_pair_count = 0
+    for new_id in new_ids:
+        new_row = vectors_by_id.get(new_id) or {}
+        new_vec = new_row.get("vector") if isinstance(new_row, dict) else None
+        if not isinstance(new_vec, list) or not new_vec:
+            continue
+        for canonical_id in canonical_ids:
+            if canonical_id == new_id:
+                continue
+            canonical_row = vectors_by_id.get(canonical_id) or {}
+            canonical_vec = canonical_row.get("vector") if isinstance(canonical_row, dict) else None
+            if not isinstance(canonical_vec, list) or not canonical_vec:
+                continue
+            pair_count += 1
+            sim = embedding_cosine_similarity(new_vec, canonical_vec)
+            if sim >= float(thresholds["candidate"]):
+                score_map.setdefault(new_id, {})[canonical_id] = round(float(sim), 6)
+                candidate_pair_count += 1
+
+    stats.update(
+        {
+            "status": "ready",
+            "model": model,
+            "new_total": len(new_ids),
+            "canonical_total": len(canonical_ids),
+            "pair_count": pair_count,
+            "candidate_pair_count": candidate_pair_count,
+            "strong_threshold": float(thresholds["strong"]),
+            "same_date_threshold": float(thresholds["same_date"]),
+            "term_threshold": float(thresholds["term_overlap"]),
+            **ensure_stats,
+        }
+    )
+    return score_map, stats
+
+
+def _dedupe_match_score(
+    card: StoryCard,
+    winner: StoryCard,
+    *,
+    embedding_similarity: float = 0.0,
+    embedding_model: str = "",
+) -> tuple[float, list[str]]:
+    if not card.id or card.id == winner.id:
+        return 0.0, []
+
+    basis: list[str] = []
+    embed_sim = max(0.0, float(embedding_similarity or 0.0))
+    if _dedupe_direct_reference(card, winner):
+        basis.append("candidate_mentions_winner_url_or_id")
+        if embed_sim:
+            basis.append(f"embedding_similarity:{embed_sim:.3f}")
+        return 0.99, basis
+
+    sig_self = _dedupe_signature(card)
+    sig_winner = _dedupe_signature(winner)
+    if sig_self and sig_winner and sig_self == sig_winner:
+        basis.append("same_dedupe_signature")
+        if embed_sim:
+            basis.append(f"embedding_similarity:{embed_sim:.3f}")
+        return 0.94, basis
+
+    self_blob = _dedupe_blob(card)
+    winner_blob = _dedupe_blob(winner)
+    raw_sim = similarity_ratio(card.raw_text or self_blob, winner.raw_text or winner_blob)
+    title_sim = similarity_ratio(card.title or card.summary, winner.title or winner.summary)
+    summary_sim = similarity_ratio(f"{card.title} {card.summary}", f"{winner.title} {winner.summary}")
+    text_sim = max(raw_sim, title_sim, summary_sim)
+
+    self_date = _dedupe_event_date_hint(card)
+    winner_date = _dedupe_event_date_hint(winner)
+    same_date = bool(self_date and winner_date and self_date == winner_date)
+    if same_date:
+        basis.append(f"same_event_date:{self_date}")
+
+    terms_self = _dedupe_terms(card)
+    terms_winner = _dedupe_terms(winner)
+    overlap = terms_self & terms_winner
+    overlap_count = len(overlap)
+    if overlap_count:
+        basis.append(f"term_overlap:{','.join(sorted(overlap)[:8])}")
+    if embed_sim:
+        basis.append(f"embedding_similarity:{embed_sim:.3f}")
+        if embedding_model:
+            basis.append(f"embedding_model:{embedding_model}")
+
+    winner_handle = normalize_account_handle(winner.account)
+    source_low = f"{card.raw_text} {card.summary} {card.detail_summary}".lower()
+    if winner_handle and f"@{winner_handle}" in source_low and overlap_count >= 3:
+        basis.append(f"mentions_winner_account:{winner_handle}")
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(0.90, text_sim), basis
+
+    if text_sim >= 0.82:
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return text_sim, basis
+    if same_date and text_sim >= 0.56 and overlap_count >= 2:
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(0.84, text_sim), basis
+    if same_date and overlap_count >= 4:
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(0.80, text_sim), basis
+    if text_sim >= 0.72 and overlap_count >= 3:
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return text_sim, basis
+    if {"pizza", "kuala", "lumpur"}.issubset(overlap) and overlap_count >= 4:
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(0.78, text_sim), basis
+    thresholds = _dedupe_embedding_thresholds()
+    if embed_sim >= float(thresholds["strong"]):
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(float(thresholds["strong"]), embed_sim), basis
+    if same_date and embed_sim >= float(thresholds["same_date"]):
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(float(thresholds["same_date"]), embed_sim), basis
+    if overlap_count >= 4 and embed_sim >= float(thresholds["term_overlap"]):
+        basis.append(f"text_similarity:{text_sim:.3f}")
+        return max(float(thresholds["term_overlap"]), embed_sim), basis
+    return 0.0, []
+
+
+def _find_best_canonical_dedupe_match(
+    card: StoryCard,
+    canonical_cards: list[StoryCard],
+    *,
+    embedding_scores: dict[str, float] | None = None,
+    embedding_model: str = "",
+) -> tuple[StoryCard | None, float, list[str]]:
+    best: tuple[float, float, StoryCard | None, list[str]] = (0.0, 0.0, None, [])
+    vector_scores = embedding_scores or {}
+    for winner in canonical_cards:
+        if not winner.id or winner.id == card.id:
+            continue
+        score, basis = _dedupe_match_score(
+            card,
+            winner,
+            embedding_similarity=float(vector_scores.get(str(winner.id or ""), 0.0) or 0.0),
+            embedding_model=embedding_model,
+        )
+        if score <= 0:
+            continue
+        priority = _canonical_dedupe_priority(winner)
+        if (score, priority) > (best[0], best[1]):
+            best = (score, priority, winner, basis)
+    return best[2], best[0], best[3]
+
+
+def _mark_duplicate_of_winner(
+    card: StoryCard,
+    winner: StoryCard,
+    *,
+    reason_code: str,
+    similarity: float,
+    basis: list[str],
+) -> StoryCard:
+    reason = "與已保留貼文語意重複；只保留 canonical 公開貼文。"
+    queued = _mark_admin_queue_card(card, reason_code)
+    queued.dedupe_status = "dropped"
+    queued.dedupe_checked = True
+    queued.dedupe_checked_at = _dedupe_now_iso()
+    queued.dedupe_version = DEDUPE_ENGINE_VERSION
+    queued.dedupe_reason_code = reason_code
+    queued.dedupe_reason = reason
+    queued.dedupe_winner_post_id = str(winner.id or "")
+    queued.dedupe_winner_url = str(winner.url or "")
+    queued.dedupe_winner_title = str(winner.title or winner.summary or "")
+    queued.dedupe_similarity = round(float(similarity or 0.0), 4)
+    queued.dedupe_basis = [str(x) for x in basis if str(x).strip()][:10]
+    queued.classification_error = f"{reason_code}: {reason}"
+    return queued
+
+
 def _queue_new_duplicates_against_existing(
     new_cards: list[StoryCard],
     existing_cards: list[StoryCard],
     *,
     force_ids: set[str],
-) -> tuple[list[StoryCard], list[StoryCard]]:
-    def signature_candidates(card: StoryCard) -> set[str]:
-        values: set[str] = set()
-        primary = _dedupe_signature(card)
-        if primary:
-            values.add(f"primary:{primary}")
-        topic = _dedupe_topic_key(card)
-        if topic:
-            values.add(f"topic:{topic[:96]}")
-        text_key = dedupe_key(card.raw_text or card.title)
-        if text_key:
-            values.add(f"text:{text_key[:120]}")
-        return values
-
-    existing_sigs: set[str] = set()
-    for card in existing_cards:
-        existing_sigs.update(signature_candidates(card))
-    if not existing_sigs:
+    return_stats: bool = False,
+) -> tuple[list[StoryCard], list[StoryCard]] | tuple[list[StoryCard], list[StoryCard], dict[str, Any]]:
+    canonical_cards = sorted(
+        [card for card in existing_cards if not _is_admin_queue_card(card)],
+        key=_canonical_dedupe_priority,
+        reverse=True,
+    )
+    if not canonical_cards:
+        empty_stats = {"status": "empty", "scope": "existing_public"}
+        if return_stats:
+            return new_cards, [], empty_stats
         return new_cards, []
+    embedding_score_map, embedding_stats = _build_embedding_dedupe_score_map(new_cards, canonical_cards)
+    embedding_stats["scope"] = "existing_public"
+    embedding_model = str(embedding_stats.get("model") or "")
     kept: list[StoryCard] = []
     queued: list[StoryCard] = []
     for card in new_cards:
-        if card.id in force_ids or card.manual_pick or _is_official_x_source_card(card):
+        if card.id in force_ids or card.manual_pick or _is_protected_official_x_source_card(card):
             kept.append(card)
             continue
-        if signature_candidates(card) & existing_sigs:
-            queued.append(_mark_admin_queue_card(card, "dedupe"))
+        winner, score, basis = _find_best_canonical_dedupe_match(
+            card,
+            canonical_cards,
+            embedding_scores=embedding_score_map.get(str(card.id or ""), {}),
+            embedding_model=embedding_model,
+        )
+        if winner is not None:
+            queued.append(
+                _mark_duplicate_of_winner(
+                    card,
+                    winner,
+                    reason_code="duplicate_existing_public",
+                    similarity=score,
+                    basis=basis,
+                )
+            )
             continue
         kept.append(card)
+    if return_stats:
+        embedding_stats["dropped_count"] = len(queued)
+        return kept, queued, embedding_stats
     return kept, queued
+
+
+def dedupe_new_cards_against_batch_canonical(
+    cards: list[StoryCard],
+    *,
+    force_ids: set[str],
+    return_stats: bool = False,
+) -> tuple[list[StoryCard], list[StoryCard]] | tuple[list[StoryCard], list[StoryCard], dict[str, Any]]:
+    sorted_cards = sorted(
+        cards,
+        key=lambda c: (
+            _canonical_dedupe_priority(c),
+            _parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc),
+            str(c.id or ""),
+        ),
+        reverse=True,
+    )
+    embedding_score_map, embedding_stats = _build_embedding_dedupe_score_map(sorted_cards, sorted_cards)
+    embedding_stats["scope"] = "batch_candidate"
+    embedding_model = str(embedding_stats.get("model") or "")
+    canonical: list[StoryCard] = []
+    queued: list[StoryCard] = []
+    for card in sorted_cards:
+        if card.id in force_ids or card.manual_pick or _is_protected_official_x_source_card(card):
+            canonical.append(card)
+            continue
+        winner, score, basis = _find_best_canonical_dedupe_match(
+            card,
+            canonical,
+            embedding_scores=embedding_score_map.get(str(card.id or ""), {}),
+            embedding_model=embedding_model,
+        )
+        if winner is not None:
+            queued.append(
+                _mark_duplicate_of_winner(
+                    card,
+                    winner,
+                    reason_code="duplicate_batch_candidate",
+                    similarity=score,
+                    basis=basis,
+                )
+            )
+            continue
+        canonical.append(card)
+    canonical.sort(
+        key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance),
+        reverse=True,
+    )
+    if return_stats:
+        embedding_stats["dropped_count"] = len(queued)
+        return canonical, queued, embedding_stats
+    return canonical, queued
 
 
 def compact_point(text: str, max_len: int = 96) -> str:
@@ -1464,7 +2053,7 @@ def curate_cards(
     removed = 0
     for c in cards:
         c.importance = score_card(c)
-        if _is_official_x_source_card(c):
+        if _is_protected_official_x_source_card(c):
             c.importance = max(c.importance, 99.0)
             filtered.append(c)
             continue
@@ -1485,7 +2074,7 @@ def curate_cards(
     seen_signatures: set[str] = set()
     for c in filtered:
         key = dedupe_key(c.raw_text or c.title)
-        if c.id and (c.id in force_ids or c.manual_pick or _is_official_x_source_card(c)):
+        if c.id and (c.id in force_ids or c.manual_pick or _is_protected_official_x_source_card(c)):
             result.append(c)
             if len(result) >= max_cards:
                 break
@@ -1631,7 +2220,7 @@ def drop_redundant_cards_local(cards: list[StoryCard], force_include_ids: set[st
     removed = 0
 
     for card in cards:
-        if card.id in force_ids or card.manual_pick or _is_official_x_source_card(card):
+        if card.id in force_ids or card.manual_pick or _is_protected_official_x_source_card(card):
             passthrough.append(card)
             continue
         sig = _dedupe_signature(card)
@@ -1666,7 +2255,7 @@ def apply_minimax_global_dedupe(
     if not cards:
         return cards, 0
     force_ids = set(force_include_ids or set())
-    force_ids.update(str(c.id) for c in cards if c.id and _is_official_x_source_card(c))
+    force_ids.update(str(c.id) for c in cards if c.id and _is_protected_official_x_source_card(c))
     payload_rows: list[dict[str, Any]] = []
     for c in cards:
         facts = normalize_event_facts(c.event_facts)
@@ -2073,6 +2662,17 @@ PRESERVED_CARD_MUTABLE_FIELDS = {
     "sbt_name",
     "sbt_names",
     "sbt_acquisition",
+    "dedupe_status",
+    "dedupe_checked",
+    "dedupe_checked_at",
+    "dedupe_version",
+    "dedupe_reason_code",
+    "dedupe_reason",
+    "dedupe_winner_post_id",
+    "dedupe_winner_url",
+    "dedupe_winner_title",
+    "dedupe_similarity",
+    "dedupe_basis",
     *AI_METADATA_PRESERVED_FIELDS,
 }
 
@@ -2197,6 +2797,7 @@ def sync_accounts(
     accounts: list[str] | None = None,
     window_days: int = DEFAULT_WINDOW_DAYS,
     max_posts_per_account: int = DEFAULT_MAX_POSTS_PER_ACCOUNT,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     load_environment()
     api_key = resolve_minimax_key()
@@ -2209,44 +2810,107 @@ def sync_accounts(
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
+    discord_cfg = resolve_discord_monitor_config()
+    scan_total_sources = len(target_accounts) + (1 if discord_cfg.get("enabled") else 0)
+    scan_done_sources = 0
+    _emit_sync_progress(
+        progress_callback,
+        "scan_start",
+        done_sources=0,
+        total_sources=scan_total_sources,
+        found_cards=0,
+        latest_source="",
+    )
     for username in target_accounts:
+        _emit_sync_progress(
+            progress_callback,
+            "scan_source_start",
+            done_sources=scan_done_sources,
+            total_sources=scan_total_sources,
+            found_cards=len(account_cards),
+            latest_source=f"@{username}",
+        )
         cards = collect_account_cards(username, since_dt=since_dt, max_posts=max_posts_per_account)
         account_cards.extend(cards)
         account_stats[username] = len(cards)
+        scan_done_sources += 1
+        _emit_sync_progress(
+            progress_callback,
+            "scan_progress",
+            done_sources=scan_done_sources,
+            total_sources=scan_total_sources,
+            found_cards=len(account_cards),
+            latest_source=f"@{username}",
+        )
 
-    discord_cfg = resolve_discord_monitor_config()
     discord_cards: list[StoryCard] = []
     discord_stats: dict[str, int] = {}
     discord_errors: list[str] = []
+    discord_collect_meta: dict[str, dict[str, Any]] = {}
+    discord_state = _read_discord_monitor_state()
+    discord_existing_checkpoints = _discord_checkpoint_from_existing(existing_cards)
     if discord_cfg.get("enabled"):
+        _emit_sync_progress(
+            progress_callback,
+            "scan_source_start",
+            done_sources=scan_done_sources,
+            total_sources=scan_total_sources,
+            found_cards=len(account_cards) + len(discord_cards),
+            latest_source="Discord monitor",
+        )
         configured_ids = [str(x) for x in discord_cfg.get("channel_ids", []) if str(x).strip()]
         token = str(discord_cfg.get("token") or "")
         base_limit = int(discord_cfg.get("limit") or DEFAULT_DISCORD_MONITOR_LIMIT)
         forced_ids = [cid for cid in configured_ids if cid == FORCED_COLLECTIBLES_CHANNEL_ID]
         normal_ids = [cid for cid in configured_ids if cid != FORCED_COLLECTIBLES_CHANNEL_ID]
+        after_by_channel: dict[str, str] = {}
+        since_by_channel: dict[str, datetime] = {}
+        default_initial_since = _discord_initial_since_dt(since_dt)
+        for cid in configured_ids:
+            checkpoint = _discord_channel_checkpoint(discord_state, discord_existing_checkpoints, cid)
+            last_id = str(checkpoint.get("last_seen_message_id") or "").strip()
+            last_ts = str(checkpoint.get("last_seen_timestamp") or "").strip()
+            if last_id:
+                after_by_channel[cid] = last_id
+            checkpoint_dt = parse_datetime_guess(last_ts)
+            since_by_channel[cid] = checkpoint_dt if checkpoint_dt else default_initial_since
 
         if normal_ids:
-            cards_part, stats_part, errors_part = collect_discord_cards(
+            cards_part, stats_part, errors_part, meta_part = collect_discord_cards(
                 channel_ids=normal_ids,
                 token=token,
-                since_dt=since_dt,
+                since_dt=default_initial_since,
                 limit_per_channel=base_limit,
+                after_by_channel=after_by_channel,
+                since_by_channel=since_by_channel,
             )
             discord_cards.extend(cards_part)
             discord_stats.update(stats_part)
             discord_errors.extend(errors_part)
+            discord_collect_meta.update(meta_part)
 
-        # Forced collectibles channel: include the whole channel window (no since_dt clipping).
+        # Forced collectibles channel follows the same checkpoint rules as other channels.
+        # It should not re-ingest old long-form Discord posts on every scheduled sync.
         if forced_ids:
-            cards_part, stats_part, errors_part = collect_discord_cards(
+            cards_part, stats_part, errors_part, meta_part = collect_discord_cards(
                 channel_ids=forced_ids,
                 token=token,
-                since_dt=datetime(1970, 1, 1, tzinfo=timezone.utc),
-                limit_per_channel=max(base_limit, 100),
+                since_dt=default_initial_since,
+                limit_per_channel=base_limit,
+                after_by_channel=after_by_channel,
+                since_by_channel=since_by_channel,
             )
             discord_cards.extend(cards_part)
             discord_stats.update(stats_part)
             discord_errors.extend(errors_part)
+            discord_collect_meta.update(meta_part)
+
+        discord_state = _update_discord_monitor_state(
+            state=discord_state,
+            configured_ids=configured_ids,
+            collect_meta=discord_collect_meta,
+            checkpoints=discord_existing_checkpoints,
+        )
 
         uniq_discord: dict[str, StoryCard] = {}
         for card in discord_cards:
@@ -2255,6 +2919,24 @@ def sync_accounts(
         discord_cards.sort(key=lambda c: c.published_at, reverse=True)
         for cid, count in discord_stats.items():
             account_stats[f"discord:{cid}"] = int(count)
+        scan_done_sources += 1
+        _emit_sync_progress(
+            progress_callback,
+            "scan_progress",
+            done_sources=scan_done_sources,
+            total_sources=scan_total_sources,
+            found_cards=len(account_cards) + len(discord_cards),
+            latest_source="Discord monitor",
+        )
+
+    _emit_sync_progress(
+        progress_callback,
+        "scan_done",
+        done_sources=scan_done_sources,
+        total_sources=scan_total_sources,
+        found_cards=len(account_cards) + len(discord_cards),
+        latest_source="",
+    )
 
     picks = read_manual_picks()
     include_ids = set(picks["include_ids"])
@@ -2330,36 +3012,122 @@ def sync_accounts(
             continue
         new_source_cards.append(c)
 
+    _emit_sync_progress(
+        progress_callback,
+        "refine_start",
+        done_cards=0,
+        total_cards=len(new_source_cards),
+        current_card_id="",
+        current_title="",
+        new_candidate_total=len(merged_new_cards),
+        new_source_total=len(new_source_cards),
+    )
     # New cards must be readable even if they are later deduped or sent to the admin queue.
     # Keep this before source preference, curation, and dedupe so queue/other cards are AI-refined too.
     if api_key and new_source_cards:
-        apply_minimax_story_refine(new_source_cards, api_key, feedback_context=feedback_context)
+        apply_minimax_story_refine(
+            new_source_cards,
+            api_key,
+            feedback_context=feedback_context,
+            progress_callback=progress_callback,
+        )
         post_refine_feedback_result = apply_feedback_overrides(new_source_cards)
         if int(post_refine_feedback_result.get("override_count", 0) or 0):
             feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(post_refine_feedback_result.get("override_count", 0) or 0)
     elif new_source_cards:
         for card in new_source_cards:
             _set_ai_review_queue(card, "missing_ai_key")
+            _emit_sync_progress(
+                progress_callback,
+                "refine_card_failed",
+                done_cards=len(new_source_cards),
+                total_cards=len(new_source_cards),
+                card_id=str(card.id or ""),
+                account=str(card.account or ""),
+                title=str(card.title or "")[:140],
+                url=str(card.url or ""),
+                error="missing_ai_key",
+                ai_status=str(card.ai_status or ""),
+                review_status=str(card.review_status or ""),
+            )
+
+    _emit_sync_progress(
+        progress_callback,
+        "dedupe_start",
+        done_cards=len(new_source_cards),
+        total_cards=len(new_source_cards),
+        current_card_id="",
+        current_title="",
+    )
 
     queue_cards: list[StoryCard] = []
     public_existing_memory_cards = _public_cards(preserved_cards)
-    new_source_cards, queued_existing_dupes = _queue_new_duplicates_against_existing(
+    _emit_sync_progress(
+        progress_callback,
+        "dedupe_existing_start",
+        done_cards=0,
+        total_cards=len(new_source_cards),
+        existing_public_total=len(public_existing_memory_cards),
+    )
+    new_source_cards, queued_existing_dupes, existing_embedding_dedupe_stats = _queue_new_duplicates_against_existing(
         new_source_cards,
         public_existing_memory_cards,
         force_ids=force_ids,
+        return_stats=True,
     )
     queue_cards.extend(queued_existing_dupes)
     removed_by_existing_dedupe = len(queued_existing_dupes)
+    _emit_sync_progress(
+        progress_callback,
+        "dedupe_existing_done",
+        done_cards=len(new_source_cards),
+        total_cards=len(new_source_cards) + removed_by_existing_dedupe,
+        removed_cards=removed_by_existing_dedupe,
+        candidate_pairs=int(existing_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
+        embedding_status=str(existing_embedding_dedupe_stats.get("status") or ""),
+    )
 
+    _emit_sync_progress(
+        progress_callback,
+        "source_preference_start",
+        done_cards=0,
+        total_cards=len(new_source_cards),
+    )
     before_source_pref = list(new_source_cards)
     new_source_cards, _source_pref_count = drop_discord_event_duplicates_preferring_x(
         new_source_cards,
         force_include_ids=force_ids,
     )
     source_pref_removed_cards = _removed_cards(before_source_pref, new_source_cards, force_ids)
-    queue_cards.extend(_mark_admin_queue_card(card, "source_preference") for card in source_pref_removed_cards)
+    for card in source_pref_removed_cards:
+        winner, score, basis = _find_best_canonical_dedupe_match(card, new_source_cards)
+        if winner is not None:
+            queue_cards.append(
+                _mark_duplicate_of_winner(
+                    card,
+                    winner,
+                    reason_code="source_preference",
+                    similarity=score,
+                    basis=basis,
+                )
+            )
+        else:
+            queue_cards.append(_mark_admin_queue_card(card, "source_preference"))
     removed_by_source_pref = len(source_pref_removed_cards)
+    _emit_sync_progress(
+        progress_callback,
+        "source_preference_done",
+        done_cards=len(new_source_cards),
+        total_cards=len(before_source_pref),
+        removed_cards=removed_by_source_pref,
+    )
 
+    _emit_sync_progress(
+        progress_callback,
+        "curation_start",
+        done_cards=0,
+        total_cards=len(new_source_cards),
+    )
     before_curation = list(new_source_cards)
     curated_cards, _curation_removed = curate_cards(
         new_source_cards,
@@ -2369,24 +3137,44 @@ def sync_accounts(
     curation_removed_cards = _removed_cards(before_curation, curated_cards, force_ids)
     queue_cards.extend(_mark_admin_queue_card(card, "curation") for card in curation_removed_cards)
     removed_count = len(curation_removed_cards)
+    _emit_sync_progress(
+        progress_callback,
+        "curation_done",
+        done_cards=len(curated_cards),
+        total_cards=len(before_curation),
+        removed_cards=len(curation_removed_cards),
+    )
 
     ai_deduped = 0
     local_deduped = 0
+    batch_deduped = 0
+    batch_embedding_dedupe_stats: dict[str, Any] = {"status": "empty", "scope": "batch_candidate"}
     if api_key and curated_cards:
         refined_feedback_result = apply_feedback_overrides(curated_cards)
         if int(refined_feedback_result.get("override_count", 0) or 0):
             feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(refined_feedback_result.get("override_count", 0) or 0)
-        before_ai_dedupe = list(curated_cards)
-        curated_cards, _ai_deduped_count = apply_minimax_global_dedupe(curated_cards, api_key, force_include_ids=force_ids)
-        ai_removed_cards = _removed_cards(before_ai_dedupe, curated_cards, force_ids)
-        queue_cards.extend(_mark_admin_queue_card(card, "ai_dedupe") for card in ai_removed_cards)
-        ai_deduped = len(ai_removed_cards)
-
-        before_local_dedupe = list(curated_cards)
-        curated_cards, _local_deduped_count = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
-        local_removed_cards = _removed_cards(before_local_dedupe, curated_cards, force_ids)
-        queue_cards.extend(_mark_admin_queue_card(card, "local_dedupe") for card in local_removed_cards)
-        local_deduped = len(local_removed_cards)
+        _emit_sync_progress(
+            progress_callback,
+            "dedupe_batch_start",
+            done_cards=0,
+            total_cards=len(curated_cards),
+        )
+        curated_cards, batch_removed_cards, batch_embedding_dedupe_stats = dedupe_new_cards_against_batch_canonical(
+            curated_cards,
+            force_ids=force_ids,
+            return_stats=True,
+        )
+        queue_cards.extend(batch_removed_cards)
+        batch_deduped = len(batch_removed_cards)
+        _emit_sync_progress(
+            progress_callback,
+            "dedupe_batch_done",
+            done_cards=len(curated_cards),
+            total_cards=len(curated_cards) + batch_deduped,
+            removed_cards=batch_deduped,
+            candidate_pairs=int(batch_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
+            embedding_status=str(batch_embedding_dedupe_stats.get("status") or ""),
+        )
 
         before_final_curation = list(curated_cards)
         curated_cards, _final_curation_removed = curate_cards(
@@ -2401,11 +3189,28 @@ def sync_accounts(
         for card in curated_cards:
             if not _is_admin_queue_card(card):
                 _set_ai_review_queue(card, "missing_ai_key")
-        before_local_dedupe = list(curated_cards)
-        curated_cards, _local_deduped_count = drop_redundant_cards_local(curated_cards, force_include_ids=force_ids)
-        local_removed_cards = _removed_cards(before_local_dedupe, curated_cards, force_ids)
-        queue_cards.extend(_mark_admin_queue_card(card, "local_dedupe") for card in local_removed_cards)
-        local_deduped = len(local_removed_cards)
+        _emit_sync_progress(
+            progress_callback,
+            "dedupe_batch_start",
+            done_cards=0,
+            total_cards=len(curated_cards),
+        )
+        curated_cards, batch_removed_cards, batch_embedding_dedupe_stats = dedupe_new_cards_against_batch_canonical(
+            curated_cards,
+            force_ids=force_ids,
+            return_stats=True,
+        )
+        queue_cards.extend(batch_removed_cards)
+        batch_deduped = len(batch_removed_cards)
+        _emit_sync_progress(
+            progress_callback,
+            "dedupe_batch_done",
+            done_cards=len(curated_cards),
+            total_cards=len(curated_cards) + batch_deduped,
+            removed_cards=batch_deduped,
+            candidate_pairs=int(batch_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
+            embedding_status=str(batch_embedding_dedupe_stats.get("status") or ""),
+        )
     curated_cards = _ensure_forced_collectibles_cards_in_curated(new_source_cards, curated_cards)
     _enforce_fixed_channel_topic_labels(curated_cards)
     for card in curated_cards:
@@ -2428,11 +3233,42 @@ def sync_accounts(
     source_cards = merge_cards(preserved_cards, new_source_cards)
     final_cards = merge_cards(preserved_cards, curated_cards, queue_cards)
     public_cards = _public_cards(final_cards)
+    _emit_sync_progress(
+        progress_callback,
+        "knowledge_memory_start",
+        done_cards=0,
+        total_cards=len(public_cards),
+    )
+    knowledge_memory_stats = write_knowledge_memory(
+        public_cards,
+        force_ids=force_ids,
+        retention_days=int(retention_stats.get("memory_retention_days", DEFAULT_FEED_MEMORY_RETENTION_DAYS) or DEFAULT_FEED_MEMORY_RETENTION_DAYS),
+    )
+    _emit_sync_progress(
+        progress_callback,
+        "knowledge_memory_done",
+        done_cards=int(knowledge_memory_stats.get("embedding_ready_count", 0) or 0),
+        total_cards=int(knowledge_memory_stats.get("item_total", 0) or 0),
+        embedding_status=str(knowledge_memory_stats.get("embedding_status") or ""),
+        removed_cards=int(knowledge_memory_stats.get("cache_removed", 0) or 0),
+    )
 
     key_terms = extract_key_terms(public_cards, top_n=14)
     sections = build_intel_sections(public_cards)
     agenda = build_intel_agenda(public_cards)
+    _emit_sync_progress(
+        progress_callback,
+        "digest_start",
+        done_cards=0,
+        total_cards=len(public_cards),
+    )
     digest = aggregate_digest(public_cards, sections, key_terms, api_key=api_key or None)
+    _emit_sync_progress(
+        progress_callback,
+        "digest_done",
+        done_cards=len(public_cards),
+        total_cards=len(public_cards),
+    )
     if not api_key:
         event_count = sum(1 for c in public_cards if c.card_type == "event")
         feature_count = sum(1 for c in public_cards if c.card_type == "feature")
@@ -2460,7 +3296,20 @@ def sync_accounts(
     payload["key_terms"] = key_terms
     payload["intel_sections"] = sections
     payload["intel_agenda"] = agenda
-    payload["official_overview"] = build_official_overview(public_cards, api_key=api_key or None)
+    _emit_sync_progress(
+        progress_callback,
+        "official_overview_start",
+        done_cards=0,
+        total_cards=len(public_cards),
+    )
+    official_overview = build_official_overview(public_cards, api_key=api_key or None)
+    _emit_sync_progress(
+        progress_callback,
+        "official_overview_done",
+        done_cards=len(public_cards),
+        total_cards=len(public_cards),
+    )
+    payload["official_overview"] = official_overview
     payload["format_templates"] = default_format_templates()
     payload["template_counts"] = {
         "event_poster": sum(1 for c in public_cards if c.template_id == "event_poster"),
@@ -2488,8 +3337,14 @@ def sync_accounts(
         "source_preference_removed": int(removed_by_source_pref),
         "ai_removed": int(ai_deduped),
         "local_removed": int(local_deduped),
+        "batch_candidate_removed": int(batch_deduped),
+        "embedding": {
+            "existing_public": existing_embedding_dedupe_stats,
+            "batch_candidate": batch_embedding_dedupe_stats,
+        },
     }
     payload["retention_stats"] = retention_stats
+    payload["knowledge_memory_stats"] = knowledge_memory_stats
     payload["pipeline_counts"] = {
         "merged_total": int(merged_total),
         "retention_input_total": int(retention_stats.get("input_total", 0)),
@@ -2512,12 +3367,18 @@ def sync_accounts(
         "final_total": int(len(final_cards)),
         "source_total": int(len(source_cards)),
         "curated_total": int(len(public_cards)),
+        "knowledge_memory_total": int(knowledge_memory_stats.get("item_total", 0)),
+        "knowledge_memory_embedding_removed": int(knowledge_memory_stats.get("cache_removed", 0)),
+        "knowledge_memory_embedding_ready": int(knowledge_memory_stats.get("embedding_ready_count", 0)),
+        "dedupe_existing_embedding_candidate_pairs": int(existing_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
+        "dedupe_batch_embedding_candidate_pairs": int(batch_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
         "removed_by_selection": int(removed_by_selection),
         "removed_by_feedback": int(removed_by_feedback),
         "removed_by_existing_dedupe": int(removed_by_existing_dedupe),
         "removed_by_source_preference": int(removed_by_source_pref),
         "removed_by_ai_dedupe": int(ai_deduped),
         "removed_by_local_dedupe": int(local_deduped),
+        "removed_by_batch_candidate_dedupe": int(batch_deduped),
         "removed_by_curation": int(removed_count),
     }
     payload["source_stats"] = account_stats
@@ -2543,8 +3404,21 @@ def sync_accounts(
         "limit_per_channel": int(discord_cfg.get("limit") or DEFAULT_DISCORD_MONITOR_LIMIT),
         "cards_total": len(discord_cards),
         "channel_stats": discord_stats,
+        "channel_meta": discord_collect_meta,
+        "state_file": DISCORD_MONITOR_STATE_FILENAME,
+        "checkpoints": discord_state.get("channels") if isinstance(discord_state.get("channels"), dict) else {},
         "errors": discord_errors[:6],
     }
+    _emit_sync_progress(
+        progress_callback,
+        "write_feed",
+        done_cards=len(new_source_cards),
+        total_cards=len(new_source_cards),
+        current_card_id="",
+        current_title="",
+        final_total=len(final_cards),
+        public_total=len(public_cards),
+    )
     payload["notes"] = {
         "fallback": "若某帳號無法公開抓取，系統會保留該帳號並等待後續可讀資料。",
         "provider": "twitter-cli (若可用) / tweet-result / r.jina.ai / nitter-rss fallback / discord-rest(可選)",

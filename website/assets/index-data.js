@@ -464,7 +464,14 @@
       const value = normalizeIntelApiBase(base);
       if (!value) return false;
       if (value === DEFAULT_INTEL_API_BASE) return true;
-      if (localPreview && /^http:\/\/(127\.0\.0\.1|localhost):8787$/i.test(value)) return true;
+      if (localPreview) {
+        try {
+          const url = new URL(value);
+          if ((url.protocol === "http:" || url.protocol === "https:") && isLocalIntelPreviewHost(url.hostname)) {
+            return true;
+          }
+        } catch (_err) {}
+      }
       return false;
     }
 
@@ -494,6 +501,8 @@
         }
       } catch (_err) {}
       if (isLocal) {
+        const origin = normalizeIntelApiBase(window.location?.origin || "");
+        if (origin && origin !== "null") return origin;
         return "http://127.0.0.1:8787";
       }
       return DEFAULT_INTEL_API_BASE;
@@ -2075,6 +2084,13 @@
           card?.manual_pin,
           card?.manual_bottom,
           card?.dedupe_status,
+          card?.dedupe_reason_code,
+          card?.dedupe_reason,
+          card?.dedupe_winner_post_id,
+          card?.dedupe_winner_url,
+          card?.dedupe_winner_title,
+          card?.dedupe_similarity,
+          Array.isArray(card?.dedupe_basis) ? card.dedupe_basis.join("|") : "",
           Array.isArray(card?.tags) ? card.tags.join("|") : "",
           Array.isArray(card?.topic_labels) ? card.topic_labels.join("|") : "",
           Array.isArray(card?.sbt_names) ? card.sbt_names.join("|") : "",

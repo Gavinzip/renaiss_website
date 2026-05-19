@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss Agent answers questions from the Renaiss knowledge memory." />
+  <title>Renaiss Agent | Knowledge Memory</title>
+  <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260518-agent-page2"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260519-agent-source-card1" />
+  <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
+</head>
+<body class="agent-body">
+  <main class="shell agent-page-main">
+    <header class="nav">
+      <div class="nav-main-row" data-lang-morph="1">
+        <a class="brand" href="./index.html#hero">
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <span class="brand-text">Renaiss Aggregator</span>
+        </a>
+        <nav class="nav-links">
+          <a id="nav-game-link" href="./game.html" data-i18n-key="nav.game">Game</a>
+          <a href="./index.html#cat-events" data-i18n-key="nav.aggregator">聚合器</a>
+          <a class="is-active" href="./agent.html" aria-current="page" data-i18n-key="nav.agent">Renaiss Agent</a>
+          <a href="./beginner.html" data-i18n-key="nav.beginner">新手教學</a>
+          <a href="./feedback.html" data-no-i18n="1">回饋</a>
+        </nav>
+        <div class="nav-actions">
+          <div id="lang-switcher" class="lang-switcher" aria-label="Language" data-no-i18n="1">
+            <iconify-icon class="lang-icon" icon="lucide:languages"></iconify-icon>
+            <select id="lang-select" class="lang-select" aria-label="語言切換">
+              <option value="zh-Hant">繁體中文</option>
+              <option value="zh-Hans">简体中文</option>
+              <option value="en">English</option>
+              <option value="ko">한국어</option>
+            </select>
+          </div>
+          <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer" data-i18n-key="home.openRenaiss">Open Renaiss</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="agent-page-hero observe" style="--delay: 36ms;">
+      <span class="chip agent-memory-chip"><iconify-icon icon="lucide:brain-circuit"></iconify-icon><span data-i18n-key="agent.memoryChip">Memory RAG</span></span>
+      <h1 class="section-title" data-i18n-key="agent.title" data-i18n-html="1">Renaiss Agent / <span class="text-gradient">Knowledge Memory</span></h1>
+      <p class="section-sub" data-i18n-key="agent.sub">問近期 Renaiss 活動、SBT、官方更新與社群情報。</p>
+    </section>
+
+    <section class="agent-page-panel observe" style="--delay: 80ms;">
+      <article class="renaiss-agent-card is-empty">
+        <div class="agent-border-glow" aria-hidden="true"></div>
+        <div class="renaiss-agent-head">
+          <div>
+            <span class="agent-kicker">Knowledge Memory</span>
+            <h2>Ask Renaiss Agent</h2>
+          </div>
+          <button class="agent-reset-btn" type="button" data-agent-reset>
+            <iconify-icon icon="lucide:rotate-ccw"></iconify-icon>
+            <span data-i18n-key="agent.newChat">新對話</span>
+          </button>
+        </div>
+        <div id="renaiss-agent-messages" class="renaiss-agent-messages" data-no-i18n="1">
+          <div class="renaiss-agent-message is-assistant is-welcome">
+            <div class="renaiss-agent-role">Renaiss Agent</div>
+            <p>可以直接問近期活動、SBT、官方公告或卡片分類裡的資訊。</p>
+          </div>
+        </div>
+        <form id="renaiss-agent-form" class="renaiss-agent-form">
+          <label for="renaiss-agent-input" data-i18n-key="agent.inputLabel">問 Renaiss Agent</label>
+          <div class="renaiss-agent-input-row">
+            <button class="agent-composer-action" type="button" data-agent-focus aria-label="聚焦輸入框" title="輸入問題">
+              <span aria-hidden="true">+</span>
+            </button>
+            <textarea id="renaiss-agent-input" rows="1" maxlength="1200" placeholder="問 Renaiss Agent 或輸入活動關鍵字"></textarea>
+            <button id="renaiss-agent-submit" class="intel-sync-btn" type="submit" aria-label="送出">
+              <iconify-icon icon="lucide:arrow-up"></iconify-icon>
+              <span data-i18n-key="agent.ask">送出</span>
+            </button>
+          </div>
+        </form>
+        <div class="renaiss-agent-suggestions" aria-label="Quick questions">
+          <button type="button" data-agent-question="最近有哪些官方活動？">
+            <span class="agent-suggestion-icon"><iconify-icon icon="lucide:sparkles"></iconify-icon></span>
+            <span class="agent-suggestion-copy">
+              <strong data-i18n-key="agent.quickEvents">最近官方活動</strong>
+              <em>快速整理近期 Renaiss 官方更新</em>
+            </span>
+          </button>
+          <button type="button" data-agent-question="現在有哪些 SBT 可以取得？">
+            <span class="agent-suggestion-icon"><iconify-icon icon="lucide:badge-check"></iconify-icon></span>
+            <span class="agent-suggestion-copy">
+              <strong data-i18n-key="agent.quickSbt">SBT 取得方式</strong>
+              <em>查看目前可取得的資格與任務</em>
+            </span>
+          </button>
+          <button type="button" data-agent-question="Renaiss Pizza Day 是什麼？">
+            <span class="agent-suggestion-icon"><iconify-icon icon="lucide:pizza"></iconify-icon></span>
+            <span class="agent-suggestion-copy">
+              <strong data-i18n-key="agent.quickPizza">Pizza Day</strong>
+              <em>追問活動背景與參與重點</em>
+            </span>
+          </button>
+          <button type="button" data-agent-question="等等有什麼活動嗎">
+            <span class="agent-suggestion-icon"><iconify-icon icon="lucide:send-horizontal"></iconify-icon></span>
+            <span class="agent-suggestion-copy">
+              <strong>等等有什麼活動嗎</strong>
+              <em>用時間線找出接下來的安排</em>
+            </span>
+          </button>
+        </div>
+        <p id="renaiss-agent-status" class="renaiss-agent-status" aria-live="polite" data-i18n-key="agent.ready">Agent ready.</p>
+        <div id="renaiss-agent-sources" class="renaiss-agent-sources" data-no-i18n="1"></div>
+      </article>
+    </section>
+  </main>
+
+  <div id="agent-source-modal" class="agent-source-modal" hidden>
+    <div class="agent-source-modal-backdrop" data-agent-source-close></div>
+    <section class="agent-source-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-source-title">
+      <button class="agent-source-close" type="button" data-agent-source-close aria-label="Close">
+        <iconify-icon icon="lucide:x"></iconify-icon>
+      </button>
+      <div class="agent-source-dialog-kicker">Memory Source</div>
+      <h2 id="agent-source-title">Memory source</h2>
+      <div id="agent-source-meta" class="agent-source-dialog-meta"></div>
+      <div id="agent-source-body" class="agent-source-dialog-body"></div>
+    </section>
+  </div>
+
+  <script src="./assets/index-i18n.js?v=20260518-agent-glow1"></script>
+  <script src="./assets/agent.js?v=20260519-agent-source-card1"></script>
+</body>
+</html>

@@ -66,6 +66,204 @@ def _cache_key(model: str, text: str) -> str:
     return hashlib.sha256(f"{model}\n{text}".encode("utf-8", "ignore")).hexdigest()
 
 
+def semantic_text_for_row(row: dict[str, Any]) -> str:
+    return _semantic_text(row)
+
+
+def embedding_cache_key(model: str, text: str) -> str:
+    return _cache_key(model, text)
+
+
+def embedding_cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+    return _cosine_similarity(vec_a, vec_b)
+
+
+def create_embedding_vector(
+    text: str,
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int = 45,
+) -> list[float]:
+    value = clean_text(str(text or ""))[:6000]
+    if not value:
+        return []
+    resp = requests.post(
+        "https://api.openai.com/v1/embeddings",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "input": value,
+        },
+        timeout=max(10, int(timeout_seconds)),
+    )
+    if resp.status_code >= 400:
+        body = clean_text(resp.text or "")[:180]
+        raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
+    payload = resp.json() if resp.content else {}
+    data_rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data_rows, list) or not data_rows:
+        raise RuntimeError("embedding_bad_shape")
+    first = data_rows[0] if isinstance(data_rows[0], dict) else {}
+    emb = first.get("embedding")
+    if not isinstance(emb, list) or not emb:
+        raise RuntimeError("embedding_empty_vector")
+    return [float(x) for x in emb]
+
+
+def prune_embedding_cache(valid_keys: set[str] | list[str] | tuple[str, ...]) -> dict[str, Any]:
+    """Remove embedding vectors that no longer have an active knowledge item."""
+    cache_payload = _load_cache()
+    cache_entries = cache_payload.get("entries")
+    if not isinstance(cache_entries, dict):
+        cache_entries = {}
+    allowed = {str(key).strip() for key in valid_keys if str(key).strip()}
+    before = len(cache_entries)
+    if allowed:
+        cache_entries = {
+            key: value
+            for key, value in cache_entries.items()
+            if str(key) in allowed
+        }
+    else:
+        cache_entries = {}
+    removed = before - len(cache_entries)
+    cache_payload["entries"] = cache_entries
+    cache_payload["updated_at"] = _now_iso()
+    if removed or before:
+        _save_cache(cache_payload)
+    return {
+        "cache_size_before": before,
+        "cache_size_after": len(cache_entries),
+        "cache_removed": removed,
+    }
+
+
+def ensure_embeddings_for_rows(
+    rows: list[dict[str, Any]],
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: int = 80,
+    batch_size: int = 40,
+    cache_max_entries: int = 8000,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    cache_payload = _load_cache()
+    cache_entries = cache_payload.get("entries")
+    if not isinstance(cache_entries, dict):
+        cache_entries = {}
+        cache_payload["entries"] = cache_entries
+
+    work_rows: list[dict[str, str]] = []
+    vectors_by_id: dict[str, dict[str, Any]] = {}
+    hit = 0
+    miss = 0
+    now_iso = _now_iso()
+
+    for row in rows:
+        sid = str(row.get("id") or "").strip()
+        if not sid:
+            continue
+        text = _semantic_text(row)
+        if not text:
+            continue
+        key = _cache_key(model, text)
+        work_rows.append({"id": sid, "text": text, "key": key})
+        cached = cache_entries.get(key)
+        if isinstance(cached, dict) and isinstance(cached.get("vector"), list) and cached.get("vector"):
+            try:
+                vector = [float(x) for x in cached.get("vector", [])]
+            except Exception:
+                vector = []
+            if vector:
+                cached["id"] = sid
+                cached["model"] = model
+                cached["last_used_at"] = now_iso
+                vectors_by_id[sid] = {
+                    "key": key,
+                    "text": text,
+                    "vector": vector,
+                    "cached": True,
+                }
+                hit += 1
+                continue
+        miss += 1
+
+    if miss > 0:
+        pending = [row for row in work_rows if row["id"] not in vectors_by_id]
+        for start in range(0, len(pending), max(1, int(batch_size))):
+            chunk = pending[start:start + max(1, int(batch_size))]
+            chunk_texts = [str(row["text"]) for row in chunk]
+            resp = requests.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": chunk_texts,
+                },
+                timeout=max(10, int(timeout_seconds)),
+            )
+            if resp.status_code >= 400:
+                body = clean_text(resp.text or "")[:180]
+                raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
+            payload = resp.json() if resp.content else {}
+            data_rows = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data_rows, list) or len(data_rows) != len(chunk):
+                raise RuntimeError("embedding_bad_shape")
+            for idx, item in enumerate(chunk):
+                obj = data_rows[idx] if idx < len(data_rows) else {}
+                emb = obj.get("embedding") if isinstance(obj, dict) else None
+                if not isinstance(emb, list) or not emb:
+                    raise RuntimeError("embedding_empty_vector")
+                vector = [float(x) for x in emb]
+                sid = str(item["id"])
+                key = str(item["key"])
+                text = str(item["text"])
+                vectors_by_id[sid] = {
+                    "key": key,
+                    "text": text,
+                    "vector": vector,
+                    "cached": False,
+                }
+                cache_entries[key] = {
+                    "id": sid,
+                    "model": model,
+                    "vector": vector,
+                    "updated_at": now_iso,
+                    "last_used_at": now_iso,
+                }
+
+    if cache_max_entries > 0 and len(cache_entries) > cache_max_entries:
+        sortable: list[tuple[str, str]] = []
+        for key, row in cache_entries.items():
+            meta = row if isinstance(row, dict) else {}
+            sortable.append((str(meta.get("last_used_at") or ""), key))
+        sortable.sort(reverse=True)
+        keep_keys = {key for _ts, key in sortable[:cache_max_entries]}
+        cache_entries = {key: cache_entries[key] for key in keep_keys if key in cache_entries}
+        cache_payload["entries"] = cache_entries
+
+    cache_payload["updated_at"] = _now_iso()
+    _save_cache(cache_payload)
+    stats = {
+        "mode": "embedding",
+        "cache_hit": hit,
+        "cache_miss": miss,
+        "cache_size": len(cache_entries),
+        "model": model,
+        "batch_size": int(batch_size),
+        "row_total": len(work_rows),
+        "vector_total": len(vectors_by_id),
+    }
+    return vectors_by_id, stats
+
+
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     if not vec_a or not vec_b or len(vec_a) != len(vec_b):
         return 0.0
@@ -129,80 +327,19 @@ def build_embedding_neighbors(
     batch_size: int = 40,
     cache_max_entries: int = 8000,
 ) -> tuple[dict[str, list[str]], dict[str, Any]]:
-    cache_payload = _load_cache()
-    cache_entries = cache_payload.get("entries")
-    if not isinstance(cache_entries, dict):
-        cache_entries = {}
-        cache_payload["entries"] = cache_entries
-
-    work_rows: list[dict[str, Any]] = []
-    vectors_by_id: dict[str, list[float]] = {}
-    hit = 0
-    miss = 0
-    now_iso = _now_iso()
-
-    for row in rows:
-        sid = str(row.get("id") or "").strip()
-        if not sid:
-            continue
-        text = _semantic_text(row)
-        if not text:
-            continue
-        key = _cache_key(model, text)
-        work_rows.append({"id": sid, "text": text, "key": key})
-        cached = cache_entries.get(key)
-        if isinstance(cached, dict) and isinstance(cached.get("vector"), list) and cached.get("vector"):
-            try:
-                vector = [float(x) for x in cached.get("vector", [])]
-            except Exception:
-                vector = []
-            if vector:
-                vectors_by_id[sid] = vector
-                cached["last_used_at"] = now_iso
-                hit += 1
-                continue
-        miss += 1
-
-    if miss > 0:
-        pending = [row for row in work_rows if row["id"] not in vectors_by_id]
-        for start in range(0, len(pending), max(1, int(batch_size))):
-            chunk = pending[start:start + max(1, int(batch_size))]
-            chunk_texts = [str(row["text"]) for row in chunk]
-            resp = requests.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "input": chunk_texts,
-                },
-                timeout=max(10, int(timeout_seconds)),
-            )
-            if resp.status_code >= 400:
-                body = clean_text(resp.text or "")[:180]
-                raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
-            payload = resp.json() if resp.content else {}
-            data_rows = payload.get("data") if isinstance(payload, dict) else None
-            if not isinstance(data_rows, list) or len(data_rows) != len(chunk):
-                raise RuntimeError("embedding_bad_shape")
-            for idx, item in enumerate(chunk):
-                obj = data_rows[idx] if idx < len(data_rows) else {}
-                emb = obj.get("embedding") if isinstance(obj, dict) else None
-                if not isinstance(emb, list) or not emb:
-                    raise RuntimeError("embedding_empty_vector")
-                vector = [float(x) for x in emb]
-                sid = str(item["id"])
-                key = str(item["key"])
-                vectors_by_id[sid] = vector
-                cache_entries[key] = {
-                    "id": sid,
-                    "model": model,
-                    "vector": vector,
-                    "updated_at": now_iso,
-                    "last_used_at": now_iso,
-                }
+    vector_rows, stats = ensure_embeddings_for_rows(
+        rows,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=timeout_seconds,
+        batch_size=batch_size,
+        cache_max_entries=cache_max_entries,
+    )
+    vectors_by_id = {
+        sid: [float(x) for x in row.get("vector", [])]
+        for sid, row in vector_rows.items()
+        if isinstance(row.get("vector"), list)
+    }
 
     related_map: dict[str, list[str]] = {}
     row_ids = [str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip()]
@@ -224,24 +361,8 @@ def build_embedding_neighbors(
         candidates.sort(key=lambda x: x[0], reverse=True)
         related_map[sid] = [oid for _score, oid in candidates[:max(1, int(top_k))]]
 
-    if cache_max_entries > 0 and len(cache_entries) > cache_max_entries:
-        sortable: list[tuple[str, str]] = []
-        for key, row in cache_entries.items():
-            meta = row if isinstance(row, dict) else {}
-            sortable.append((str(meta.get("last_used_at") or ""), key))
-        sortable.sort(reverse=True)
-        keep_keys = {key for _ts, key in sortable[:cache_max_entries]}
-        cache_entries = {key: cache_entries[key] for key in keep_keys if key in cache_entries}
-        cache_payload["entries"] = cache_entries
-
-    cache_payload["updated_at"] = _now_iso()
-    _save_cache(cache_payload)
     stats = {
-        "mode": "embedding",
-        "cache_hit": hit,
-        "cache_miss": miss,
-        "cache_size": len(cache_entries),
-        "model": model,
+        **stats,
         "top_k": int(top_k),
         "sim_threshold": float(sim_threshold),
     }

@@ -692,21 +692,51 @@ def minimax_chat(
     *,
     connect_timeout_override: float | None = None,
     read_timeout_override: float | None = None,
+    model_override: str | None = None,
+    temperature_override: float | None = None,
+    use_env_max_tokens: bool = True,
 ) -> str:
+    def extract_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    parts.append(extract_text(item.get("text") or item.get("content") or item.get("output_text")))
+            return "\n".join(part for part in (p.strip() for p in parts) if part).strip()
+        if isinstance(value, dict):
+            return extract_text(value.get("text") or value.get("content") or value.get("output_text"))
+        return ""
+
     model_name = str(
-        os.getenv("MINIMAX_TEXT_MODEL")
+        model_override
+        or os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
         or "MiniMax-M2.7"
     ).strip() or "MiniMax-M2.7"
+    temperature = 0.3
+    if temperature_override is not None:
+        try:
+            temperature = max(0.0, min(float(temperature_override), 1.0))
+        except Exception:
+            temperature = 0.3
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
+        "temperature": temperature,
         "reasoning_split": False,
     }
     token_limit = None
+    if max_tokens is not None:
+        try:
+            token_limit = int(max_tokens)
+        except Exception:
+            token_limit = None
     env_limit = str(os.getenv("MINIMAX_TEXT_MAX_TOKENS") or "").strip()
-    if env_limit:
+    if token_limit is None and use_env_max_tokens and env_limit:
         try:
             token_limit = int(env_limit)
         except Exception:
@@ -747,12 +777,18 @@ def minimax_chat(
     if isinstance(choices, list) and choices:
         first = choices[0] if isinstance(choices[0], dict) else {}
         message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-    direct = data.get("reply") or data.get("output_text") or data.get("text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
+        content = extract_text(message.get("content"))
+        if content:
+            return content
+        finish_reason = str(first.get("finish_reason") or "").strip().lower()
+        if finish_reason == "length":
+            raise RuntimeError(
+                f"MiniMax response reached token limit before final content; model={model_name}; "
+                "reduce prompt size or set a larger INTEL_AGENT_MAX_TOKENS only if you intentionally enabled a limit"
+            )
+    direct = extract_text(data.get("reply") or data.get("output_text") or data.get("text"))
+    if direct:
+        return direct
     base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else {}
     status_msg = str(base_resp.get("status_msg") or "").strip()
     if status_msg:
@@ -767,9 +803,85 @@ def apply_minimax_story_refine(
     *,
     connect_timeout_override: float | None = None,
     read_timeout_override: float | None = None,
+    progress_callback: Any | None = None,
 ) -> None:
     model_name = minimax_model_name()
-    for card in cards:
+
+    def _emit(event_name: str, **payload: Any) -> None:
+        if not progress_callback:
+            return
+        try:
+            progress_callback(event_name, payload)
+        except Exception:
+            return
+
+    total_cards = len(cards)
+    call_index = 0
+
+    def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
+        nonlocal call_index
+        call_index += 1
+        started = time.monotonic()
+        _emit(
+            "minimax_start",
+            call_index=call_index,
+            attempt=attempt,
+            purpose=purpose,
+            card_id=str(card.id or ""),
+            account=str(card.account or ""),
+            title=str(card.title or "")[:140],
+            url=str(card.url or ""),
+            prompt_len=len(str(prompt or "")),
+            model=model_name,
+        )
+        try:
+            raw_text = minimax_chat(
+                prompt,
+                api_key,
+                connect_timeout_override=connect_timeout_override,
+                read_timeout_override=read_timeout_override,
+            )
+            _emit(
+                "minimax_done",
+                call_index=call_index,
+                attempt=attempt,
+                purpose=purpose,
+                card_id=str(card.id or ""),
+                account=str(card.account or ""),
+                title=str(card.title or "")[:140],
+                url=str(card.url or ""),
+                elapsed_ms=max(0, int(round((time.monotonic() - started) * 1000))),
+                output_len=len(str(raw_text or "")),
+                model=model_name,
+            )
+            return raw_text
+        except Exception as exc:
+            _emit(
+                "minimax_error",
+                call_index=call_index,
+                attempt=attempt,
+                purpose=purpose,
+                card_id=str(card.id or ""),
+                account=str(card.account or ""),
+                title=str(card.title or "")[:140],
+                url=str(card.url or ""),
+                elapsed_ms=max(0, int(round((time.monotonic() - started) * 1000))),
+                error=f"{type(exc).__name__}: {exc}"[:280],
+                model=model_name,
+            )
+            raise
+
+    for index, card in enumerate(cards):
+        _emit(
+            "refine_card_start",
+            done_cards=index,
+            total_cards=total_cards,
+            card_id=str(card.id or ""),
+            account=str(card.account or ""),
+            title=str(card.title or "")[:140],
+            url=str(card.url or ""),
+            model=model_name,
+        )
         prompt = (
             "你是TCG社群編輯與分類員。請先完整讀懂內容，再一次完成語意分類、日期解析、數字解讀與公開文案。"
             "輸出必須是單一 JSON 物件，必須包含以下所有欄位："
@@ -835,12 +947,7 @@ def apply_minimax_story_refine(
             f"內容: {card.raw_text[:4200]}"
         )
         try:
-            raw = minimax_chat(
-                prompt,
-                api_key,
-                connect_timeout_override=connect_timeout_override,
-                read_timeout_override=read_timeout_override,
-            )
+            raw = _call_minimax(card, prompt, attempt=1, purpose="initial_refine")
             parsed = parse_json_block(raw)
             if not parsed:
                 compact_retry_prompt = (
@@ -862,15 +969,23 @@ def apply_minimax_story_refine(
                     f"既有標題:{card.title}\n"
                     f"內容:{card.raw_text[:3200]}"
                 )
-                raw = minimax_chat(
-                    compact_retry_prompt,
-                    api_key,
-                    connect_timeout_override=connect_timeout_override,
-                    read_timeout_override=read_timeout_override,
-                )
+                raw = _call_minimax(card, compact_retry_prompt, attempt=2, purpose="compact_json_retry")
                 parsed = parse_json_block(raw)
             if not parsed:
                 _set_ai_review_queue(card, "ai_json_parse_failed", model=model_name)
+                _emit(
+                    "refine_card_failed",
+                    done_cards=index + 1,
+                    total_cards=total_cards,
+                    card_id=str(card.id or ""),
+                    account=str(card.account or ""),
+                    title=str(card.title or "")[:140],
+                    url=str(card.url or ""),
+                    error="ai_json_parse_failed",
+                    ai_status=str(card.ai_status or ""),
+                    review_status=str(card.review_status or ""),
+                    model=model_name,
+                )
                 continue
             if not _finalize_ai_classified_card(card, parsed, model=model_name):
                 retry_reason = card.classification_error
@@ -893,17 +1008,38 @@ def apply_minimax_story_refine(
                     "如果 event 資訊不足，就只列原文有的活動名稱、時間、社群聚會與下一步。\n\n"
                     f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n既有標題:{card.title}\n內容:{card.raw_text[:3200]}"
                 )
-                raw = minimax_chat(
-                    strict_retry_prompt,
-                    api_key,
-                    connect_timeout_override=connect_timeout_override,
-                    read_timeout_override=read_timeout_override,
-                )
+                raw = _call_minimax(card, strict_retry_prompt, attempt=3, purpose="validation_retry")
                 parsed = parse_json_block(raw)
                 if parsed:
                     _finalize_ai_classified_card(card, parsed, model=model_name)
+            _emit(
+                "refine_card_done",
+                done_cards=index + 1,
+                total_cards=total_cards,
+                card_id=str(card.id or ""),
+                account=str(card.account or ""),
+                title=str(card.title or "")[:140],
+                url=str(card.url or ""),
+                ai_status=str(card.ai_status or ""),
+                review_status=str(card.review_status or ""),
+                classification_error=str(card.classification_error or "")[:220],
+                model=model_name,
+            )
         except Exception as exc:
             _set_ai_review_queue(card, f"ai_request_failed:{type(exc).__name__}", model=model_name)
+            _emit(
+                "refine_card_failed",
+                done_cards=index + 1,
+                total_cards=total_cards,
+                card_id=str(card.id or ""),
+                account=str(card.account or ""),
+                title=str(card.title or "")[:140],
+                url=str(card.url or ""),
+                error=f"{type(exc).__name__}: {exc}"[:280],
+                ai_status=str(card.ai_status or ""),
+                review_status=str(card.review_status or ""),
+                model=model_name,
+            )
             continue
 
 
@@ -1314,12 +1450,20 @@ def _discord_message_url(item: dict[str, Any], channel_id: str, message_id: str)
     return f"https://discord.com/channels/@me/{channel_id}/{message_id}"
 
 
-def fetch_discord_channel_messages(channel_id: str, token: str, limit: int = DEFAULT_DISCORD_MONITOR_LIMIT) -> list[dict[str, Any]]:
+def fetch_discord_channel_messages(
+    channel_id: str,
+    token: str,
+    limit: int = DEFAULT_DISCORD_MONITOR_LIMIT,
+    after_message_id: str = "",
+) -> list[dict[str, Any]]:
     headers = {
         "Authorization": f"Bot {token}",
         "User-Agent": "RenaissIntelDiscordMonitor/1.0",
     }
     params = {"limit": max(1, min(limit, 100))}
+    after_id = str(after_message_id or "").strip()
+    if re.fullmatch(r"\d{6,}", after_id):
+        params["after"] = after_id
     url = f"{DISCORD_API_BASE_URL}/channels/{channel_id}/messages"
     resp = requests.get(url, headers=headers, params=params, timeout=30)
     if resp.status_code >= 400:
@@ -1367,6 +1511,9 @@ def build_storycard_from_discord_message(item: dict[str, Any], channel_id: str) 
         metrics={},
         reply_to_id=reply_to_id,
     )
+    card.source_channel_id = str(channel_id or "")
+    card.source_message_id = mid
+    card.source_message_timestamp = created_dt.isoformat()
     return card
 
 
@@ -1375,24 +1522,58 @@ def collect_discord_cards(
     token: str,
     since_dt: datetime,
     limit_per_channel: int = DEFAULT_DISCORD_MONITOR_LIMIT,
-) -> tuple[list[StoryCard], dict[str, int], list[str]]:
+    after_by_channel: dict[str, str] | None = None,
+    since_by_channel: dict[str, datetime] | None = None,
+) -> tuple[list[StoryCard], dict[str, int], list[str], dict[str, dict[str, Any]]]:
     cards: list[StoryCard] = []
     stats: dict[str, int] = {}
     errors: list[str] = []
+    meta: dict[str, dict[str, Any]] = {}
+    after_map = after_by_channel if isinstance(after_by_channel, dict) else {}
+    since_map = since_by_channel if isinstance(since_by_channel, dict) else {}
 
     for cid in channel_ids:
         produced = 0
+        fetched_count = 0
+        latest_message_id = ""
+        latest_message_timestamp = ""
+        after_id = str(after_map.get(str(cid)) or "").strip()
+        channel_since_dt = since_map.get(str(cid))
+        if not isinstance(channel_since_dt, datetime):
+            channel_since_dt = since_dt
         try:
-            messages = fetch_discord_channel_messages(cid, token=token, limit=limit_per_channel)
+            messages = fetch_discord_channel_messages(
+                cid,
+                token=token,
+                limit=limit_per_channel,
+                after_message_id=after_id,
+            )
         except Exception as exc:
             errors.append(f"{cid}: {clean_text(str(exc))[:120]}")
             stats[cid] = 0
+            meta[cid] = {
+                "fetched_count": 0,
+                "produced_count": 0,
+                "after_message_id": after_id,
+                "since_timestamp": channel_since_dt.isoformat(),
+                "latest_message_id": "",
+                "latest_message_timestamp": "",
+                "error": clean_text(str(exc))[:160],
+            }
             continue
 
         for item in messages:
+            fetched_count += 1
             created_raw = str(item.get("timestamp") or item.get("edited_timestamp") or "").strip()
             created_dt = parse_datetime_guess(created_raw)
-            if created_dt and created_dt < since_dt:
+            mid = str(item.get("id") or "").strip()
+            if created_dt and (
+                not latest_message_timestamp
+                or created_dt > (parse_datetime_guess(latest_message_timestamp) or datetime.min.replace(tzinfo=timezone.utc))
+            ):
+                latest_message_timestamp = created_dt.isoformat()
+                latest_message_id = mid
+            if created_dt and created_dt < channel_since_dt:
                 continue
             card = build_storycard_from_discord_message(item, channel_id=cid)
             if not card:
@@ -1400,13 +1581,21 @@ def collect_discord_cards(
             cards.append(card)
             produced += 1
         stats[cid] = produced
+        meta[cid] = {
+            "fetched_count": fetched_count,
+            "produced_count": produced,
+            "after_message_id": after_id,
+            "since_timestamp": channel_since_dt.isoformat(),
+            "latest_message_id": latest_message_id,
+            "latest_message_timestamp": latest_message_timestamp,
+        }
 
     uniq: dict[str, StoryCard] = {}
     for c in cards:
         uniq[c.id] = c
     ordered = list(uniq.values())
     ordered.sort(key=lambda c: c.published_at, reverse=True)
-    return ordered, stats, errors
+    return ordered, stats, errors, meta
 
 
 def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DEFAULT_MAX_POSTS_PER_ACCOUNT) -> list[StoryCard]:

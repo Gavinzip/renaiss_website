@@ -213,6 +213,8 @@ class StoryCard:
     dedupe_winner_post_id: str = ""
     dedupe_winner_url: str = ""
     dedupe_winner_title: str = ""
+    dedupe_similarity: float = 0.0
+    dedupe_basis: list[str] | None = None
     number_facts: list[dict[str, str]] | None = None
     classified_by: str = "legacy"
     ai_model: str = ""
@@ -222,6 +224,9 @@ class StoryCard:
     review_status: str = ""
     classification_reason: str = ""
     classification_error: str = ""
+    source_channel_id: str = ""
+    source_message_id: str = ""
+    source_message_timestamp: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -267,6 +272,8 @@ class StoryCard:
             "dedupe_winner_post_id": self.dedupe_winner_post_id,
             "dedupe_winner_url": self.dedupe_winner_url,
             "dedupe_winner_title": self.dedupe_winner_title,
+            "dedupe_similarity": self.dedupe_similarity,
+            "dedupe_basis": self.dedupe_basis or [],
             "number_facts": self.number_facts or [],
             "classified_by": self.classified_by,
             "ai_model": self.ai_model,
@@ -276,6 +283,9 @@ class StoryCard:
             "review_status": self.review_status,
             "classification_reason": self.classification_reason,
             "classification_error": self.classification_error,
+            "source_channel_id": self.source_channel_id,
+            "source_message_id": self.source_message_id,
+            "source_message_timestamp": self.source_message_timestamp,
         }
 
 

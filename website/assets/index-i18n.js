@@ -14,6 +14,12 @@
       en: "Aggregator",
       ko: "애그리게이터",
     },
+    "nav.agent": {
+      "zh-Hant": "Renaiss Agent",
+      "zh-Hans": "Renaiss Agent",
+      en: "Renaiss Agent",
+      ko: "Renaiss Agent",
+    },
     "nav.beginner": {
       "zh-Hant": "新手教學",
       "zh-Hans": "新手教学",
@@ -79,6 +85,12 @@
       "zh-Hans": "官方近期更新",
       en: "Recent Official Updates",
       ko: "공식 최근 업데이트",
+    },
+    "category.agent": {
+      "zh-Hant": "Renaiss Agent",
+      "zh-Hans": "Renaiss Agent",
+      en: "Renaiss Agent",
+      ko: "Renaiss Agent",
     },
     "category.officialShort": {
       "zh-Hant": "官方更新",
@@ -175,6 +187,66 @@
       "zh-Hans": "修复加载状态",
       en: "Repair Loading",
       ko: "로딩 상태 복구",
+    },
+    "agent.title": {
+      "zh-Hant": "Renaiss Agent / <span class=\"text-gradient\">Knowledge Memory</span>",
+      "zh-Hans": "Renaiss Agent / <span class=\"text-gradient\">Knowledge Memory</span>",
+      en: "Renaiss Agent / <span class=\"text-gradient\">Knowledge Memory</span>",
+      ko: "Renaiss Agent / <span class=\"text-gradient\">Knowledge Memory</span>",
+    },
+    "agent.sub": {
+      "zh-Hant": "問近期 Renaiss 活動、SBT、官方更新與社群情報。",
+      "zh-Hans": "问近期 Renaiss 活动、SBT、官方更新与社群情报。",
+      en: "Ask about recent Renaiss events, SBT, official updates, and community intel.",
+      ko: "최근 Renaiss 이벤트, SBT, 공식 업데이트와 커뮤니티 정보를 물어보세요.",
+    },
+    "agent.memoryChip": {
+      "zh-Hant": "Memory RAG",
+      "zh-Hans": "Memory RAG",
+      en: "Memory RAG",
+      ko: "Memory RAG",
+    },
+    "agent.inputLabel": {
+      "zh-Hant": "問 Renaiss Agent",
+      "zh-Hans": "问 Renaiss Agent",
+      en: "Ask Renaiss Agent",
+      ko: "Renaiss Agent에게 질문",
+    },
+    "agent.ask": {
+      "zh-Hant": "送出",
+      "zh-Hans": "发送",
+      en: "Ask",
+      ko: "질문",
+    },
+    "agent.quickEvents": {
+      "zh-Hant": "最近官方活動",
+      "zh-Hans": "最近官方活动",
+      en: "Recent official events",
+      ko: "최근 공식 이벤트",
+    },
+    "agent.quickSbt": {
+      "zh-Hant": "SBT 取得方式",
+      "zh-Hans": "SBT 获取方式",
+      en: "SBT acquisition",
+      ko: "SBT 획득 방법",
+    },
+    "agent.quickPizza": {
+      "zh-Hant": "Pizza Day",
+      "zh-Hans": "Pizza Day",
+      en: "Pizza Day",
+      ko: "Pizza Day",
+    },
+    "agent.newChat": {
+      "zh-Hant": "新對話",
+      "zh-Hans": "新对话",
+      en: "New chat",
+      ko: "새 대화",
+    },
+    "agent.ready": {
+      "zh-Hant": "Agent ready.",
+      "zh-Hans": "Agent ready.",
+      en: "Agent ready.",
+      ko: "Agent ready.",
     },
     "events.title": {
       "zh-Hant": "活動主時間軸 / <span class=\"text-gradient\">Events</span>",

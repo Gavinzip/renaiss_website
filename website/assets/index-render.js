@@ -202,6 +202,7 @@
     const INTEL_POST_TIMEOUT_MS = 25000;
     const INTEL_LONG_POST_TIMEOUT_MS = 75000;
     const INTEL_ADMIN_STATUS_TIMEOUT_MS = 9000;
+    const INTEL_AUTH_TIMEOUT_MS = 12000;
     const INTEL_CATEGORY_RENDER_ORDER = Object.freeze([
       "events",
       "official",
@@ -941,15 +942,29 @@
     }
 
     async function submitIntelLogin(username, password) {
-      const response = await fetch(intelApiUrl("/api/auth/login"), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_AUTH_TIMEOUT_MS);
+      let data = {};
+      try {
+        const response = await fetch(intelApiUrl("/api/auth/login"), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ username, password }),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("login_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
       const token = String(data?.token || "").trim();
       if (token) {
@@ -961,15 +976,29 @@
     }
 
     async function submitIntelLogout() {
-      const response = await fetch(intelApiUrl("/api/auth/logout"), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({}),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_AUTH_TIMEOUT_MS);
+      let data = {};
+      try {
+        const response = await fetch(intelApiUrl("/api/auth/logout"), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({}),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("logout_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
       clearIntelAuthToken();
       await fetchIntelAuthState();
@@ -1295,6 +1324,38 @@
       openDetailModalWithHtml(intelDetailHtml(card));
     }
 
+    let intelCardDeepLinkLastToken = "";
+
+    function requestedIntelCardDeepLinkId() {
+      try {
+        return String(new URLSearchParams(window.location.search || "").get("card") || "").trim();
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function scheduleOpenIntelCardDeepLink() {
+      const key = requestedIntelCardDeepLinkId();
+      if (!key) return;
+      const token = `${key}:${String(intelFeedCache?.generated_at || "")}:${getActiveIntelCategory()}`;
+      if (intelCardDeepLinkLastToken === token) return;
+      intelCardDeepLinkLastToken = token;
+      window.setTimeout(() => {
+        const card = intelCardLookup.get(key);
+        if (!card) return;
+        openIntelDetailModal(key);
+        const escaped = (window.CSS && typeof window.CSS.escape === "function")
+          ? window.CSS.escape(key)
+          : key.replace(/["\\]/g, "\\$&");
+        const node = document.querySelector(`[data-intel-card-id="${escaped}"]`);
+        if (node) {
+          node.scrollIntoView({ behavior: "smooth", block: "center" });
+          node.classList.add("is-sbt-jump-target");
+          window.setTimeout(() => node.classList.remove("is-sbt-jump-target"), 1800);
+        }
+      }, 160);
+    }
+
     function normalizeSbtText(raw, limit = 120) {
       return truncateText(String(raw || "")
         .replace(/^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i, "")
@@ -1580,6 +1641,12 @@
       if (!modal) return;
       modal.classList.add("is-open");
       modal.setAttribute("aria-hidden", "false");
+      const message = document.getElementById("intel-auth-message");
+      if (message) {
+        message.classList.remove("is-error", "is-ok");
+        message.textContent = "";
+        message.hidden = true;
+      }
       const userInput = document.getElementById("intel-auth-username");
       if (userInput) userInput.focus();
     }
@@ -2043,6 +2110,7 @@
         },
       };
       resetIntelCategoryRenderQueue(context, getActiveIntelCategory());
+      scheduleOpenIntelCardDeepLink();
       if (payload?._recovered_from_snapshot) {
         setIntelMessage(uiLabel("feedFailedUsingSnapshot"), "");
       }
@@ -2436,9 +2504,11 @@
         const removedSelection = Number(sync?.excluded_by_selection || 0);
         const removedFeedback = Number(sync?.excluded_by_feedback || 0);
         const removedSourcePref = Number(sync?.excluded_by_source_preference || 0);
+        const removedExistingDedupe = Number(sync?.dedupe_existing_removed || 0);
         const removedAi = Number(sync?.dedupe_ai_removed || 0);
         const removedLocal = Number(sync?.dedupe_local_removed || 0);
-        syncMetaEl.textContent = `上牆 ${total} / 可用 ${sourceTotal} / 原始 ${rawTotal} · 過濾 手動${removedSelection} 回饋${removedFeedback} 來源去重${removedSourcePref} AI去重${removedAi} 本地去重${removedLocal} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
+        const removedBatch = Number(sync?.dedupe_batch_removed || 0);
+        syncMetaEl.textContent = `上牆 ${total} / 可用 ${sourceTotal} / 原始 ${rawTotal} · 過濾 手動${removedSelection} 回饋${removedFeedback} 公開去重${removedExistingDedupe} 來源去重${removedSourcePref} AI去重${removedAi} 本地去重${removedLocal} 批次去重${removedBatch} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
       }
       if (newPostsEl) {
         const v24 = Number(newPosts?.new_cards_24h || 0);

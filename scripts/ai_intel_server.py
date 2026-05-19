@@ -45,9 +45,18 @@ from x_intel_core import (
     update_card_timeline_fields,
     update_x_source_accounts,
 )
+from x_intel.knowledge_agent import answer_knowledge_question
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
-from website_i18n_runtime import build_i18n_feed_bundle_async, configure_i18n_runtime, i18n_state_snapshot, localized_feed_from_bundle, queue_i18n_retranslate, translate_texts
+from website_i18n_runtime import (
+    build_i18n_feed_bundle_async,
+    configure_i18n_runtime,
+    i18n_state_snapshot,
+    localized_feed_from_bundle,
+    queue_i18n_retranslate,
+    resume_pending_i18n_from_feed,
+    translate_texts,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,6 +84,7 @@ STORAGE_STATE = setup_website_storage(ROOT)
 
 FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
+KNOWLEDGE_MEMORY_PATH = DATA_ROOT / "x_intel_knowledge_memory.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
@@ -97,6 +107,25 @@ SYNC_STATE: dict[str, object] = {
     "last_error": "",
     "trigger": "",
     "duration_ms": 0,
+    "stage": "idle",
+    "stage_label": "",
+    "last_event_at": "",
+    "current_card_id": "",
+    "current_account": "",
+    "current_title": "",
+    "current_url": "",
+    "current_operation": "",
+    "current_attempt": 0,
+    "current_call_index": 0,
+    "current_prompt_len": 0,
+    "current_elapsed_ms": 0,
+    "done_cards": 0,
+    "total_cards": 0,
+    "done_sources": 0,
+    "total_sources": 0,
+    "found_cards": 0,
+    "latest_source": "",
+    "recent_events": [],
     "schedule_enabled": False,
     "schedule_interval_hours": 0.5,
     "schedule_window_days": 30,
@@ -163,6 +192,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
+I18N_WATCHDOG_ENABLED = _env_flag("I18N_WATCHDOG_ENABLED", True)
+I18N_WATCHDOG_INTERVAL_SECONDS = max(30, int(os.getenv("I18N_WATCHDOG_INTERVAL_SECONDS", "60") or "60"))
 
 
 def _normalize_samesite(raw: str | None) -> str:
@@ -457,7 +488,57 @@ def _read_feed_snapshot() -> dict:
         raw = json.loads(FEED_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    return raw if isinstance(raw, dict) else {}
+    return _attach_knowledge_memory_stats(raw) if isinstance(raw, dict) else {}
+
+
+def _read_knowledge_memory_stats() -> dict:
+    if not KNOWLEDGE_MEMORY_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(KNOWLEDGE_MEMORY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+    return {
+        "version": str(raw.get("version") or ""),
+        "path": str(KNOWLEDGE_MEMORY_PATH),
+        "retention_days": _safe_int(raw.get("retention_days"), 0),
+        "embedding_model": str(raw.get("embedding_model") or stats.get("model") or ""),
+        "item_total": _safe_int(raw.get("total_items"), 0),
+        "expired_skipped": _safe_int(stats.get("expired_skipped"), 0),
+        "forced_expired_kept": _safe_int(stats.get("forced_expired_kept"), 0),
+        "pre_window_count": _safe_int(stats.get("pre_window_count"), 0),
+        "embedding_status": str(stats.get("embedding_status") or ""),
+        "embedding_error": str(stats.get("embedding_error") or ""),
+        "embedding_ready_count": _safe_int(stats.get("embedding_ready_count"), 0),
+        "cache_hit": _safe_int(stats.get("cache_hit"), 0),
+        "cache_miss": _safe_int(stats.get("cache_miss"), 0),
+        "cache_size": _safe_int(stats.get("cache_size"), 0),
+        "vector_total": _safe_int(stats.get("vector_total"), 0),
+        "cache_size_before": _safe_int(stats.get("cache_size_before"), 0),
+        "cache_size_after": _safe_int(stats.get("cache_size_after"), 0),
+        "cache_removed": _safe_int(stats.get("cache_removed"), 0),
+    }
+
+
+def _attach_knowledge_memory_stats(feed: dict) -> dict:
+    if not isinstance(feed, dict):
+        return feed
+    if not isinstance(feed.get("knowledge_memory_stats"), dict) or not feed.get("knowledge_memory_stats"):
+        stats = _read_knowledge_memory_stats()
+        if stats:
+            feed = dict(feed)
+            feed["knowledge_memory_stats"] = stats
+            pipeline_counts = feed.get("pipeline_counts")
+            if isinstance(pipeline_counts, dict):
+                pipeline_counts = dict(pipeline_counts)
+                pipeline_counts["knowledge_memory_total"] = _safe_int(stats.get("item_total"), 0)
+                pipeline_counts["knowledge_memory_embedding_removed"] = _safe_int(stats.get("cache_removed"), 0)
+                pipeline_counts["knowledge_memory_embedding_ready"] = _safe_int(stats.get("embedding_ready_count"), 0)
+                feed["pipeline_counts"] = pipeline_counts
+    return feed
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -862,6 +943,8 @@ def _pipeline_card_row(card: dict, *, scan: str = "scanned", curation: str = "do
         row["winner_post_id"] = str(card.get("dedupe_winner_post_id") or "")
         row["winner_url"] = str(card.get("dedupe_winner_url") or "")
         row["winner_title"] = str(card.get("dedupe_winner_title") or "")
+        row["similarity"] = card.get("dedupe_similarity") or 0
+        row["basis"] = card.get("dedupe_basis") if isinstance(card.get("dedupe_basis"), list) else []
     return row
 
 
@@ -998,6 +1081,150 @@ def _sync_state_snapshot() -> dict:
         return dict(SYNC_STATE)
 
 
+def _sync_stage_for_event(event_name: str) -> str:
+    raw = str(event_name or "").strip().lower()
+    if raw.startswith("scan"):
+        return "scan"
+    if raw.startswith("refine") or raw.startswith("minimax"):
+        return "ai_refine"
+    if raw.startswith("dedupe"):
+        return "dedupe"
+    if raw.startswith("source_preference") or raw.startswith("curation"):
+        return "dedupe"
+    if raw.startswith("knowledge_memory"):
+        return "knowledge_memory"
+    if raw.startswith("digest") or raw.startswith("official_overview"):
+        return "summary"
+    if raw.startswith("write"):
+        return "write"
+    if raw in {"sync_done", "done"}:
+        return "done"
+    return raw or "running"
+
+
+def _sync_stage_label(stage: str) -> str:
+    return {
+        "idle": "待機",
+        "scan": "掃描來源",
+        "ai_refine": "AI 單卡整理",
+        "dedupe": "語意去重",
+        "knowledge_memory": "Knowledge Memory",
+        "summary": "總摘要",
+        "write": "寫入資料",
+        "done": "完成",
+        "failed": "失敗",
+    }.get(str(stage or ""), str(stage or "running"))
+
+
+def _record_sync_progress(event_name: str, payload: dict | None = None) -> None:
+    row = payload if isinstance(payload, dict) else {}
+    now = _now_iso()
+    stage = _sync_stage_for_event(event_name)
+    event_row = {
+        "event": str(event_name or ""),
+        "stage": stage,
+        "at": now,
+        "card_id": str(row.get("card_id") or row.get("current_card_id") or ""),
+        "account": str(row.get("account") or ""),
+        "title": str(row.get("title") or row.get("current_title") or "")[:160],
+        "operation": str(row.get("purpose") or row.get("operation") or ""),
+        "attempt": _safe_int(row.get("attempt"), 0),
+        "elapsed_ms": _safe_int(row.get("elapsed_ms"), 0),
+        "error": str(row.get("error") or "")[:260],
+    }
+    with SYNC_STATE_LOCK:
+        SYNC_STATE["stage"] = stage
+        SYNC_STATE["stage_label"] = _sync_stage_label(stage)
+        SYNC_STATE["last_event_at"] = now
+        for key in (
+            "done_cards",
+            "total_cards",
+            "done_sources",
+            "total_sources",
+            "found_cards",
+        ):
+            if key in row:
+                SYNC_STATE[key] = _safe_int(row.get(key), 0)
+        if "latest_source" in row:
+            SYNC_STATE["latest_source"] = str(row.get("latest_source") or "")
+        card_id = str(row.get("card_id") or row.get("current_card_id") or "").strip()
+        if card_id or event_name in {"refine_card_start", "minimax_start", "minimax_done", "minimax_error", "refine_card_done", "refine_card_failed"}:
+            SYNC_STATE["current_card_id"] = card_id
+            SYNC_STATE["current_account"] = str(row.get("account") or "")
+            SYNC_STATE["current_title"] = str(row.get("title") or row.get("current_title") or "")[:180]
+            SYNC_STATE["current_url"] = str(row.get("url") or "")
+        if event_name in {"minimax_start", "minimax_done", "minimax_error"}:
+            SYNC_STATE["current_operation"] = str(row.get("purpose") or "")
+            SYNC_STATE["current_attempt"] = _safe_int(row.get("attempt"), 0)
+            SYNC_STATE["current_call_index"] = _safe_int(row.get("call_index"), 0)
+            SYNC_STATE["current_prompt_len"] = _safe_int(row.get("prompt_len"), 0)
+            SYNC_STATE["current_elapsed_ms"] = _safe_int(row.get("elapsed_ms"), 0)
+        if event_name in {"minimax_error", "refine_card_failed"}:
+            SYNC_STATE["last_error"] = str(row.get("error") or "")[:260]
+        recent = SYNC_STATE.get("recent_events")
+        recent_rows = recent if isinstance(recent, list) else []
+        recent_rows.insert(0, event_row)
+        del recent_rows[30:]
+        SYNC_STATE["recent_events"] = recent_rows
+    if event_name in {
+        "scan_start",
+        "scan_source_start",
+        "scan_progress",
+        "scan_done",
+        "refine_start",
+        "refine_card_start",
+        "minimax_start",
+        "minimax_done",
+        "minimax_error",
+        "refine_card_done",
+        "refine_card_failed",
+        "dedupe_start",
+        "dedupe_existing_start",
+        "dedupe_existing_done",
+        "source_preference_start",
+        "source_preference_done",
+        "curation_start",
+        "curation_done",
+        "dedupe_batch_start",
+        "dedupe_batch_done",
+        "knowledge_memory_start",
+        "knowledge_memory_done",
+        "digest_start",
+        "digest_done",
+        "official_overview_start",
+        "official_overview_done",
+        "write_feed",
+    }:
+        progress_bits: list[str] = [f"stage={stage}", f"event={event_name}"]
+        if event_row["account"]:
+            progress_bits.append(f"account={event_row['account']}")
+        if event_row["card_id"]:
+            progress_bits.append(f"card={event_row['card_id']}")
+        if event_row["operation"]:
+            progress_bits.append(f"op={event_row['operation']}")
+        if event_row["attempt"]:
+            progress_bits.append(f"attempt={event_row['attempt']}")
+        if "call_index" in row:
+            progress_bits.append(f"call={_safe_int(row.get('call_index'), 0)}")
+        if "prompt_len" in row:
+            progress_bits.append(f"prompt_len={_safe_int(row.get('prompt_len'), 0)}")
+        if event_row["elapsed_ms"]:
+            progress_bits.append(f"elapsed_ms={event_row['elapsed_ms']}")
+        if "done_cards" in row or "total_cards" in row:
+            progress_bits.append(
+                f"cards={_safe_int(row.get('done_cards'), 0)}/{_safe_int(row.get('total_cards'), 0)}"
+            )
+        if "done_sources" in row or "total_sources" in row:
+            progress_bits.append(
+                f"sources={_safe_int(row.get('done_sources'), 0)}/{_safe_int(row.get('total_sources'), 0)}"
+            )
+        if event_row["error"]:
+            progress_bits.append(f"error={event_row['error']}")
+        if event_row["title"]:
+            progress_bits.append(f"title={event_row['title']}")
+        print("[ai-intel-sync] " + " ".join(progress_bits), flush=True)
+
+
 def _start_sync_state(trigger: str = "") -> None:
     with SYNC_STATE_LOCK:
         SYNC_STATE["status"] = "running"
@@ -1006,6 +1233,25 @@ def _start_sync_state(trigger: str = "") -> None:
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["trigger"] = str(trigger or "manual")
         SYNC_STATE["duration_ms"] = 0
+        SYNC_STATE["stage"] = "scan"
+        SYNC_STATE["stage_label"] = _sync_stage_label("scan")
+        SYNC_STATE["last_event_at"] = SYNC_STATE["started_at"]
+        SYNC_STATE["current_card_id"] = ""
+        SYNC_STATE["current_account"] = ""
+        SYNC_STATE["current_title"] = ""
+        SYNC_STATE["current_url"] = ""
+        SYNC_STATE["current_operation"] = ""
+        SYNC_STATE["current_attempt"] = 0
+        SYNC_STATE["current_call_index"] = 0
+        SYNC_STATE["current_prompt_len"] = 0
+        SYNC_STATE["current_elapsed_ms"] = 0
+        SYNC_STATE["done_cards"] = 0
+        SYNC_STATE["total_cards"] = 0
+        SYNC_STATE["done_sources"] = 0
+        SYNC_STATE["total_sources"] = 0
+        SYNC_STATE["found_cards"] = 0
+        SYNC_STATE["latest_source"] = ""
+        SYNC_STATE["recent_events"] = []
 
 
 def _finish_sync_state_ok(started_monotonic: float) -> None:
@@ -1017,6 +1263,9 @@ def _finish_sync_state_ok(started_monotonic: float) -> None:
         SYNC_STATE["last_success_at"] = now_iso
         SYNC_STATE["last_error"] = ""
         SYNC_STATE["duration_ms"] = duration_ms
+        SYNC_STATE["stage"] = "done"
+        SYNC_STATE["stage_label"] = _sync_stage_label("done")
+        SYNC_STATE["last_event_at"] = now_iso
 
 
 def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> None:
@@ -1027,6 +1276,9 @@ def _finish_sync_state_failed(started_monotonic: float, error_message: str) -> N
         SYNC_STATE["finished_at"] = now_iso
         SYNC_STATE["last_error"] = str(error_message or "unknown_error")
         SYNC_STATE["duration_ms"] = duration_ms
+        SYNC_STATE["stage"] = "failed"
+        SYNC_STATE["stage_label"] = _sync_stage_label("failed")
+        SYNC_STATE["last_event_at"] = now_iso
 
 
 def _mark_sync_schedule(
@@ -1051,7 +1303,11 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     started_monotonic = time.monotonic()
     _start_sync_state(trigger=trigger)
     try:
-        result = sync_accounts(accounts=accounts, window_days=max(1, int(days)))
+        result = sync_accounts(
+            accounts=accounts,
+            window_days=max(1, int(days)),
+            progress_callback=_record_sync_progress,
+        )
         build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
         return result
@@ -1085,6 +1341,40 @@ def _warm_i18n_bundle_from_feed() -> None:
     if not isinstance(feed, dict):
         return
     build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+
+
+def _resume_pending_i18n_from_current_feed(trigger: str) -> dict:
+    if not FEED_PATH.exists():
+        return {"queued": False, "langs": [], "reason": "feed_missing", "trigger": trigger}
+    try:
+        feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"queued": False, "langs": [], "reason": f"feed_read_failed:{exc}", "trigger": trigger}
+    if not isinstance(feed, dict):
+        return {"queued": False, "langs": [], "reason": "feed_invalid", "trigger": trigger}
+    return resume_pending_i18n_from_feed(feed, target_langs=["en", "ko", "zh-Hans"], trigger=trigger)
+
+
+def _start_i18n_watchdog(*, interval_seconds: int = I18N_WATCHDOG_INTERVAL_SECONDS) -> None:
+    safe_interval = max(30, int(interval_seconds or I18N_WATCHDOG_INTERVAL_SECONDS))
+
+    def _loop() -> None:
+        time.sleep(8)
+        while True:
+            try:
+                result = _resume_pending_i18n_from_current_feed(trigger="watchdog")
+                if result.get("queued"):
+                    print(
+                        "[ai-intel-i18n] watchdog queued "
+                        f"langs={','.join([str(x) for x in result.get('langs', [])])} "
+                        f"source={str(result.get('source_generated_at') or '--')}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[ai-intel-i18n] watchdog failed: {exc}", flush=True)
+            time.sleep(safe_interval)
+
+    Thread(target=_loop, daemon=True).start()
 
 
 def _start_x_sync_scheduler(
@@ -1292,6 +1582,25 @@ def _build_admin_status(limit: int = 10) -> dict:
             "last_error": str(sync_state.get("last_error") or ""),
             "trigger": str(sync_state.get("trigger") or ""),
             "duration_ms": _safe_int(sync_state.get("duration_ms"), 0),
+            "stage": str(sync_state.get("stage") or "idle"),
+            "stage_label": str(sync_state.get("stage_label") or ""),
+            "last_event_at": str(sync_state.get("last_event_at") or ""),
+            "current_card_id": str(sync_state.get("current_card_id") or ""),
+            "current_account": str(sync_state.get("current_account") or ""),
+            "current_title": str(sync_state.get("current_title") or ""),
+            "current_url": str(sync_state.get("current_url") or ""),
+            "current_operation": str(sync_state.get("current_operation") or ""),
+            "current_attempt": _safe_int(sync_state.get("current_attempt"), 0),
+            "current_call_index": _safe_int(sync_state.get("current_call_index"), 0),
+            "current_prompt_len": _safe_int(sync_state.get("current_prompt_len"), 0),
+            "current_elapsed_ms": _safe_int(sync_state.get("current_elapsed_ms"), 0),
+            "progress_done_cards": _safe_int(sync_state.get("done_cards"), 0),
+            "progress_total_cards": _safe_int(sync_state.get("total_cards"), 0),
+            "progress_done_sources": _safe_int(sync_state.get("done_sources"), 0),
+            "progress_total_sources": _safe_int(sync_state.get("total_sources"), 0),
+            "progress_found_cards": _safe_int(sync_state.get("found_cards"), 0),
+            "latest_source": str(sync_state.get("latest_source") or ""),
+            "recent_events": sync_state.get("recent_events") if isinstance(sync_state.get("recent_events"), list) else [],
             "schedule_enabled": bool(sync_state.get("schedule_enabled")),
             "schedule_interval_hours": float(sync_state.get("schedule_interval_hours") or DEFAULT_X_SYNC_INTERVAL_HOURS),
             "schedule_window_days": _safe_int(sync_state.get("schedule_window_days"), DEFAULT_X_SYNC_WINDOW_DAYS),
@@ -1306,8 +1615,10 @@ def _build_admin_status(limit: int = 10) -> dict:
             "excluded_by_selection": _safe_int(feed.get("excluded_by_selection"), 0),
             "excluded_by_feedback": _safe_int(feed.get("excluded_by_feedback"), 0),
             "excluded_by_source_preference": _safe_int(feed.get("excluded_by_source_preference"), 0),
+            "dedupe_existing_removed": _safe_int((feed.get("dedupe_stats") or {}).get("existing_duplicate_removed"), 0),
             "dedupe_ai_removed": _safe_int((feed.get("dedupe_stats") or {}).get("ai_removed"), 0),
             "dedupe_local_removed": _safe_int((feed.get("dedupe_stats") or {}).get("local_removed"), 0),
+            "dedupe_batch_removed": _safe_int((feed.get("dedupe_stats") or {}).get("batch_candidate_removed"), 0),
             "pipeline_counts": pipeline_counts,
             "new_cards_6h": recent_6h,
             "new_cards_24h": recent_24h,
@@ -1384,6 +1695,9 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "cards_total": _safe_int(discord_info.get("cards_total"), 0),
                 "channel_ids": [str(x) for x in (discord_info.get("channel_ids") or []) if str(x).strip()],
                 "channel_stats": discord_info.get("channel_stats") if isinstance(discord_info.get("channel_stats"), dict) else {},
+                "channel_meta": discord_info.get("channel_meta") if isinstance(discord_info.get("channel_meta"), dict) else {},
+                "checkpoints": discord_info.get("checkpoints") if isinstance(discord_info.get("checkpoints"), dict) else {},
+                "state_file": str(discord_info.get("state_file") or ""),
                 "errors": [str(x) for x in (discord_info.get("errors") or []) if str(x).strip()][:6],
             }
         },
@@ -2001,6 +2315,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(feed, dict):
                 self._send_json({"ok": False, "error": "feed format invalid"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
+            feed = _attach_knowledge_memory_stats(feed)
             localized_feed = localized_feed_from_bundle(feed, request_lang)
             _strip_missing_cover_images(localized_feed)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
@@ -2029,6 +2344,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/restore",
             "/api/intel/retranslate",
             "/api/intel/pokemon-news",
+            "/api/intel/agent",
             "/api/intel/translate-texts",
             "/api/intel/public-feedback",
         }:
@@ -2121,6 +2437,38 @@ class Handler(SimpleHTTPRequestHandler):
                     "items": translated,
                 }
             )
+            return
+
+        if path == "/api/intel/agent":
+            question = str(payload.get("question") or "").strip()
+            lang = _normalize_lang_tag(payload.get("lang"))
+            top_k = _safe_int(payload.get("top_k"), 6)
+            history = payload.get("history")
+            if not isinstance(history, list):
+                history = []
+            if not question:
+                self._send_json({"ok": False, "error": "question is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                result = answer_knowledge_question(question, lang=lang, top_k=max(1, min(top_k, 10)), history=history)
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except RuntimeError as exc:
+                message = str(exc)
+                status = HTTPStatus.SERVICE_UNAVAILABLE if message in {
+                    "missing_openai_api_key",
+                    "missing_minimax_api_key",
+                    "knowledge_memory_empty",
+                    "embedding_cache_empty",
+                    "no_vector_matches",
+                } else HTTPStatus.BAD_GATEWAY
+                self._send_json({"ok": False, "error": message}, status=status)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"agent_failed:{exc}"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json({"ok": True, **result})
             return
 
         if path == "/api/intel/public-feedback":
@@ -2261,6 +2609,9 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/intel/job-status":
                 job_id = str(payload.get("id") or "").strip()
+                if job_id in {"sync", "intel-sync", "x-sync", "x_sync_agent"}:
+                    self._send_json({"ok": True, "job": {"id": "sync", "kind": "sync", **_sync_state_snapshot()}})
+                    return
                 if not job_id:
                     self._send_json({"ok": False, "error": "id is required"}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -2390,6 +2741,9 @@ def main() -> int:
         )
     if I18N_WARM_ON_STARTUP:
         _warm_i18n_bundle_from_feed()
+    if I18N_WATCHDOG_ENABLED:
+        _resume_pending_i18n_from_current_feed(trigger="startup-watchdog")
+        _start_i18n_watchdog(interval_seconds=I18N_WATCHDOG_INTERVAL_SECONDS)
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving api={ROOT} static={STATIC_ROOT} at http://{args.host}:{args.port}")
@@ -2413,7 +2767,7 @@ def main() -> int:
         "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, "
+        "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
         "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback"
     )
     print(
@@ -2423,6 +2777,11 @@ def main() -> int:
         f"allowed_origins={sorted(ALLOWED_ORIGINS)}"
     )
     print(f"[ai-intel] i18n warm on startup: {bool(I18N_WARM_ON_STARTUP)}")
+    print(
+        "[ai-intel] i18n watchdog "
+        f"enabled={bool(I18N_WATCHDOG_ENABLED)} "
+        f"interval={int(I18N_WATCHDOG_INTERVAL_SECONDS)}s"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
