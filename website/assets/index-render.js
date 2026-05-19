@@ -1363,6 +1363,48 @@
         .trim(), limit);
     }
 
+    function normalizeSbtMethodText(raw, limit = 128) {
+      return normalizeSbtText(String(raw || "")
+        .replace(/https?:\/\/\S+/gi, "")
+        .replace(/\s*(連結為|链接为|連結在文內|链接在文内)\s*$/i, "")
+        .replace(/[，,；;]\s*$/g, "")
+        .trim(), limit);
+    }
+
+    function sbtDetailLines(card) {
+      return Array.isArray(card?.detail_lines)
+        ? card.detail_lines.map((x) => String(x || "").trim()).filter(Boolean)
+        : [];
+    }
+
+    function sbtDetailValue(line, labelPattern, limit = 128) {
+      const raw = String(line || "").trim();
+      const match = raw.match(labelPattern);
+      if (!match) return "";
+      return normalizeSbtText(raw.slice(match[0].length), limit);
+    }
+
+    function firstSbtDetailValue(card, labelPatterns, limit = 128) {
+      const patterns = Array.isArray(labelPatterns) ? labelPatterns : [labelPatterns];
+      for (const line of sbtDetailLines(card)) {
+        for (const pattern of patterns) {
+          const value = sbtDetailValue(line, pattern, limit);
+          if (value) return value;
+        }
+      }
+      return "";
+    }
+
+    function extractSbtNameFromText(raw) {
+      const text = normalizeSbtText(raw, 96);
+      if (!text) return "";
+      const latinName = text.match(/\b([A-Za-z0-9][A-Za-z0-9 +'._-]{1,54}\s+SBT)\b/i);
+      if (latinName) return normalizeSbtText(latinName[1], 64);
+      const soulboundName = text.match(/\b([A-Za-z0-9][A-Za-z0-9 +'._-]{1,54}\s+Soul\s*Bound\s*Token)\b/i);
+      if (soulboundName) return normalizeSbtText(soulboundName[1], 64);
+      return "";
+    }
+
     function isWeakSbtName(name) {
       const text = String(name || "").replace(/\s+/g, " ").trim();
       if (!text) return true;
@@ -1380,6 +1422,13 @@
       const rows = [];
       if (Array.isArray(card?.sbt_names)) rows.push(...card.sbt_names);
       if (card?.sbt_name) rows.push(card.sbt_name);
+      if (!rows.some((x) => !isWeakSbtName(normalizeSbtText(x, 64)))) {
+        const namedLine = firstSbtDetailValue(card, [/^\s*SBT\s*(?:名稱|名称)\s*[:：]\s*/i], 96);
+        if (namedLine) rows.push(extractSbtNameFromText(namedLine) || namedLine);
+        const rewardLine = firstSbtDetailValue(card, [/^\s*(?:獎勵|奖励)\s*[:：]\s*/i], 96);
+        const rewardName = extractSbtNameFromText(rewardLine);
+        if (rewardName) rows.push(rewardName);
+      }
       const seen = new Set();
       return rows
         .map((x) => normalizeSbtText(x, 64))
@@ -1400,26 +1449,61 @@
     }
 
     function sbtAcquisitionForCard(card) {
-      let direct = normalizeSbtText(card?.sbt_acquisition, 128);
+      let direct = normalizeSbtMethodText(card?.sbt_acquisition, 128);
       if (!direct) {
-        const rows = [
-          ...(Array.isArray(card?.detail_lines) ? card.detail_lines : []),
-          ...(Array.isArray(card?.bullets) ? card.bullets : []),
-        ];
-        const explicit = rows.find((x) => /^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]/i.test(String(x || "")));
-        direct = normalizeSbtText(explicit, 128);
+        const explicit = firstSbtDetailValue(card, [/^\s*SBT\s*(?:取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i], 128);
+        direct = normalizeSbtMethodText(explicit, 128);
+      }
+      if (!direct) {
+        const condition = firstSbtDetailValue(card, [/^\s*(?:領取條件|领取条件|取得條件|获取条件)\s*[:：]\s*/i], 96);
+        const participation = firstSbtDetailValue(card, [/^\s*(?:參與方式|参与方式)\s*[:：]\s*/i], 96);
+        const operation = firstSbtDetailValue(card, [/^\s*(?:操作流程)\s*[:：]\s*/i], 96);
+        const parts = [condition, participation, operation]
+          .map((x) => normalizeSbtMethodText(x, 96))
+          .filter(Boolean);
+        const seen = new Set();
+        direct = parts
+          .filter((x) => {
+            const key = x.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, 2)
+          .join("；");
       }
       if (!direct) return "";
       if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(direct)) return "";
-      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
+      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|追蹤|追踪|提交|張貼|张贴|前往|表單|表单|造訪|造访|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
       if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(direct)) return "";
       return direct;
+    }
+
+    function parseSbtDateValue(raw) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      const iso = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+      const zh = text.match(/\b(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?\b/);
+      const match = iso || zh;
+      if (!match) return "";
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      if (!year || month < 1 || month > 12 || day < 1 || day > 31) return "";
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+
+    function sbtDeadlineForCard(card) {
+      const value = firstSbtDetailValue(card, [/^\s*(?:截止日期|截止時間|截止时间)\s*[:：]\s*/i], 96);
+      return parseSbtDateValue(value);
     }
 
     function sbtEffectiveEndDate(card) {
       const endRaw = String(card?.timeline_end_date || "").trim();
       if (endRaw) return endRaw;
-      return String(card?.timeline_date || "").trim();
+      const startRaw = String(card?.timeline_date || "").trim();
+      if (startRaw) return startRaw;
+      return sbtDeadlineForCard(card);
     }
 
     function sbtStatusForCard(card) {
@@ -1446,7 +1530,7 @@
     }
 
     function sbtRowTimeMs(card) {
-      const raw = String(card?.timeline_date || card?.published_at || "").trim();
+      const raw = String(sbtEffectiveEndDate(card) || card?.published_at || "").trim();
       if (!raw) return 0;
       const dt = new Date(raw);
       return Number.isNaN(dt.valueOf()) ? 0 : dt.getTime();
