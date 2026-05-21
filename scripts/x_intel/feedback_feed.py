@@ -1388,7 +1388,7 @@ def _removed_cards(before: list[StoryCard], after: list[StoryCard], force_ids: s
     return out
 
 
-DEFAULT_PROTECTED_OFFICIAL_X_HANDLES = {"renaissxyz", "renaissofficial", "renaisscn", "renaiss_cn"}
+DEFAULT_PROTECTED_OFFICIAL_X_HANDLES = set(OFFICIAL_X_HANDLES)
 
 
 def _protected_official_x_handles() -> set[str]:
@@ -1588,6 +1588,22 @@ def _dedupe_terms(card: StoryCard) -> set[str]:
             continue
         out.add(t)
     return out
+
+
+def _dedupe_named_event_keys(card: StoryCard) -> set[str]:
+    src = strip_links_mentions(_dedupe_blob(card)).lower()
+    keys: set[str] = set()
+    if (
+        re.search(r"region\s+royale|invite\s+battle|valid\s+new\s+users?", src, re.I)
+        or ("邀請大戰" in src and ("有效用戶" in src or "区域" in src or "區域" in src or "地區" in src))
+        or "แข่งเชิญ" in src
+    ):
+        keys.add("region_royale_invite_battle")
+    if "networker" in src and "sbt" in src:
+        keys.add("networker_sbt")
+    if "pizza day" in src and ("kuala" in src or "lumpur" in src or "吉隆坡" in src):
+        keys.add("pizza_day_kuala_lumpur")
+    return keys
 
 
 def _dedupe_event_date_hint(card: StoryCard) -> str:
@@ -1816,13 +1832,16 @@ def _dedupe_match_score(
         basis.append(f"embedding_similarity:{embed_sim:.3f}")
         if embedding_model:
             basis.append(f"embedding_model:{embedding_model}")
+    named_overlap = _dedupe_named_event_keys(card) & _dedupe_named_event_keys(winner)
+    if named_overlap:
+        basis.append(f"named_event_key:{','.join(sorted(named_overlap))}")
+        return max(0.88, embed_sim), basis
 
     winner_handle = normalize_account_handle(winner.account)
     source_low = f"{card.raw_text} {card.summary} {card.detail_summary}".lower()
-    if winner_handle and f"@{winner_handle}" in source_low and overlap_count >= 3:
+    mentions_winner = bool(winner_handle and f"@{winner_handle}" in source_low)
+    if mentions_winner:
         basis.append(f"mentions_winner_account:{winner_handle}")
-        basis.append(f"text_similarity:{text_sim:.3f}")
-        return max(0.90, text_sim), basis
 
     if text_sim >= 0.82:
         basis.append(f"text_similarity:{text_sim:.3f}")
@@ -1830,7 +1849,8 @@ def _dedupe_match_score(
     if same_date and text_sim >= 0.56 and overlap_count >= 2:
         basis.append(f"text_similarity:{text_sim:.3f}")
         return max(0.84, text_sim), basis
-    if same_date and overlap_count >= 4:
+    thresholds = _dedupe_embedding_thresholds()
+    if same_date and overlap_count >= 4 and (text_sim >= 0.42 or embed_sim >= float(thresholds["candidate"])):
         basis.append(f"text_similarity:{text_sim:.3f}")
         return max(0.80, text_sim), basis
     if text_sim >= 0.72 and overlap_count >= 3:
@@ -1839,7 +1859,6 @@ def _dedupe_match_score(
     if {"pizza", "kuala", "lumpur"}.issubset(overlap) and overlap_count >= 4:
         basis.append(f"text_similarity:{text_sim:.3f}")
         return max(0.78, text_sim), basis
-    thresholds = _dedupe_embedding_thresholds()
     if embed_sim >= float(thresholds["strong"]):
         basis.append(f"text_similarity:{text_sim:.3f}")
         return max(float(thresholds["strong"]), embed_sim), basis
@@ -1859,7 +1878,7 @@ def _find_best_canonical_dedupe_match(
     embedding_scores: dict[str, float] | None = None,
     embedding_model: str = "",
 ) -> tuple[StoryCard | None, float, list[str]]:
-    best: tuple[float, float, StoryCard | None, list[str]] = (0.0, 0.0, None, [])
+    matches: list[tuple[float, float, StoryCard, list[str]]] = []
     vector_scores = embedding_scores or {}
     for winner in canonical_cards:
         if not winner.id or winner.id == card.id:
@@ -1873,8 +1892,19 @@ def _find_best_canonical_dedupe_match(
         if score <= 0:
             continue
         priority = _canonical_dedupe_priority(winner)
-        if (score, priority) > (best[0], best[1]):
-            best = (score, priority, winner, basis)
+        matches.append((score, priority, winner, basis))
+    if not matches:
+        return None, 0.0, []
+
+    best = max(matches, key=lambda item: (item[0], item[1]))
+    protected_official_matches = [
+        item for item in matches
+        if _is_protected_official_x_source_card(item[2]) and item[0] >= 0.74
+    ]
+    if protected_official_matches:
+        official_best = max(protected_official_matches, key=lambda item: (item[0], item[1]))
+        if official_best[0] >= best[0] - 0.08:
+            best = official_best
     return best[2], best[0], best[3]
 
 
@@ -2563,7 +2593,7 @@ def _official_overview_fallback(recent: list[StoryCard]) -> dict[str, Any]:
 
 
 def build_official_overview(cards: list[StoryCard], api_key: str | None = None) -> dict[str, Any]:
-    official = [c for c in cards if c.account.lower().startswith("renaiss")]
+    official = [c for c in cards if is_official_account_handle(c.account)]
     if not official:
         return {
             "title": "近 7 天官方重點整理",

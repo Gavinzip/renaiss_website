@@ -36,6 +36,21 @@
         if (mode === "error") xSourceResult.classList.add("is-error");
         xSourceResult.textContent = String(text || "");
       };
+      const setAuthMessage = (text, mode = "") => {
+        const authMessage = document.getElementById("intel-auth-message");
+        if (!authMessage) return;
+        authMessage.classList.remove("is-ok", "is-error");
+        if (mode === "ok") authMessage.classList.add("is-ok");
+        if (mode === "error") authMessage.classList.add("is-error");
+        authMessage.textContent = String(text || "");
+        authMessage.hidden = !text;
+      };
+      const formatAuthError = (error) => {
+        const message = String(error?.message || "").trim();
+        if (message === "login_timeout") return "登入逾時，請重新整理後再試。";
+        if (message === "logout_timeout") return "登出逾時，請重新整理後再試。";
+        return message || "未知錯誤";
+      };
       const secretLine = document.getElementById("intel-auth-stealth-line");
       const cardWraps = Array.from(document.querySelectorAll(".intel-grid"));
       const masterStage = document.getElementById("intel-master-stage");
@@ -176,7 +191,7 @@
             await submitIntelLogout();
             setIntelMessage("已登出管理模式。", "ok");
           } catch (error) {
-            setIntelMessage(`登出失敗：${error.message}`, "error");
+            setIntelMessage(`登出失敗：${formatAuthError(error)}`, "error");
           } finally {
             logoutButtons.forEach((btn) => { btn.disabled = false; });
             updateIntelAuthUi();
@@ -192,7 +207,7 @@
           await submitIntelLogout();
           setIntelMessage("已登出管理模式。", "ok");
         } catch (error) {
-          setIntelMessage(`登出失敗：${error.message}`, "error");
+          setIntelMessage(`登出失敗：${formatAuthError(error)}`, "error");
         } finally {
           logoutButtons.forEach((btn) => { btn.disabled = false; });
           updateIntelAuthUi();
@@ -336,19 +351,31 @@
           const username = String(userInput?.value || "").trim();
           const password = String(passInput?.value || "");
           if (!username || !password) {
+            setAuthMessage("請輸入帳號與密碼。", "error");
             setIntelMessage("請輸入帳號與密碼。", "error");
             return;
           }
-          if (authSubmit) authSubmit.disabled = true;
+          const defaultSubmitText = authSubmit ? authSubmit.textContent : "登入";
+          if (authSubmit) {
+            authSubmit.disabled = true;
+            authSubmit.textContent = "登入中...";
+          }
+          setAuthMessage("登入中...", "");
           try {
             await submitIntelLogin(username, password);
+            setAuthMessage("登入成功。", "ok");
             closeIntelAuthModal(true);
             setIntelMessage("已登入管理模式，現在可執行修改操作。", "ok");
             refreshIntelAdminStatus();
           } catch (error) {
-            setIntelMessage(`登入失敗：${error.message}`, "error");
+            const detail = formatAuthError(error);
+            setAuthMessage(`登入失敗：${detail}`, "error");
+            setIntelMessage(`登入失敗：${detail}`, "error");
           } finally {
-            if (authSubmit) authSubmit.disabled = false;
+            if (authSubmit) {
+              authSubmit.disabled = false;
+              authSubmit.textContent = defaultSubmitText;
+            }
             updateIntelAuthUi();
           }
         });
@@ -534,10 +561,16 @@
         });
       }
 
-      fetchIntelAuthState().then(() => {
-        if (intelFeedCache) renderIntelFeed(intelFeedCache);
-        else updateIntelAuthUi();
-      });
+      if (!intelAuthState.ready) {
+        fetchIntelAuthState().then(() => {
+          if (intelFeedCache) renderIntelFeed(intelFeedCache);
+          else updateIntelAuthUi();
+        });
+      } else if (intelFeedCache) {
+        renderIntelFeed(intelFeedCache);
+      } else {
+        updateIntelAuthUi();
+      }
 
       analyzeBtn.addEventListener("click", async () => {
         if (!intelCanEdit()) {

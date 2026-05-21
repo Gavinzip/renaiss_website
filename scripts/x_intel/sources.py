@@ -514,6 +514,10 @@ def normalize_x_accounts(values: Any) -> list[str]:
     return out
 
 
+def ensure_required_x_accounts(accounts: list[str]) -> list[str]:
+    return normalize_x_accounts([*(accounts or []), *REQUIRED_X_ACCOUNT_LABELS])
+
+
 def x_source_config_path() -> Path:
     return data_dir() / X_SOURCE_CONFIG_FILE
 
@@ -522,13 +526,16 @@ def read_x_source_config() -> dict[str, Any]:
     path = x_source_config_path()
     raw = read_json(path, {}) if path.exists() else {}
     configured = isinstance(raw, dict) and isinstance(raw.get("x_accounts"), list)
-    accounts = normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS)
+    accounts = ensure_required_x_accounts(normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS))
     pokemon_accounts = normalize_x_accounts(raw.get("pokemon_accounts") if isinstance(raw, dict) else [])
+    account_keys = {x.lower() for x in accounts}
+    pokemon_accounts = [x for x in pokemon_accounts if x.lower() in account_keys]
     updated_at = str(raw.get("updated_at") or "") if isinstance(raw, dict) else ""
     return {
         "x_accounts": accounts,
         "pokemon_accounts": pokemon_accounts,
         "default_x_accounts": list(DEFAULT_ACCOUNTS),
+        "required_x_accounts": list(REQUIRED_X_ACCOUNT_LABELS),
         "using_default": not configured,
         "updated_at": updated_at,
         "path": str(path),
@@ -536,7 +543,7 @@ def read_x_source_config() -> dict[str, Any]:
 
 
 def write_x_source_config(accounts: list[str], pokemon_accounts: list[str] | None = None) -> dict[str, Any]:
-    normalized = normalize_x_accounts(accounts)
+    normalized = ensure_required_x_accounts(normalize_x_accounts(accounts))
     pokemon_normalized = normalize_x_accounts(pokemon_accounts if pokemon_accounts is not None else [])
     account_keys = {x.lower() for x in normalized}
     pokemon_normalized = [x for x in pokemon_normalized if x.lower() in account_keys]
@@ -817,6 +824,7 @@ def apply_minimax_story_refine(
 
     total_cards = len(cards)
     call_index = 0
+    regional_cm_accounts = ", ".join(REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 
     def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
         nonlocal call_index
@@ -919,6 +927,7 @@ def apply_minimax_story_refine(
             "22) guides 只放教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊；一般心得、行情、公告、活動不能標 guides；"
             "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
             "24) official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord 公告來源；Pokemon Center、零售商、媒體或一般情報帳號不算 official；不要因為內文提到 @renaissxyz 就標 official；"
+            f"24a) {regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X；除非原文有 #renaiss 或 @renaissxyz，否則不要標 community，也永遠不要因帳號名標 official；"
             "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
             "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
             "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；官方來源要加 official，限量/發售/alpha 測試相關可加 alpha；"
@@ -961,6 +970,7 @@ def apply_minimax_story_refine(
                     "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
                     "number_facts.text 只能放原文實際出現的價格、數量、名額、比例、成交價、積分門檻，不要放日期/時間/時區/純年份；原文沒有 Discord、直播、線上或獎勵時不可補。"
                     "official 只給 Renaiss 官方來源；other 只能單獨出現；events 只在 card_type=event 時使用。"
+                    f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
@@ -997,6 +1007,7 @@ def apply_minimax_story_refine(
                     "topic_labels 必須是陣列，event 類活動至少包含 events；官方帳號 @renaissxyz 至少包含 official。"
                     "other 只能單獨出現；events 只在 card_type=event 時使用；official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord。"
                     "Pokemon Center、零售商、媒體或一般情報帳號不算 official。"
+                    f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
                     "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
                     "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"

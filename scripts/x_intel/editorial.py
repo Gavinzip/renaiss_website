@@ -231,7 +231,7 @@ def _account_actor_label(account: str) -> str:
     handle = str(account or "").strip().lstrip("@").lower()
     if not handle:
         return "來源帳號"
-    if handle.startswith("renaiss"):
+    if is_official_account_handle(handle):
         return "Renaiss 官方"
     return f"@{handle}"
 

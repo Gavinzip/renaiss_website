@@ -268,6 +268,268 @@ def _question_intent(question: str) -> dict[str, bool]:
     }
 
 
+def _frontend_sbt_data_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "website" / "assets" / "index-data.js"
+
+
+def _extract_js_array(text: str, const_name: str) -> str:
+    marker = re.search(rf"\bconst\s+{re.escape(const_name)}\s*=\s*\[", text)
+    if not marker:
+        return ""
+    start = text.find("[", marker.start())
+    if start < 0:
+        return ""
+    depth = 0
+    quote = ""
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:idx]
+    return ""
+
+
+def _extract_js_object_blocks(array_body: str) -> list[str]:
+    blocks: list[str] = []
+    depth = 0
+    start = -1
+    quote = ""
+    escaped = False
+    for idx, ch in enumerate(array_body):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                blocks.append(array_body[start:idx + 1])
+                start = -1
+    return blocks
+
+
+def _js_string_prop(block: str, key: str) -> str:
+    match = re.search(rf"\b{re.escape(key)}\s*:\s*\"((?:\\.|[^\"\\])*)\"", block, re.S)
+    if not match:
+        return ""
+    try:
+        return str(json.loads(f"\"{match.group(1)}\""))
+    except Exception:
+        return match.group(1).replace('\\"', '"').replace("\\n", "\n")
+
+
+def _load_curated_sbt_rows() -> list[dict[str, Any]]:
+    try:
+        text = _frontend_sbt_data_path().read_text(encoding="utf-8")
+    except Exception:
+        return []
+    body = _extract_js_array(text, "sbtRows")
+    if not body:
+        return []
+    rows: list[dict[str, Any]] = []
+    for block in _extract_js_object_blocks(body):
+        name = _js_string_prop(block, "name")
+        status = _js_string_prop(block, "status")
+        requirement = _js_string_prop(block, "requirement")
+        if not name or not status:
+            continue
+        difficulty_match = re.search(r"\bdifficulty\s*:\s*(\d+)", block)
+        difficulty = int(difficulty_match.group(1)) if difficulty_match else 0
+        rows.append({
+            "name": name,
+            "status": status,
+            "difficulty": max(0, min(difficulty, 5)),
+            "requirement": requirement,
+        })
+    return rows
+
+
+SBT_NAME_ALIASES = {
+    "Discord Linker / X Linker": ("x linker", "discord linker", "連結器", "链接器", "綁定", "绑定", "dc linker"),
+    "Fund Your Account": ("fund", "充值", "存款", "top up", "入金"),
+    "Pack Opener": ("pack opener", "開包", "开包", "開袋", "开袋"),
+    "The Trader": ("trader", "交易員", "交易员", "交易"),
+    "The Recruiter": ("recruiter", "邀請", "邀请", "招聘", "referral"),
+    "Sequential Cert": ("sequential", "連號", "连号", "psa 連號", "psa 连号"),
+    "Mystic Luck": ("mystic", "玄學", "玄学", "a級", "a 级", "tier a"),
+    "Omega Pack": ("omega", "歐米伽", "欧米伽", "48u"),
+    "Renacrypt Pack": ("renacrypt", "rena crypt", "88u"),
+    "Discord Server Booster": ("server booster", "boost", "助力", "加速器"),
+    "Community Event MVP": ("event mvp", "活動 mvp", "活动 mvp", "社群 mvp", "社區 mvp"),
+    "Community Voice": ("community voice", "社群之聲", "社群之声", "社區之聲", "社区之声", "高品質內容", "高质量内容"),
+    "S+ Breaker": ("s+ breaker", "s breaker", "s級", "s 级", "s卡", "s 卡"),
+    "Grand Ripper": ("grand ripper", "大開膛手", "大开膛手", "200 次", "200次"),
+    "Signal Booster": ("signal booster", "信號", "信号", "評論", "评论"),
+    "Contributor of the Week": ("contributor", "週度貢獻", "周度贡献", "top contributor"),
+    "Community Developer": ("developer", "開發者", "开发者", "tool apply", "工具貢獻", "工具贡献"),
+    "Community Event Organizer": ("event organizer", "主辦", "主办", "organizer", "event apply"),
+    "Community Event Survivor": ("event survivor", "survivor", "全程參與", "全程参与"),
+    "Community Leader (L1/L2)": ("community leader", "社群領袖", "社群领袖", "社區領袖", "社区领袖"),
+    "TCG Double Giant": ("double giant", "雙巨頭", "双巨头"),
+    "The Vanguard": ("vanguard", "大使", "ambassador"),
+}
+
+
+def _normalize_sbt_lookup_text(value: Any) -> str:
+    return re.sub(r"[\s/_\\|・·:：,，.。()（）\\-]+", "", clean_text(str(value or "")).lower())
+
+
+def _matching_curated_sbt_rows(question: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    q = _normalize_sbt_lookup_text(question)
+    if not q:
+        return []
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "")
+        candidates = [name, *SBT_NAME_ALIASES.get(name, ())]
+        if any(_normalize_sbt_lookup_text(candidate) and _normalize_sbt_lookup_text(candidate) in q for candidate in candidates):
+            matches.append(row)
+    return matches
+
+
+def _wants_curated_sbt_matrix(question: str, rows: list[dict[str, Any]]) -> bool:
+    q = clean_text(question).lower()
+    has_sbt = any(term in q for term in ("sbt", "徽章", "badge", "badges"))
+    if _matching_curated_sbt_rows(question, rows):
+        return True
+    asks_recent_posts = any(term in q for term in ("貼文", "贴文", "推文", "tweet", "原文", "文章", "近期更新", "最新公告"))
+    wants_condition = any(term in q for term in (
+        "可以取得", "可取得", "還能", "还能", "取得方式", "獲取", "获取",
+        "領取", "领取", "條件", "条件", "難度", "难度", "怎麼拿", "怎么拿",
+        "如何拿", "available", "obtain", "claim", "earn", "requirement", "difficulty",
+    ))
+    if has_sbt and asks_recent_posts and not wants_condition:
+        return False
+    wants_matrix = any(term in q for term in (
+        "哪些", "有哪些", "哪一些", "可以取得", "可取得", "還能", "还能",
+        "取得方式", "獲取", "获取", "領取", "领取", "清單", "列表",
+        "條件", "条件", "難度", "难度", "怎麼拿", "怎么拿", "如何拿",
+        "available", "obtain", "claim", "earn", "list", "requirement", "difficulty",
+    ))
+    if has_sbt and wants_matrix:
+        return True
+    if has_sbt and not asks_recent_posts:
+        return True
+    return False
+
+
+def _sbt_difficulty_stars(value: Any) -> str:
+    try:
+        score = int(value or 0)
+    except Exception:
+        score = 0
+    score = max(0, min(score, 5))
+    return "★" * score + "☆" * (5 - score) if score else "未標註"
+
+
+def _answer_curated_sbt_matrix(question: str, *, lang: str) -> dict[str, Any] | None:
+    all_rows = _load_curated_sbt_rows()
+    if not all_rows or not _wants_curated_sbt_matrix(question, all_rows):
+        return None
+    matched_rows = _matching_curated_sbt_rows(question, all_rows)
+    rows = [row for row in all_rows if row.get("status") == "available"]
+    if not rows:
+        return None
+    selected_rows = [row for row in matched_rows if row.get("status") == "available"]
+    easy = [row for row in rows if int(row.get("difficulty") or 0) <= 2]
+    mid = [row for row in rows if 3 <= int(row.get("difficulty") or 0) <= 4]
+    hard = [row for row in rows if int(row.get("difficulty") or 0) >= 5]
+
+    def group_lines(title: str, group_rows: list[dict[str, Any]]) -> str:
+        if not group_rows:
+            return ""
+        lines = [f"**{title}**", ""]
+        for row in group_rows:
+            stars = _sbt_difficulty_stars(row.get("difficulty"))
+            lines.append(f"- **{row.get('name')}**（難度 {stars}）：{row.get('requirement')}")
+        return "\n".join(lines)
+
+    if selected_rows:
+        blocks = [
+            "這題走 **網站 SBT Matrix**，不走近期貼文 RAG 當主答案。",
+            group_lines("對應 SBT 取得條件", selected_rows),
+        ]
+        if any(row.get("name") == "Community Voice" for row in selected_rows):
+            blocks.append("Community Voice 補充：重點是每月 22 號快照、X 累計 8 篇高品質 Renaiss 內容，並提交到 Discord Mission Submit。")
+    else:
+        blocks = [
+            f"目前網站 SBT 系統整理裡，標記為可取得的 SBT 共 **{len(rows)} 個**。這題走 **網站 SBT Matrix**，不走近期貼文 RAG 當主答案。",
+            group_lines("先做這些，成本低或流程最直接", easy),
+            group_lines("進階貢獻 / 內容 / 社群任務", mid),
+            group_lines("高難度或偏運氣 / 高投入", hard),
+            "建議順序：先完成綁定、充值、開包、交易；再做內容輸出、邀請、Discord Boost、工具貢獻與社群活動。Community Voice 的重點是每月 22 號快照、X 累計 8 篇高品質內容並提交到 Discord Mission Submit。",
+        ]
+    answer = "\n\n".join(block for block in blocks if block)
+    source_rows = selected_rows or rows
+    detail = "\n".join(
+        f"{idx}. {row.get('name')} | difficulty={row.get('difficulty')} | {row.get('requirement')}"
+        for idx, row in enumerate(source_rows, 1)
+    )
+    source = {
+        "id": "website-sbt-system-summary",
+        "account": "Renaiss Aggregator",
+        "url": "./index.html#cat-sbt",
+        "title": "SBT 系統整理（近期）",
+        "summary": f"網站前台整理的可取得 SBT 清單，共 {len(rows)} 個。",
+        "detail_summary": detail,
+        "raw_hint": "Source: website/assets/index-data.js sbtRows",
+        "card_type": "guide",
+        "topic_labels": ["sbt", "guides"],
+        "tags": ["sbt", "curated"],
+        "event_facts": {},
+        "date_role": "",
+        "event_group_key": "",
+        "memory_visibility": "curated_frontend_matrix",
+        "published_at": "",
+        "timeline_date": "",
+        "timeline_end_date": "",
+        "effective_event_date": "",
+        "memory_expires_at": "",
+        "score": 1.0,
+        "semantic_score": 1.0,
+        "rank_reasons": ["curated_sbt_matrix", "website_sbt_field"],
+    }
+    return {
+        "answer": answer,
+        "sources": [source],
+        "mode": "curated_sbt_matrix",
+        "stats": {
+            "source_count": 1,
+            "agent_provider": "curated",
+            "agent_model": "website-sbt-matrix",
+            "memory_items": len(rows),
+            "top_score": 1.0,
+            "top_semantic_score": 1.0,
+        },
+    }
+
+
 def _score_memory_item(base_score: float, item: dict[str, Any], question: str, now: datetime) -> tuple[float, list[str]]:
     intent = _question_intent(question)
     labels = {str(x).lower() for x in (item.get("topic_labels") or []) if x}
@@ -614,6 +876,10 @@ def answer_knowledge_question(question: str, *, lang: str = "zh-Hant", top_k: in
     if not cleaned_question:
         raise ValueError("question is required")
     cleaned_history = _sanitize_history(history)
+    curated_sbt_answer = _answer_curated_sbt_matrix(cleaned_question, lang=lang)
+    if curated_sbt_answer:
+        return curated_sbt_answer
+
     embedding_api_key = resolve_openai_embedding_key()
     if not embedding_api_key:
         raise RuntimeError("missing_openai_api_key")

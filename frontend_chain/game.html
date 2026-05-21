@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Renaiss World | Immersive RPG Showcase</title>
   <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700;800&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
@@ -506,8 +507,38 @@
     }
   </script>
   <script type="module">
-    import { initGameNeuralStage } from "./scripts/game-neural-stage.js";
-    initGameNeuralStage();
+    const neuralStage = document.querySelector("[data-neural-stage]");
+    let neuralStageStarted = false;
+
+    function startNeuralStage() {
+      if (neuralStageStarted) return;
+      neuralStageStarted = true;
+      import("./scripts/game-neural-stage.js")
+        .then(({ initGameNeuralStage }) => initGameNeuralStage())
+        .catch((error) => console.error("Failed to init game neural stage:", error));
+    }
+
+    function scheduleNeuralStage() {
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(startNeuralStage, { timeout: 2600 });
+      } else {
+        window.setTimeout(startNeuralStage, 900);
+      }
+    }
+
+    if (neuralStage && "IntersectionObserver" in window) {
+      const observer = new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        scheduleNeuralStage();
+      }, { rootMargin: "520px 0px" });
+      observer.observe(neuralStage);
+      window.setTimeout(() => {
+        if (!neuralStageStarted) scheduleNeuralStage();
+      }, 5200);
+    } else {
+      scheduleNeuralStage();
+    }
   </script>
 </body>
 </html>

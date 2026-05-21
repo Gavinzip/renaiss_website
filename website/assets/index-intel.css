@@ -340,8 +340,8 @@
     .renaiss-agent-input-row {
       --agent-composer-background: rgba(255, 255, 255, 0.96);
       display: grid;
-      grid-template-columns: 44px minmax(0, 1fr) 46px;
-      gap: 0.5rem;
+      grid-template-columns: minmax(0, 1fr) 52px;
+      gap: 0.58rem;
       align-items: center;
       position: relative;
       isolation: isolate;
@@ -354,7 +354,7 @@
         0 2px 12px rgba(31, 54, 85, 0.06),
         0 0 0 1px rgba(255, 255, 255, 0.92) inset;
       min-height: 68px;
-      padding: 0.46rem 0.5rem;
+      padding: 0.46rem 0.54rem 0.46rem 0.88rem;
       transition: transform 260ms ease, box-shadow 260ms ease, border-color 260ms ease;
     }
 
@@ -417,6 +417,7 @@
     }
 
     .agent-composer-action {
+      display: none;
       width: 42px;
       height: 42px;
       border: 0;
@@ -476,31 +477,89 @@
     }
 
     .renaiss-agent-input-row .intel-sync-btn {
-      width: 44px;
-      height: 44px;
-      min-width: 44px;
-      min-height: 44px;
+      position: relative;
+      isolation: isolate;
+      overflow: visible;
+      width: 50px;
+      height: 50px;
+      min-width: 50px;
+      min-height: 50px;
       align-self: center;
-      border: 1px solid rgba(16, 28, 42, 0.9);
+      border: 1px solid rgba(237, 245, 255, 0.72);
       border-radius: 999px;
-      background: linear-gradient(145deg, #1d2c3f, #0f1825);
+      background:
+        radial-gradient(120% 92% at 16% 14%, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0) 56%),
+        linear-gradient(136deg, #141e2d 0%, #3b4a5f 24%, #9ba9bb 49%, #4a5b71 67%, #111a2a 100%);
       color: #ffffff;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       font-weight: 900;
       box-shadow:
-        0 12px 22px rgba(21, 34, 50, 0.2),
-        0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+        0 14px 28px rgba(20, 32, 50, 0.34),
+        0 0 11px rgba(95, 183, 255, 0.28),
+        0 0 18px rgba(206, 107, 255, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.56),
+        inset 0 -1px 0 rgba(19, 29, 44, 0.72);
       transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
     }
 
+    .renaiss-agent-input-row .intel-sync-btn::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      z-index: 1;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(
+        92deg,
+        #58b9ff 0%,
+        #6f72ff 18%,
+        #d267ff 34%,
+        #ff7999 50%,
+        #ffbe6a 67%,
+        #57dfcf 82%,
+        #58b9ff 100%
+      );
+      background-size: 260% 100%;
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: 0.82;
+      pointer-events: none;
+      animation: chromeFlowX 3.1s ease-in-out infinite;
+      filter: saturate(1.18) drop-shadow(0 0 7px rgba(104, 174, 255, 0.42)) drop-shadow(0 0 10px rgba(218, 112, 255, 0.28));
+    }
+
+    .renaiss-agent-input-row .intel-sync-btn::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: inherit;
+      pointer-events: none;
+      background:
+        radial-gradient(64% 110% at 18% 0%, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0) 64%),
+        linear-gradient(114deg, rgba(255, 255, 255, 0.46) 8%, rgba(255, 255, 255, 0.08) 34%, rgba(255, 255, 255, 0.52) 50%, rgba(255, 255, 255, 0.08) 68%, rgba(255, 255, 255, 0.34) 92%);
+      background-size: 250% 100%;
+      animation: liquidSweep 2.2s cubic-bezier(0.4, 0.05, 0.2, 1) infinite;
+      mix-blend-mode: screen;
+      opacity: 0.58;
+    }
+
     .renaiss-agent-input-row .intel-sync-btn:hover {
-      background: linear-gradient(145deg, #243955, #121f32);
       box-shadow:
-        0 14px 28px rgba(21, 34, 50, 0.24),
-        0 0 24px rgba(63, 136, 220, 0.16);
-      transform: translateY(-1px);
+        0 17px 34px rgba(20, 34, 54, 0.42),
+        0 0 16px rgba(103, 190, 255, 0.38),
+        0 0 24px rgba(211, 111, 255, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.64),
+        inset 0 -1px 0 rgba(15, 24, 38, 0.86);
+      transform: translateY(-2px);
+    }
+
+    .renaiss-agent-input-row .intel-sync-btn:hover::before {
+      opacity: 1;
+      animation: chromeFlowXFast 1.25s ease-in-out infinite;
     }
 
     .renaiss-agent-input-row .intel-sync-btn:disabled {
@@ -522,7 +581,9 @@
     }
 
     .renaiss-agent-input-row .intel-sync-btn iconify-icon {
-      font-size: 1.12rem;
+      position: relative;
+      z-index: 3;
+      font-size: 1.16rem;
     }
 
     .renaiss-agent-suggestions {
@@ -676,11 +737,11 @@
     }
 
     .renaiss-agent-messages {
-      max-height: min(54vh, 540px);
+      max-height: min(58vh, 610px);
       overflow: auto;
       display: grid;
-      gap: 0.72rem;
-      padding: 0.18rem;
+      gap: 0.86rem;
+      padding: 0.22rem 0.34rem;
       scroll-behavior: smooth;
       transition: max-height 420ms ease, opacity 320ms ease, padding 320ms ease;
     }
@@ -694,12 +755,15 @@
     }
 
     .renaiss-agent-message {
-      width: min(760px, 92%);
-      border: 1px solid rgba(198, 224, 249, 0.82);
-      border-radius: 18px;
-      background: linear-gradient(150deg, rgba(255, 255, 255, 0.9), rgba(245, 251, 255, 0.78));
-      box-shadow: 0 14px 36px rgba(52, 87, 128, 0.09);
-      padding: 0.78rem 0.86rem;
+      width: min(900px, 96%);
+      border: 1px solid rgba(178, 214, 248, 0.86);
+      border-left: 4px solid rgba(64, 153, 224, 0.62);
+      border-radius: 20px;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(96, 177, 255, 0.14), transparent 40%),
+        linear-gradient(150deg, rgba(255, 255, 255, 0.95), rgba(244, 251, 255, 0.82));
+      box-shadow: 0 16px 42px rgba(52, 87, 128, 0.1);
+      padding: 0.9rem 1rem;
       transform-origin: left bottom;
       transition: transform 360ms cubic-bezier(0.22, 1, 0.36, 1), opacity 280ms ease;
     }
@@ -710,31 +774,48 @@
     }
 
     .renaiss-agent-message.is-user {
+      width: fit-content;
+      max-width: min(760px, 88%);
       justify-self: end;
       transform-origin: right bottom;
       border-color: rgba(117, 196, 224, 0.82);
+      border-left-width: 1px;
       background: linear-gradient(150deg, rgba(231, 247, 255, 0.96), rgba(232, 255, 249, 0.86));
     }
 
     .renaiss-agent-role {
+      width: fit-content;
+      border: 1px solid rgba(184, 218, 248, 0.76);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.58);
       color: #42617f;
-      font-size: 0.72rem;
+      font-size: 0.68rem;
       font-weight: 900;
       letter-spacing: 0.04em;
-      margin-bottom: 0.32rem;
+      margin-bottom: 0.52rem;
+      padding: 0.22rem 0.48rem;
       text-transform: uppercase;
     }
 
     .renaiss-agent-bubble {
       display: grid;
-      gap: 0.46rem;
+      gap: 0.66rem;
+    }
+
+    .renaiss-agent-bubble h3 {
+      margin: 0.08rem 0 0;
+      color: #153758;
+      font-family: var(--display-font);
+      font-size: clamp(1.04rem, 2vw, 1.28rem);
+      line-height: 1.2;
+      letter-spacing: -0.01em;
     }
 
     .renaiss-agent-message p {
       margin: 0;
       color: #294d70;
-      font-size: 0.92rem;
-      line-height: 1.72;
+      font-size: 0.96rem;
+      line-height: 1.78;
     }
 
     .renaiss-agent-message strong {
@@ -745,14 +826,65 @@
     .renaiss-agent-message ul,
     .renaiss-agent-message ol {
       margin: 0;
-      padding-left: 1.1rem;
+      padding-left: 1.08rem;
       color: #294d70;
-      font-size: 0.92rem;
-      line-height: 1.72;
+      font-size: 0.94rem;
+      line-height: 1.7;
     }
 
     .renaiss-agent-message li + li {
-      margin-top: 0.18rem;
+      margin-top: 0.28rem;
+    }
+
+    .agent-answer-note {
+      border: 1px solid rgba(127, 205, 229, 0.62);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(58, 202, 184, 0.14), transparent 42%),
+        rgba(244, 253, 255, 0.86);
+      color: #285674;
+      font-size: 0.94rem;
+      font-weight: 800;
+      line-height: 1.7;
+      padding: 0.72rem 0.82rem;
+    }
+
+    .agent-answer-table-wrap {
+      overflow-x: auto;
+      border: 1px solid rgba(184, 218, 248, 0.82);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    }
+
+    .agent-answer-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 540px;
+      color: #294d70;
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+
+    .agent-answer-table th,
+    .agent-answer-table td {
+      border-bottom: 1px solid rgba(205, 228, 249, 0.82);
+      padding: 0.62rem 0.72rem;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .agent-answer-table th {
+      color: #153758;
+      font-size: 0.78rem;
+      font-weight: 950;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      background: rgba(237, 248, 255, 0.72);
+    }
+
+    .agent-answer-table tr:last-child td {
+      border-bottom: 0;
     }
 
     .agent-source-cite {
@@ -994,6 +1126,14 @@
 
     .agent-original-card.is-loading {
       min-height: 8rem;
+    }
+
+    .agent-original-card.is-sbt-source {
+      border-color: rgba(127, 205, 229, 0.72);
+      background:
+        radial-gradient(circle at 0% 0%, rgba(61, 210, 173, 0.16), transparent 42%),
+        radial-gradient(circle at 100% 0%, rgba(88, 158, 255, 0.18), transparent 42%),
+        linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(241, 250, 255, 0.78));
     }
 
     .agent-original-card-top {
@@ -4442,11 +4582,11 @@
       }
 
       .renaiss-agent-input-row {
-        grid-template-columns: 40px minmax(0, 1fr) 42px;
+        grid-template-columns: minmax(0, 1fr) 44px;
         gap: 0.32rem;
         min-height: 64px;
         border-radius: 28px;
-        padding: 0.34rem;
+        padding: 0.34rem 0.38rem 0.34rem 0.68rem;
       }
 
       .renaiss-agent-card.is-empty .renaiss-agent-input-row {
@@ -4464,10 +4604,10 @@
       }
 
       .renaiss-agent-input-row .intel-sync-btn {
-        width: 40px;
-        height: 40px;
-        min-width: 40px;
-        min-height: 40px;
+        width: 42px;
+        height: 42px;
+        min-width: 42px;
+        min-height: 42px;
       }
 
       .agent-suggestion-copy {
@@ -4483,6 +4623,17 @@
 
       .renaiss-agent-message {
         width: 100%;
+        max-width: 100%;
+        padding: 0.78rem 0.82rem;
+      }
+
+      .renaiss-agent-message.is-user {
+        width: fit-content;
+        max-width: 94%;
+      }
+
+      .agent-answer-table {
+        min-width: 500px;
       }
 
       .renaiss-agent-source-list {

@@ -199,7 +199,10 @@
       el.classList.toggle("is-ready", mode === "ready");
     }
 
-    const INTEL_AUTO_REPAIR_SESSION_KEY = "intel_auto_repair_attempt_v1";
+    const INTEL_POST_TIMEOUT_MS = 25000;
+    const INTEL_LONG_POST_TIMEOUT_MS = 75000;
+    const INTEL_ADMIN_STATUS_TIMEOUT_MS = 9000;
+    const INTEL_AUTH_TIMEOUT_MS = 12000;
     const INTEL_CATEGORY_RENDER_ORDER = Object.freeze([
       "events",
       "official",
@@ -220,10 +223,21 @@
     let intelFeedPrefetchArmed = false;
     let intelFeedPrefetchStarted = false;
     const intelFeedLangInflight = new Map();
+    let intelFeedRefreshSeq = 0;
+    let intelLatestFeedGeneratedMs = 0;
+    let intelAuthStateRequest = null;
+    let intelAutoRepairInFlight = false;
     let pokemonNewsAutoRequested = false;
 
     function isUsableIntelFeed(feed) {
       return Boolean(feed && typeof feed === "object" && Array.isArray(feed.cards) && feed.cards.length > 0);
+    }
+
+    function intelFeedGeneratedAtMs(feed) {
+      const raw = String(feed?.generated_at || "").trim();
+      if (!raw) return 0;
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) ? parsed : 0;
     }
 
     function scheduleIdleTask(callback, delay = 0) {
@@ -244,6 +258,12 @@
       } else {
         run();
       }
+    }
+
+    function delayMs(ms) {
+      return new Promise((resolve) => {
+        window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
     }
 
     function normalizeIntelCategoryName(category) {
@@ -362,6 +382,26 @@
       }
     }
 
+    function clearIntelFeedSnapshots(lang = "") {
+      try {
+        const tag = String(lang || "").trim();
+        if (tag) {
+          localStorage.removeItem(intelFeedSnapshotKey(tag));
+          return;
+        }
+        const keys = [];
+        for (let idx = 0; idx < localStorage.length; idx += 1) {
+          keys.push(localStorage.key(idx));
+        }
+        keys.forEach((key) => {
+          if (String(key || "").startsWith(INTEL_FEED_SNAPSHOT_PREFIX)) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch (_error) {
+      }
+    }
+
     function saveIntelFeedSnapshot(lang, feed) {
       if (!feed || typeof feed !== "object") return;
       const tag = normalizeUiLang(lang || feed.lang || currentUiLang);
@@ -377,7 +417,9 @@
       }
     }
 
-    function readCachedIntelFeed(lang, allowBaseFallback = true) {
+    function readCachedIntelFeed(lang, allowBaseFallback = true, options = {}) {
+      const opts = options && typeof options === "object" ? options : {};
+      if (intelCanEdit() && !opts.allowAdminSnapshot) return null;
       const tag = normalizeUiLang(lang || currentUiLang);
       const inMemory = intelFeedLangCache.get(tag);
       if (isUsableIntelFeed(inMemory)) return inMemory;
@@ -394,10 +436,9 @@
 
     function renderCachedIntelFeedForLang(lang) {
       const tag = normalizeUiLang(lang || currentUiLang);
-      const cached = readCachedIntelFeed(tag, false);
+      const cached = readCachedIntelFeed(tag, false, { allowAdminSnapshot: true });
       if (!isUsableIntelFeed(cached)) return false;
-      renderIntelFeed({ ...cached, lang: tag, _from_lang_cache: true });
-      return true;
+      return renderIntelFeed({ ...cached, lang: tag, _from_lang_cache: true }, { allowStale: true });
     }
 
     const LANG_MORPH_LATIN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -845,58 +886,85 @@
     }
 
     async function fetchIntelAuthState() {
-      intelAuthState.checking = true;
-      updateIntelAuthUi();
-      try {
-        const response = await fetch(intelApiUrl("/api/auth/me"), {
-          method: "GET",
-          credentials: "include",
-          headers: buildIntelAuthHeaders(),
-          cache: "no-store",
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.ok) {
-          throw new Error(data?.error || `HTTP ${response.status}`);
-        }
-        const token = String(data?.token || "").trim();
-        if (token) {
-          saveIntelAuthToken(token);
-        }
-        intelAuthState.ready = true;
-        intelAuthState.authRequired = Boolean(data?.auth_required);
-        intelAuthState.authConfigured = Boolean(data?.auth_configured);
-        intelAuthState.authenticated = Boolean(data?.authenticated);
-        intelAuthState.user = String(data?.user || "");
-        intelAuthState.mode = String(data?.mode || "");
-        intelAuthState.error = String(data?.error || "");
-        if (intelAuthState.authRequired && !intelAuthState.authenticated) {
-          clearIntelAuthToken();
-        }
-      } catch (error) {
-        intelAuthState.ready = true;
-        intelAuthState.authRequired = true;
-        intelAuthState.authConfigured = false;
-        intelAuthState.authenticated = false;
-        intelAuthState.user = "";
-        intelAuthState.mode = "auth-check-failed";
-        intelAuthState.error = String(error?.message || "");
-        clearIntelAuthToken();
-      } finally {
-        intelAuthState.checking = false;
+      if (intelAuthStateRequest) return intelAuthStateRequest;
+      intelAuthStateRequest = (async () => {
+        intelAuthState.checking = true;
         updateIntelAuthUi();
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 6000);
+        try {
+          const response = await fetch(intelApiUrl("/api/auth/me"), {
+            method: "GET",
+            credentials: "include",
+            headers: buildIntelAuthHeaders(),
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data?.ok) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+          }
+          const token = String(data?.token || "").trim();
+          if (token) {
+            saveIntelAuthToken(token);
+          }
+          intelAuthState.ready = true;
+          intelAuthState.authRequired = Boolean(data?.auth_required);
+          intelAuthState.authConfigured = Boolean(data?.auth_configured);
+          intelAuthState.authenticated = Boolean(data?.authenticated);
+          intelAuthState.user = String(data?.user || "");
+          intelAuthState.mode = String(data?.mode || "");
+          intelAuthState.error = String(data?.error || "");
+          if (intelAuthState.authRequired && !intelAuthState.authenticated) {
+            clearIntelAuthToken();
+          }
+        } catch (error) {
+          intelAuthState.ready = true;
+          intelAuthState.authRequired = true;
+          intelAuthState.authConfigured = false;
+          intelAuthState.authenticated = false;
+          intelAuthState.user = "";
+          intelAuthState.mode = "auth-check-failed";
+          intelAuthState.error = String(error?.message || "");
+          clearIntelAuthToken();
+        } finally {
+          window.clearTimeout(timeout);
+          intelAuthState.checking = false;
+          intelAuthStateRequest = null;
+          updateIntelAuthUi();
+        }
+      })();
+      try {
+        return await intelAuthStateRequest;
+      } finally {
+        intelAuthStateRequest = null;
       }
     }
 
     async function submitIntelLogin(username, password) {
-      const response = await fetch(intelApiUrl("/api/auth/login"), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_AUTH_TIMEOUT_MS);
+      let data = {};
+      try {
+        const response = await fetch(intelApiUrl("/api/auth/login"), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ username, password }),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("login_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
       const token = String(data?.token || "").trim();
       if (token) {
@@ -908,15 +976,29 @@
     }
 
     async function submitIntelLogout() {
-      const response = await fetch(intelApiUrl("/api/auth/logout"), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({}),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || `HTTP ${response.status}`);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_AUTH_TIMEOUT_MS);
+      let data = {};
+      try {
+        const response = await fetch(intelApiUrl("/api/auth/logout"), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({}),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("logout_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
       clearIntelAuthToken();
       await fetchIntelAuthState();
@@ -1126,7 +1208,8 @@
       const glance = cardPrimaryHighlight(card);
       const summary = cleanMasterSummary(card?.summary || "");
       const coverRaw = String(card?.cover_image || "").trim();
-      const cover = (typeof resolveCoverImageUrl === "function") ? resolveCoverImageUrl(coverRaw) : coverRaw;
+      const coverResolved = (typeof resolveCoverImageUrl === "function") ? resolveCoverImageUrl(coverRaw) : coverRaw;
+      const cover = safeUrl(coverResolved, "");
       const coverHtml = /^https?:\/\//i.test(cover)
         ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(title)}" loading="lazy" onerror="this.closest('.intel-detail-cover')?.remove()" />`
         : `<div class="intel-detail-cover-empty">${escapeHtml(uiLabel("noImage"))}</div>`;
@@ -1185,7 +1268,7 @@
       const tagHtml = labels.length
         ? `<div class="intel-detail-tags">${labels.map((x) => `<span class="intel-detail-tag">${escapeHtml(routeLabelName(x) || translateDisplayLabel(x) || String(x))}</span>`).join("")}</div>`
         : "";
-      const url = String(card?.url || "").trim();
+      const url = safeUrl(card?.url || "", "");
       const sourceHtml = url
         ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
@@ -1241,11 +1324,85 @@
       openDetailModalWithHtml(intelDetailHtml(card));
     }
 
+    let intelCardDeepLinkLastToken = "";
+
+    function requestedIntelCardDeepLinkId() {
+      try {
+        return String(new URLSearchParams(window.location.search || "").get("card") || "").trim();
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function scheduleOpenIntelCardDeepLink() {
+      const key = requestedIntelCardDeepLinkId();
+      if (!key) return;
+      const token = `${key}:${String(intelFeedCache?.generated_at || "")}:${getActiveIntelCategory()}`;
+      if (intelCardDeepLinkLastToken === token) return;
+      intelCardDeepLinkLastToken = token;
+      window.setTimeout(() => {
+        const card = intelCardLookup.get(key);
+        if (!card) return;
+        openIntelDetailModal(key);
+        const escaped = (window.CSS && typeof window.CSS.escape === "function")
+          ? window.CSS.escape(key)
+          : key.replace(/["\\]/g, "\\$&");
+        const node = document.querySelector(`[data-intel-card-id="${escaped}"]`);
+        if (node) {
+          node.scrollIntoView({ behavior: "smooth", block: "center" });
+          node.classList.add("is-sbt-jump-target");
+          window.setTimeout(() => node.classList.remove("is-sbt-jump-target"), 1800);
+        }
+      }, 160);
+    }
+
     function normalizeSbtText(raw, limit = 120) {
       return truncateText(String(raw || "")
         .replace(/^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i, "")
         .replace(/\s+/g, " ")
         .trim(), limit);
+    }
+
+    function normalizeSbtMethodText(raw, limit = 128) {
+      return normalizeSbtText(String(raw || "")
+        .replace(/https?:\/\/\S+/gi, "")
+        .replace(/\s*(連結為|链接为|連結在文內|链接在文内)\s*$/i, "")
+        .replace(/[，,；;]\s*$/g, "")
+        .trim(), limit);
+    }
+
+    function sbtDetailLines(card) {
+      return Array.isArray(card?.detail_lines)
+        ? card.detail_lines.map((x) => String(x || "").trim()).filter(Boolean)
+        : [];
+    }
+
+    function sbtDetailValue(line, labelPattern, limit = 128) {
+      const raw = String(line || "").trim();
+      const match = raw.match(labelPattern);
+      if (!match) return "";
+      return normalizeSbtText(raw.slice(match[0].length), limit);
+    }
+
+    function firstSbtDetailValue(card, labelPatterns, limit = 128) {
+      const patterns = Array.isArray(labelPatterns) ? labelPatterns : [labelPatterns];
+      for (const line of sbtDetailLines(card)) {
+        for (const pattern of patterns) {
+          const value = sbtDetailValue(line, pattern, limit);
+          if (value) return value;
+        }
+      }
+      return "";
+    }
+
+    function extractSbtNameFromText(raw) {
+      const text = normalizeSbtText(raw, 96);
+      if (!text) return "";
+      const latinName = text.match(/\b([A-Za-z0-9][A-Za-z0-9 +'._-]{1,54}\s+SBT)\b/i);
+      if (latinName) return normalizeSbtText(latinName[1], 64);
+      const soulboundName = text.match(/\b([A-Za-z0-9][A-Za-z0-9 +'._-]{1,54}\s+Soul\s*Bound\s*Token)\b/i);
+      if (soulboundName) return normalizeSbtText(soulboundName[1], 64);
+      return "";
     }
 
     function isWeakSbtName(name) {
@@ -1265,6 +1422,13 @@
       const rows = [];
       if (Array.isArray(card?.sbt_names)) rows.push(...card.sbt_names);
       if (card?.sbt_name) rows.push(card.sbt_name);
+      if (!rows.some((x) => !isWeakSbtName(normalizeSbtText(x, 64)))) {
+        const namedLine = firstSbtDetailValue(card, [/^\s*SBT\s*(?:名稱|名称)\s*[:：]\s*/i], 96);
+        if (namedLine) rows.push(extractSbtNameFromText(namedLine) || namedLine);
+        const rewardLine = firstSbtDetailValue(card, [/^\s*(?:獎勵|奖励)\s*[:：]\s*/i], 96);
+        const rewardName = extractSbtNameFromText(rewardLine);
+        if (rewardName) rows.push(rewardName);
+      }
       const seen = new Set();
       return rows
         .map((x) => normalizeSbtText(x, 64))
@@ -1285,26 +1449,61 @@
     }
 
     function sbtAcquisitionForCard(card) {
-      let direct = normalizeSbtText(card?.sbt_acquisition, 128);
+      let direct = normalizeSbtMethodText(card?.sbt_acquisition, 128);
       if (!direct) {
-        const rows = [
-          ...(Array.isArray(card?.detail_lines) ? card.detail_lines : []),
-          ...(Array.isArray(card?.bullets) ? card.bullets : []),
-        ];
-        const explicit = rows.find((x) => /^\s*SBT\s*(取得方式|获取方式|acquisition|획득 방법)\s*[:：]/i.test(String(x || "")));
-        direct = normalizeSbtText(explicit, 128);
+        const explicit = firstSbtDetailValue(card, [/^\s*SBT\s*(?:取得方式|获取方式|acquisition|획득 방법)\s*[:：]\s*/i], 128);
+        direct = normalizeSbtMethodText(explicit, 128);
+      }
+      if (!direct) {
+        const condition = firstSbtDetailValue(card, [/^\s*(?:領取條件|领取条件|取得條件|获取条件)\s*[:：]\s*/i], 96);
+        const participation = firstSbtDetailValue(card, [/^\s*(?:參與方式|参与方式)\s*[:：]\s*/i], 96);
+        const operation = firstSbtDetailValue(card, [/^\s*(?:操作流程)\s*[:：]\s*/i], 96);
+        const parts = [condition, participation, operation]
+          .map((x) => normalizeSbtMethodText(x, 96))
+          .filter(Boolean);
+        const seen = new Set();
+        direct = parts
+          .filter((x) => {
+            const key = x.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, 2)
+          .join("；");
       }
       if (!direct) return "";
       if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(direct)) return "";
-      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
+      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|追蹤|追踪|提交|張貼|张贴|前往|表單|表单|造訪|造访|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
       if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(direct)) return "";
       return direct;
+    }
+
+    function parseSbtDateValue(raw) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      const iso = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+      const zh = text.match(/\b(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?\b/);
+      const match = iso || zh;
+      if (!match) return "";
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      if (!year || month < 1 || month > 12 || day < 1 || day > 31) return "";
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+
+    function sbtDeadlineForCard(card) {
+      const value = firstSbtDetailValue(card, [/^\s*(?:截止日期|截止時間|截止时间)\s*[:：]\s*/i], 96);
+      return parseSbtDateValue(value);
     }
 
     function sbtEffectiveEndDate(card) {
       const endRaw = String(card?.timeline_end_date || "").trim();
       if (endRaw) return endRaw;
-      return String(card?.timeline_date || "").trim();
+      const startRaw = String(card?.timeline_date || "").trim();
+      if (startRaw) return startRaw;
+      return sbtDeadlineForCard(card);
     }
 
     function sbtStatusForCard(card) {
@@ -1331,7 +1530,7 @@
     }
 
     function sbtRowTimeMs(card) {
-      const raw = String(card?.timeline_date || card?.published_at || "").trim();
+      const raw = String(sbtEffectiveEndDate(card) || card?.published_at || "").trim();
       if (!raw) return 0;
       const dt = new Date(raw);
       return Number.isNaN(dt.valueOf()) ? 0 : dt.getTime();
@@ -1488,9 +1687,9 @@
       const detailHtml = detailLines.length
         ? `<ul class="intel-detail-list">${detailLines.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
         : "";
-      const url = String(item?.url || "").trim();
+      const url = safeUrl(item?.url || "", "");
       const sourceHtml = url
-        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${uiLabel("originalSource")}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
+        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
         : "";
       return `
         <div class="intel-detail-top">
@@ -1526,6 +1725,12 @@
       if (!modal) return;
       modal.classList.add("is-open");
       modal.setAttribute("aria-hidden", "false");
+      const message = document.getElementById("intel-auth-message");
+      if (message) {
+        message.classList.remove("is-error", "is-ok");
+        message.textContent = "";
+        message.hidden = true;
+      }
       const userInput = document.getElementById("intel-auth-username");
       if (userInput) userInput.focus();
     }
@@ -1734,9 +1939,23 @@
       scheduleIntelDeferredCategoryRender(6200);
     }
 
-    function renderIntelFeed(payload) {
-      intelFeedCache = payload && typeof payload === "object" ? payload : null;
-      const payloadLang = normalizeUiLang(payload?.lang || currentUiLang || "zh-Hant");
+    function renderIntelFeed(payload, options = {}) {
+      const renderOptions = options && typeof options === "object" ? options : {};
+      const nextFeed = payload && typeof payload === "object" ? payload : null;
+      if (!nextFeed) return false;
+      const generatedMs = intelFeedGeneratedAtMs(nextFeed);
+      if (
+        !renderOptions.force
+        && !renderOptions.allowStale
+        && !nextFeed?._recovered_from_snapshot
+        && generatedMs
+        && intelLatestFeedGeneratedMs
+        && generatedMs < intelLatestFeedGeneratedMs
+      ) {
+        return false;
+      }
+      intelFeedCache = nextFeed;
+      const payloadLang = normalizeUiLang(nextFeed?.lang || currentUiLang || "zh-Hant");
       const payloadMode = String(payload?._i18n?.mode || "");
       const shouldPersistSnapshot = !payload?._recovered_from_snapshot && !(
         payloadLang !== "zh-Hant"
@@ -1746,6 +1965,9 @@
         intelFeedLangCache.set(payloadLang, intelFeedCache);
         if (shouldPersistSnapshot) {
           saveIntelFeedSnapshot(payloadLang, intelFeedCache);
+        }
+        if (generatedMs && !intelFeedCache?._recovered_from_snapshot) {
+          intelLatestFeedGeneratedMs = Math.max(intelLatestFeedGeneratedMs, generatedMs);
         }
       }
       const generatedAt = document.getElementById("intel-generated-at");
@@ -1767,7 +1989,7 @@
       const communityList = document.getElementById("intel-community-list");
       const growthList = document.getElementById("intel-growth-list");
       const recentList = document.getElementById("intel-recent-list");
-      if (!generatedAt || !latestSourceAt || !cardCount || !accountCount || !headline || !conclusion || !takeaways || !sourceStatus) return;
+      if (!generatedAt || !latestSourceAt || !cardCount || !accountCount || !headline || !conclusion || !takeaways || !sourceStatus) return false;
 
       const cards = Array.isArray(payload?.cards) ? payload.cards : [];
       const routed = routeIntelCards(cards);
@@ -1972,27 +2194,30 @@
         },
       };
       resetIntelCategoryRenderQueue(context, getActiveIntelCategory());
+      scheduleOpenIntelCardDeepLink();
       if (payload?._recovered_from_snapshot) {
         setIntelMessage(uiLabel("feedFailedUsingSnapshot"), "");
       }
+      return true;
     }
 
     async function fetchIntelFeed(langOverride = "", options = {}) {
       const requestLang = normalizeUiLang(langOverride || currentUiLang || document.documentElement.lang || "zh-Hant");
       const opts = options && typeof options === "object" ? options : {};
-      const shouldDedupe = opts.dedupe !== false && !opts.cacheBust;
+      const adminMode = Boolean(opts.adminMode) || intelCanEdit();
+      const shouldDedupe = opts.dedupe !== false && !opts.cacheBust && !adminMode;
       if (shouldDedupe && intelFeedLangInflight.has(requestLang)) {
         return intelFeedLangInflight.get(requestLang);
       }
       const fetchPromise = (async () => {
-        const allowSnapshot = opts.allowSnapshot !== false;
+        const allowSnapshot = !adminMode && opts.allowSnapshot !== false;
         const canUseApi = window.location.protocol !== "file:";
         let apiError = null;
         if (canUseApi) {
           try {
             const controller = new AbortController();
             const timeout = window.setTimeout(() => controller.abort(), 12000);
-            const cacheBust = opts.cacheBust ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
+            const cacheBust = (opts.cacheBust || adminMode) ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
             const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}${cacheBust}`), {
               cache: "no-store",
               credentials: "include",
@@ -2038,18 +2263,58 @@
     }
 
     async function refreshIntelFeedForCurrentLang(options = {}) {
-      const payload = await fetchIntelFeed(currentUiLang, options);
-      renderIntelFeed(payload);
-      scheduleLangFeedRefresh(payload);
+      const opts = options && typeof options === "object" ? options : {};
+      const adminMode = Boolean(opts.adminMode) || intelCanEdit();
+      const fetchOptions = adminMode
+        ? { ...opts, adminMode: true, cacheBust: true, allowSnapshot: false, dedupe: false }
+        : opts;
+      const refreshSeq = ++intelFeedRefreshSeq;
+      const payload = await fetchIntelFeed(currentUiLang, fetchOptions);
+      if (refreshSeq < intelFeedRefreshSeq && !fetchOptions.allowOutOfOrder) return payload;
+      if (renderIntelFeed(payload)) {
+        scheduleLangFeedRefresh(payload);
+      }
       return payload;
     }
 
+    function applyReturnedIntelFeed(data, options = {}) {
+      const feed = data?.feed;
+      if (!feed || typeof feed !== "object") return false;
+      if (!renderIntelFeed(feed, options)) return false;
+      scheduleLangFeedRefresh(feed);
+      return true;
+    }
+
+    async function refreshIntelFeedAfterAdminMutation(data) {
+      clearIntelFeedSnapshots();
+      intelFeedLangInflight.clear();
+      const renderedReturnedFeed = applyReturnedIntelFeed(data, { force: true });
+      const refreshPromise = refreshIntelFeedForCurrentLang({
+        adminMode: true,
+        cacheBust: true,
+        allowSnapshot: false,
+        dedupe: false,
+      });
+      if (renderedReturnedFeed) {
+        refreshPromise.catch((error) => {
+          setIntelMessage(`已套用修改；背景刷新失敗：${String(error?.message || error)}`, "error");
+        });
+        return;
+      }
+      try {
+        await refreshPromise;
+      } catch (error) {
+        throw error;
+      }
+    }
+
     function prefetchIntelFeeds() {
-      if (location.protocol === "file:" || intelFeedPrefetchStarted) return;
+      if (location.protocol === "file:" || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchStarted = true;
       const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
       langs.forEach((lang, index) => {
         window.setTimeout(() => {
+          if (intelCanEdit()) return;
           if (isUsableIntelFeed(intelFeedLangCache.get(lang))) return;
           fetchIntelFeed(lang, { allowSnapshot: false })
             .then((payload) => {
@@ -2065,7 +2330,7 @@
     }
 
     function scheduleIntelFeedPrefetchOnActivity() {
-      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted) return;
+      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchArmed = true;
       const events = ["scroll", "pointerdown", "keydown", "touchstart"];
       let timeoutId = 0;
@@ -2089,11 +2354,24 @@
     }
 
     async function attemptIntelAutoRepair(error) {
+      const cached = readCachedIntelFeed(currentUiLang, true, { allowAdminSnapshot: true });
+      if (cached && isUsableIntelFeed(cached)) {
+        renderIntelFeed(
+          {
+            ...cached,
+            lang: normalizeUiLang(cached.lang || currentUiLang),
+            _recovered_from_snapshot: true,
+            _recover_error: String(error?.message || "api_fetch_failed"),
+          },
+          { allowStale: true },
+        );
+        scheduleLangFeedRefresh(cached);
+      }
+      if (intelAutoRepairInFlight) {
+        return Boolean(cached);
+      }
+      intelAutoRepairInFlight = true;
       try {
-        const alreadyTried = sessionStorage.getItem(INTEL_AUTO_REPAIR_SESSION_KEY);
-        if (alreadyTried) return false;
-        await clearIntelAppState({ preserveLang: true, preserveApiBase: true, clearCacheStorage: false });
-        sessionStorage.setItem(INTEL_AUTO_REPAIR_SESSION_KEY, new Date().toISOString());
         const payload = await fetchIntelFeed(currentUiLang, { cacheBust: true, allowSnapshot: false });
         renderIntelFeed(payload);
         scheduleLangFeedRefresh(payload);
@@ -2101,44 +2379,80 @@
         prefetchIntelFeeds();
         return true;
       } catch (_repairError) {
-        setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
-        return false;
+        if (!cached) {
+          setIntelMessage(`Intel feed failed: ${String(error?.message || error || "api_fetch_failed")}`, "error");
+        }
+        return Boolean(cached);
+      } finally {
+        intelAutoRepairInFlight = false;
       }
     }
 
     async function postIntel(path, body) {
-      const response = await fetch(intelApiUrl(path), {
-        method: "POST",
-        credentials: "include",
-        headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(body || {}),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok) {
-        if (response.status === 401) {
-          handleIntelUnauthorized();
+      const postPath = String(path || "");
+      const timeoutMs = (
+        postPath === "/api/intel/refresh-content"
+        || postPath === "/api/intel/pokemon-news"
+        || postPath === "/api/intel/restore"
+      )
+        ? INTEL_LONG_POST_TIMEOUT_MS
+        : INTEL_POST_TIMEOUT_MS;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(intelApiUrl(path), {
+          method: "POST",
+          credentials: "include",
+          headers: buildIntelAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body || {}),
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          if (response.status === 401) {
+            handleIntelUnauthorized();
+          }
+          throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        return data;
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("request_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-      return data;
     }
 
     async function fetchIntelAdminStatus(limit = 10) {
       const safeLimit = Math.max(4, Math.min(Number(limit) || 10, 30));
-      const response = await fetch(intelApiUrl(`/api/intel/admin-status?limit=${safeLimit}`), {
-        method: "GET",
-        credentials: "include",
-        headers: buildIntelAuthHeaders(),
-        cache: "no-store",
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.ok || typeof data?.status !== "object") {
-        if (response.status === 401) {
-          handleIntelUnauthorized();
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), INTEL_ADMIN_STATUS_TIMEOUT_MS);
+      try {
+        const response = await fetch(intelApiUrl(`/api/intel/admin-status?limit=${safeLimit}`), {
+          method: "GET",
+          credentials: "include",
+          headers: buildIntelAuthHeaders(),
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok || typeof data?.status !== "object") {
+          if (response.status === 401) {
+            handleIntelUnauthorized();
+          }
+          throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        return data.status;
+      } catch (error) {
+        if (String(error?.name || "") === "AbortError") {
+          throw new Error("admin_status_timeout");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-      return data.status;
     }
 
     async function triggerWebsiteBackup() {
@@ -2274,9 +2588,11 @@
         const removedSelection = Number(sync?.excluded_by_selection || 0);
         const removedFeedback = Number(sync?.excluded_by_feedback || 0);
         const removedSourcePref = Number(sync?.excluded_by_source_preference || 0);
+        const removedExistingDedupe = Number(sync?.dedupe_existing_removed || 0);
         const removedAi = Number(sync?.dedupe_ai_removed || 0);
         const removedLocal = Number(sync?.dedupe_local_removed || 0);
-        syncMetaEl.textContent = `上牆 ${total} / 可用 ${sourceTotal} / 原始 ${rawTotal} · 過濾 手動${removedSelection} 回饋${removedFeedback} 來源去重${removedSourcePref} AI去重${removedAi} 本地去重${removedLocal} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
+        const removedBatch = Number(sync?.dedupe_batch_removed || 0);
+        syncMetaEl.textContent = `上牆 ${total} / 可用 ${sourceTotal} / 原始 ${rawTotal} · 過濾 手動${removedSelection} 回饋${removedFeedback} 公開去重${removedExistingDedupe} 來源去重${removedSourcePref} AI去重${removedAi} 本地去重${removedLocal} 批次去重${removedBatch} · 最近來源 ${toLocalTime(sync?.latest_source_at)}${scheduleText}`;
       }
       if (newPostsEl) {
         const v24 = Number(newPosts?.new_cards_24h || 0);
@@ -2548,7 +2864,7 @@
       } else {
         listEl.innerHTML = rows.slice(0, 8).map((item, index) => {
           const title = String(item?.summary_title || item?.title || item?.url || uiLabel("unnamedPost"));
-          const url = String(item?.url || "");
+          const url = safeUrl(item?.url || "", "");
           const source = String(item?.source || "").trim() || "unknown";
           const dateText = String(item?.date || "").trim();
           const summary = String(item?.summary || item?.snippet || "").trim();
@@ -2557,10 +2873,10 @@
           const pointHtml = points.length
             ? `<ul class="pokemon-news-points">${cardPoints.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
             : "";
-          const titleHtml = url.startsWith("http")
+          const titleHtml = /^https?:\/\//i.test(url)
             ? `<a class="pokemon-news-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
             : `<div class="pokemon-news-title">${escapeHtml(title)}</div>`;
-          const linkHtml = url.startsWith("http")
+          const linkHtml = /^https?:\/\//i.test(url)
             ? `<a class="pokemon-news-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>`
             : "";
           return `
@@ -2706,8 +3022,8 @@
     }
 
     async function submitIntelPick(id, action, reason = "") {
-      await postIntel("/api/intel/pick", { id, action, reason });
-      await refreshIntelFeedForCurrentLang();
+      const data = await postIntel("/api/intel/pick", { id, action, reason });
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelFeedback(id, defaultLabel = "insight") {
@@ -2736,49 +3052,39 @@
         return false;
       }
       const data = await postIntel("/api/intel/feedback", { id, card_type: cardType, topic_labels: topicLabels, reason });
-      if (data?.feed && typeof data.feed === "object") {
-        renderIntelFeed(data.feed);
-        scheduleLangFeedRefresh(data.feed);
-      } else {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
       return true;
     }
 
     async function submitIntelTimelineUpdate(id, timelineDate = "", timelineEndDate = "") {
-      await postIntel("/api/intel/timeline", {
+      const data = await postIntel("/api/intel/timeline", {
         id,
         timeline_date: String(timelineDate || "").trim(),
         timeline_end_date: String(timelineEndDate || "").trim(),
       });
-      await refreshIntelFeedForCurrentLang();
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelSbtUpdate(id, sbtNames = "", sbtAcquisition = "") {
-      await postIntel("/api/intel/sbt-fields", {
+      const data = await postIntel("/api/intel/sbt-fields", {
         id,
         sbt_names: String(sbtNames || "").trim(),
         sbt_acquisition: String(sbtAcquisition || "").trim(),
       });
-      await refreshIntelFeedForCurrentLang();
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelEventWallUpdate(id, eventWall) {
-      await postIntel("/api/intel/event-wall", {
+      const data = await postIntel("/api/intel/event-wall", {
         id,
         event_wall: Boolean(eventWall),
       });
-      await refreshIntelFeedForCurrentLang();
+      await refreshIntelFeedAfterAdminMutation(data);
     }
 
     async function submitIntelContentRefresh(id) {
       const data = await postIntel("/api/intel/refresh-content", { id });
-      if (data?.feed && typeof data.feed === "object") {
-        renderIntelFeed(data.feed);
-        scheduleLangFeedRefresh(data.feed);
-      } else {
-        await refreshIntelFeedForCurrentLang();
-      }
+      await refreshIntelFeedAfterAdminMutation(data);
       return data || {};
     }
 
@@ -3017,11 +3323,21 @@
     });
 
     async function renderIntelOnLoad() {
+      let authReadySoon = Promise.resolve();
+      if (!intelAuthState.ready && location.protocol !== "file:") {
+        authReadySoon = fetchIntelAuthState().catch(() => {});
+        await Promise.race([authReadySoon, delayMs(1500)]);
+      }
+      const renderedCached = renderCachedIntelFeedForLang(currentUiLang);
+      if (renderedCached) {
+        setLangBuildStatus(`${langDisplayName(currentUiLang)} updating`, "working");
+      }
       try {
         await refreshIntelFeedForCurrentLang();
         prefetchIntelFeeds();
       } catch (error) {
         await attemptIntelAutoRepair(error);
       }
+      authReadySoon.catch(() => {});
       maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
     }

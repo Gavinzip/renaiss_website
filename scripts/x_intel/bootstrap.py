@@ -96,7 +96,10 @@ POKEMON_TOPIC_RE = re.compile(
 )
 COMMUNITY_TAG_RE = re.compile(r"(?<![A-Za-z0-9_])(?:#renaiss|@renaissxyz)(?![A-Za-z0-9_])", re.I)
 X_SOURCE_URL_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/", re.I)
-OFFICIAL_ACCOUNT_RE = re.compile(r"^renaiss(?:_|cn|xyz|official)?", re.I)
+OFFICIAL_X_HANDLES = {"renaissxyz"}
+REGIONAL_COMMUNITY_X_HANDLE_LABELS = ("RenaissKrCM", "RenaissMyCM", "RenaissTwCM", "renaiss_vn", "Renaiss_TH")
+REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_X_HANDLE_LABELS}
+REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
 AI_CLASSIFICATION_VERSION = "20260513-ai-first1"
@@ -1413,7 +1416,11 @@ def normalize_account_handle(account: Any) -> str:
 
 
 def is_official_account_handle(account: Any) -> bool:
-    return bool(OFFICIAL_ACCOUNT_RE.match(normalize_account_handle(account)))
+    return normalize_account_handle(account) in OFFICIAL_X_HANDLES
+
+
+def is_regional_community_account_handle(account: Any) -> bool:
+    return normalize_account_handle(account) in REGIONAL_COMMUNITY_X_HANDLES
 
 
 def extract_discord_channel_id_from_url(url: Any) -> str:

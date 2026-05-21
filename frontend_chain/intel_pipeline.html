@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI 流程追蹤</title>
   <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
   <style>
     :root {
       color-scheme: light;
@@ -260,6 +261,7 @@
       <section class="card">
         <h2>同步三段進度</h2>
         <div id="tracker-run-meta" class="muted">--</div>
+        <div id="tracker-live-meta" class="muted">目前狀態：--</div>
         <div class="stage-row">
           <div class="stage-head"><span>1. 掃描新卡片</span><span id="tracker-scan-label">0%</span></div>
           <div class="bar"><i id="tracker-scan-bar"></i></div>
@@ -272,6 +274,11 @@
           <div class="stage-head"><span>3. 翻譯卡片</span><span id="tracker-translation-label">0%</span></div>
           <div class="bar"><i id="tracker-translation-bar"></i></div>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>即時卡點 Log</h2>
+        <ul id="tracker-sync-log-list" class="list"><li>等待同步事件...</li></ul>
       </section>
 
       <section class="grid">
@@ -318,6 +325,6 @@
     </main>
   </div>
 
-  <script src="./assets/intel-pipeline.js?v=20260508-refresh-feedback1"></script>
+  <script src="./assets/intel-pipeline.js?v=20260518-sync-progress1"></script>
 </body>
 </html>

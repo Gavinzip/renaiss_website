@@ -15,9 +15,7 @@
       fromStorage = "";
     }
     const localHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(String(window.location.hostname || ""));
-    const fromHost = localHost
-      ? (String(window.location.port || "") === "8787" ? normalize(window.location.origin || "") : "http://127.0.0.1:8787")
-      : "";
+    const fromHost = localHost ? normalize(window.location.origin || "") : "";
     const safeStorage = localHost && !fromQuery && !fromWindow && !fromData ? "" : fromStorage;
     return (
       fromQuery
@@ -73,6 +71,33 @@
       .replace(/'/g, "&#39;");
   }
 
+  function safeUrl(raw, fallback = "") {
+    const value = String(raw || "").trim();
+    const safeFallback = String(fallback || "");
+    if (!value) return safeFallback;
+    const compact = value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
+    const scheme = compact.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (scheme) {
+      const protocol = scheme[1].toLowerCase();
+      if (protocol !== "http" && protocol !== "https") return safeFallback;
+      try {
+        return new URL(value).href;
+      } catch (_error) {
+        return safeFallback;
+      }
+    }
+    if (compact.startsWith("//")) {
+      try {
+        return new URL(`https:${value}`).href;
+      } catch (_error) {
+        return safeFallback;
+      }
+    }
+    if (/[<>"'`]/.test(value)) return safeFallback;
+    if (/^(?:[/?#.]|[A-Za-z0-9_-])/.test(value)) return value;
+    return safeFallback;
+  }
+
   function normalizePercent(value) {
     const num = Number(value);
     if (!Number.isFinite(num)) return 0;
@@ -105,8 +130,9 @@
     const info = [account ? `@${escapeHtml(account)}` : "", publishedAt !== "--" ? escapeHtml(publishedAt) : ""]
       .filter(Boolean)
       .join(" · ");
-    const titleHtml = row.url
-      ? `<a class="link" href="${escapeHtml(String(row.url))}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
+    const url = safeUrl(row.url || "", "");
+    const titleHtml = url
+      ? `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
       : escapeHtml(title);
     if (!info) return titleHtml;
     return `${titleHtml}<br><span style="color:#6282a4;">${info}</span>`;
@@ -147,17 +173,80 @@
     const stage = String(row.stage || "").trim().toLowerCase();
     if (stage !== "dedupe_dropped") return "--";
     const reason = String(row.reason || "").trim();
-    const winnerUrl = String(row.winner_url || "").trim();
+    const winnerUrl = safeUrl(row.winner_url || "", "");
     const winnerId = String(row.winner_post_id || "").trim();
     const winnerTitle = String(row.winner_title || "").trim();
+    const sim = Number(row.similarity || 0);
+    const simText = Number.isFinite(sim) && sim > 0 ? ` · 相似度 ${Math.round(sim * 100)}%` : "";
     const winnerLabel = winnerTitle || winnerId || winnerUrl || "勝出貼文";
     const winnerHtml = winnerUrl
       ? `<a class="link" href="${escapeHtml(winnerUrl)}" target="_blank" rel="noreferrer">${escapeHtml(winnerLabel)}</a>`
       : (winnerLabel ? escapeHtml(winnerLabel) : "");
-    if (reason && winnerHtml) return `${escapeHtml(reason)}<br><span style="color:#6282a4;">保留：${winnerHtml}</span>`;
+    if (reason && winnerHtml) return `${escapeHtml(reason)}${escapeHtml(simText)}<br><span style="color:#6282a4;">保留：${winnerHtml}</span>`;
     if (reason) return escapeHtml(reason);
     if (winnerHtml) return `<span style="color:#6282a4;">保留：${winnerHtml}</span>`;
     return "--";
+  }
+
+  function renderSyncLive(sync) {
+    const row = sync && typeof sync === "object" ? sync : {};
+    const metaEl = document.getElementById("tracker-live-meta");
+    const logEl = document.getElementById("tracker-sync-log-list");
+    const stage = String(row.stage_label || row.stage || "待命").trim();
+    const status = String(row.status || "idle").trim();
+    const op = String(row.current_operation || "").trim();
+    const account = String(row.current_account || "").trim();
+    const title = String(row.current_title || "").trim();
+    const url = safeUrl(row.current_url || "", "");
+    const cardText = [account ? `@${account}` : "", title].filter(Boolean).join(" · ");
+    const attempt = Number(row.current_attempt || 0);
+    const callIndex = Number(row.current_call_index || 0);
+    const promptLen = Number(row.current_prompt_len || 0);
+    const cardDone = Number(row.progress_done_cards || 0);
+    const cardTotal = Number(row.progress_total_cards || 0);
+    const sourceDone = Number(row.progress_done_sources || 0);
+    const sourceTotal = Number(row.progress_total_sources || 0);
+    const progressText = cardTotal > 0
+      ? `卡片 ${cardDone}/${cardTotal}`
+      : (sourceTotal > 0 ? `來源 ${sourceDone}/${sourceTotal}` : "");
+    const detailParts = [
+      `sync=${status}`,
+      `stage=${stage}`,
+      op ? `op=${op}` : "",
+      callIndex ? `call=${callIndex}` : "",
+      attempt ? `attempt=${attempt}` : "",
+      promptLen ? `prompt=${promptLen}` : "",
+      progressText,
+    ].filter(Boolean);
+    if (metaEl) {
+      const cardHtml = url && cardText
+        ? `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(cardText)}</a>`
+        : escapeHtml(cardText);
+      metaEl.innerHTML = `目前狀態：${detailParts.map(escapeHtml).join(" · ")}${cardHtml ? ` · ${cardHtml}` : ""}`;
+    }
+    const events = Array.isArray(row.recent_events) ? row.recent_events : [];
+    const rows = events.slice(0, 20).map((event) => {
+      const eventName = String(event?.event || "").trim();
+      const eventStage = String(event?.stage || "").trim();
+      const eventOp = String(event?.operation || "").trim();
+      const eventTitle = String(event?.title || "").trim();
+      const eventAccount = String(event?.account || "").trim();
+      const elapsed = Number(event?.elapsed_ms || 0);
+      const err = String(event?.error || "").trim();
+      const at = toLocalTime(event?.at || "");
+      const bits = [
+        at !== "--" ? at : "",
+        eventName,
+        eventStage ? `stage=${eventStage}` : "",
+        eventOp ? `op=${eventOp}` : "",
+        eventAccount ? `@${eventAccount}` : "",
+        eventTitle,
+        elapsed ? `${elapsed}ms` : "",
+        err ? `error=${err}` : "",
+      ].filter(Boolean);
+      return escapeHtml(bits.join(" · "));
+    });
+    if (logEl) renderList("tracker-sync-log-list", rows, "目前沒有同步事件。");
   }
 
   function renderPostStages(rows) {
@@ -196,6 +285,7 @@
       const refreshRunning = Number(contentRefresh?.counts?.running || 0);
       runMetaEl.textContent = `run_id=${runId} · trigger=${trigger} · sync=${syncStatus} · card_refresh=${refreshRunning}`;
     }
+    renderSyncLive(sync);
 
     const scanTotal = Number(scan?.total_sources || 0);
     const scanDone = Number(scan?.done_sources || 0);
@@ -260,7 +350,7 @@
     const jobRows = jobItems.slice(0, 60).map((job) => {
       const st = statusChip(String(job?.status || "pending").toLowerCase());
       const message = String(job?.message || "").trim();
-      const url = String(job?.url || "").trim();
+      const url = safeUrl(job?.url || "", "");
       const updated = toLocalTime(job?.updated_at || job?.created_at);
       const title = url
         ? `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`

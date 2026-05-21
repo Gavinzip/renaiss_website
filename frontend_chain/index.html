@@ -6,6 +6,8 @@
   <meta name="description" content="Renaiss Aggregator collects official updates, event timelines, SBT notes, Pokemon and TCG posts, guides, community picks, and admin-curated intelligence." />
   <title>Renaiss 新手入門指南 | Renaiss Starter Guide</title>
   <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260518-agent-page2"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="preload" as="image" href="./image.webp" type="image/webp" fetchpriority="high" />
@@ -28,6 +30,10 @@
       };
       const rawHash = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
       const rawCategory = rawHash.replace(/^cat-/, "");
+      if (rawHash === "agent" || rawHash === "cat-agent" || rawCategory === "agent") {
+        window.location.replace("./agent.html");
+        return;
+      }
       const legacyCategory = legacyToCategory[rawHash] || legacyToCategory[rawCategory] || "";
       if (legacyCategory) {
         history.replaceState(null, "", `${window.location.pathname}${window.location.search}#cat-${legacyCategory}`);
@@ -40,7 +46,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260508-refresh-feedback1" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260519-agent-source-card1" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
 </head>
 <body>
@@ -54,6 +60,7 @@
         <nav class="nav-links">
           <a id="nav-game-link" href="./game.html" data-i18n-key="nav.game">Game</a>
           <a href="#cat-events" data-nav-category="events" data-i18n-key="nav.aggregator">聚合器</a>
+          <a href="./agent.html" data-i18n-key="nav.agent">Renaiss Agent</a>
           <a href="./beginner.html" data-i18n-key="nav.beginner">新手教學</a>
           <a href="./feedback.html" data-no-i18n="1">回饋</a>
         </nav>
@@ -170,6 +177,7 @@
 
       <div id="intel-events-cards" class="intel-grid intel-user-hidden" hidden aria-hidden="true"></div>
       <p id="intel-events-empty" class="source-empty intel-user-hidden" hidden aria-hidden="true" style="display:none;" data-i18n-key="events.empty">目前沒有可顯示的活動貼文。</p>
+      <p class="events-author-note" data-no-i18n="1">作者 X 帳號：<a href="https://x.com/treegavin0121" target="_blank" rel="noreferrer">@treegavin0121</a></p>
     </section>
 
     <section id="world" class="panel observe category-panel category-hidden" data-category-section="community" style="--delay: 40ms;">
@@ -496,6 +504,7 @@
           <button type="submit" id="intel-auth-submit" class="intel-auth-btn">登入</button>
         </div>
       </form>
+      <p id="intel-auth-message" class="intel-auth-message" aria-live="polite" hidden></p>
       <p class="intel-auth-sub">登入後可從 Header 的「AI 監控」按鈕開啟監控面板。</p>
     </div>
   </div>
@@ -659,9 +668,9 @@
     }
   </script>
 
-  <script src="./assets/index-i18n.js?v=20260507-nav-i18n1"></script>
-  <script src="./assets/index-data.js?v=20260508-card-refresh2"></script>
-  <script src="./assets/index-render.js?v=20260508-admin-feedback-nav1"></script>
-  <script src="./assets/index-actions.js?v=20260508-admin-feedback-nav1"></script>
+  <script src="./assets/index-i18n.js?v=20260518-agent2"></script>
+  <script src="./assets/index-data.js?v=20260518-knowledge-memory1"></script>
+  <script src="./assets/index-render.js?v=20260519-card-deeplink1"></script>
+  <script src="./assets/index-actions.js?v=20260518-agent2"></script>
 </body>
 </html>
