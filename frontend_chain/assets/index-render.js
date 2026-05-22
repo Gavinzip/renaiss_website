@@ -1405,6 +1405,45 @@
       return "";
     }
 
+    function isActionableSbtMethod(raw) {
+      const text = normalizeSbtMethodText(raw, 160);
+      if (!text) return false;
+      if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(text)) return false;
+      if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(text)) return false;
+      return /(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|購買|购买|抽|開出|开出|追蹤|追踪|提交|張貼|张贴|前往|表單|表单|造訪|造访|pull|open|claim|airdrop|snapshot|unlock|buy)/i.test(text);
+    }
+
+    function parseSbtInlineEntry(rawLine) {
+      const line = normalizeSbtText(rawLine, 260);
+      if (!line || !/(sbt|soul\s*bound\s*token|徽章|badge)/i.test(line)) return null;
+      const colonMatch = line.match(/^\s*(?:[-*•]\s*)?([^:：]{2,110}?(?:\bSBT\b|\bSoul\s*Bound\s*Token\b|徽章|badge)[^:：]{0,28})\s*[:：]\s*(.{2,180})$/i);
+      if (!colonMatch) return null;
+      const left = normalizeSbtText(colonMatch[1], 96);
+      if (/^SBT\s*(?:取得方式|获取方式|acquisition|획득 방법|名稱|名称)\b/i.test(left)) return null;
+      const name = extractSbtNameFromText(left) || left;
+      const acquisition = normalizeSbtMethodText(colonMatch[2], 160);
+      if (!name || isWeakSbtName(name) || !isActionableSbtMethod(acquisition)) return null;
+      return { name, acquisition };
+    }
+
+    function sbtInlineEntriesForCard(card) {
+      const lines = [
+        ...sbtDetailLines(card),
+        ...(Array.isArray(card?.bullets) ? card.bullets.map((x) => String(x || "").trim()).filter(Boolean) : []),
+      ];
+      const seen = new Set();
+      return lines
+        .map(parseSbtInlineEntry)
+        .filter(Boolean)
+        .filter((entry) => {
+          const key = `${entry.name.toLowerCase()}||${entry.acquisition.toLowerCase()}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 6);
+    }
+
     function isWeakSbtName(name) {
       const text = String(name || "").replace(/\s+/g, " ").trim();
       if (!text) return true;
@@ -1428,6 +1467,7 @@
         const rewardLine = firstSbtDetailValue(card, [/^\s*(?:獎勵|奖励)\s*[:：]\s*/i], 96);
         const rewardName = extractSbtNameFromText(rewardLine);
         if (rewardName) rows.push(rewardName);
+        rows.push(...sbtInlineEntriesForCard(card).map((entry) => entry.name));
       }
       const seen = new Set();
       return rows
@@ -1472,9 +1512,15 @@
           .slice(0, 2)
           .join("；");
       }
+      if (!direct) {
+        const inlineEntries = sbtInlineEntriesForCard(card);
+        direct = inlineEntries
+          .map((entry) => `${entry.name}：${entry.acquisition}`)
+          .join("；");
+      }
       if (!direct) return "";
       if (/^(依官方|以原文|待官方|原文未明確|请看原文|請看原文)/.test(direct)) return "";
-      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|抽|開出|开出|追蹤|追踪|提交|張貼|张贴|前往|表單|表单|造訪|造访|pull|open|claim|airdrop|snapshot|unlock)/i.test(direct)) return "";
+      if (!/(取得|獲得|获得|領取|领取|解鎖|解锁|空投|快照|達到|达到|完成|報名|报名|參與|参与|購買|购买|抽|開出|开出|追蹤|追踪|提交|張貼|张贴|前往|表單|表单|造訪|造访|pull|open|claim|airdrop|snapshot|unlock|buy)/i.test(direct)) return "";
       if (/(top value|packs only|lands tomorrow|cards to hunt|here are the top|https?:\/\/)/i.test(direct)) return "";
       return direct;
     }
@@ -1546,6 +1592,38 @@
       return sbtRowTimeMs(incoming?.card) >= sbtRowTimeMs(current?.card) ? incoming : current;
     }
 
+    function sbtSummaryRowsForCard(card, idx) {
+      const baseKey = String(card?._card_key || cardStableKey(card, idx)).trim();
+      const cardId = String(card?.id || "").trim();
+      const inlineEntries = sbtInlineEntriesForCard(card);
+      const hasStructuredSbt = Boolean(String(card?.sbt_acquisition || card?.sbt_name || "").trim())
+        || (Array.isArray(card?.sbt_names) && card.sbt_names.some((x) => String(x || "").trim()));
+      if (!hasStructuredSbt && inlineEntries.length) {
+        return inlineEntries.map((entry, entryIdx) => ({
+          card,
+          key: `${baseKey}::sbt-inline-${entryIdx}-${entry.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+          jumpKey: baseKey,
+          cardId,
+          names: [entry.name],
+          name: entry.name,
+          acquisition: entry.acquisition,
+          status: sbtStatusForCard(card),
+        }));
+      }
+      const names = sbtNamesForCard(card);
+      if (!names.length) return [];
+      return [{
+        card,
+        key: baseKey,
+        jumpKey: baseKey,
+        cardId,
+        names,
+        name: names.join(" / "),
+        acquisition: sbtAcquisitionForCard(card),
+        status: sbtStatusForCard(card),
+      }];
+    }
+
     let sbtAcqEditMode = false;
 
     function renderSbtAcquisitionSummary(cards, allCards = []) {
@@ -1570,13 +1648,7 @@
       }
       empty.textContent = uiLabel("sbtAcquisitionEmpty");
       const candidateRows = (Array.isArray(cards) ? cards : [])
-        .map((card, idx) => {
-          const names = sbtNamesForCard(card);
-          if (!names.length) return null;
-          const acquisition = sbtAcquisitionForCard(card);
-          const key = String(card?._card_key || cardStableKey(card, idx)).trim();
-          return { card, key, cardId: String(card?.id || "").trim(), names, name: names.join(" / "), acquisition, status: sbtStatusForCard(card) };
-        })
+        .flatMap((card, idx) => sbtSummaryRowsForCard(card, idx))
         .filter(Boolean);
       const grouped = new Map();
       for (const row of candidateRows) {
@@ -1605,7 +1677,7 @@
       count.textContent = String(rows.length);
       list.innerHTML = rows.map((row, idx) => `
         <div class="sbt-acq-row-wrap" data-sbt-row="${escapeHtml(row.key)}">
-          <button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.key)}">
+          <button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.jumpKey || row.key)}">
             <span class="sbt-acq-index">#${idx + 1}</span>
             <span class="sbt-acq-main">
               <span class="sbt-acq-name">${escapeHtml(row.name)}</span>
