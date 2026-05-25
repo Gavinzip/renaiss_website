@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss regional community pulse map." />
+  <title>Renaiss Community Pulse Map</title>
+  <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260525-community-map16"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/community-map.css?v=20260525-community-map16" />
+  <script defer src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
+</head>
+<body class="community-map-body">
+  <canvas id="pulse-particles" class="pulse-particles" aria-hidden="true"></canvas>
+  <main class="shell community-map-shell">
+    <header class="nav">
+      <div class="nav-main-row">
+        <a class="brand" href="./index.html#hero">
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <span class="brand-text">Renaiss Aggregator</span>
+        </a>
+        <nav class="nav-links">
+          <a href="./game.html">Game</a>
+          <a href="./index.html#cat-events">聚合器</a>
+          <a class="is-active" href="./community_map.html" aria-current="page">聲量地圖</a>
+          <a href="./agent.html">Renaiss Agent</a>
+          <a href="./beginner.html">新手教學</a>
+          <a href="./feedback.html">回饋</a>
+        </nav>
+        <div class="nav-actions">
+          <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">Open Renaiss</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="community-map-hero">
+      <div>
+        <h1>Community <span class="text-gradient">Pulse Map</span></h1>
+        <p>追蹤 Renaiss 區域社群帳號的近期聲量，從互動數與貼文活躍度觀察各地熱度。</p>
+      </div>
+    </section>
+
+    <section class="pulse-board" aria-label="Renaiss regional community pulse">
+      <article class="pulse-map-panel">
+        <div class="map-toolbar">
+          <div class="map-toolbar-copy">
+            <strong>Regional Signal</strong>
+            <span id="pulse-data-status">同步中 · 每 30 分鐘更新 · 以按讚 + 留言計算</span>
+          </div>
+          <div class="map-actions">
+            <div class="map-view-toggle" role="group" aria-label="Map view mode">
+              <button class="is-active" type="button" data-map-view="angle" aria-pressed="true">立體視角</button>
+              <button type="button" data-map-view="top" aria-pressed="false">俯瞰視角</button>
+            </div>
+            <button id="pulse-refresh" type="button">
+              <iconify-icon icon="lucide:refresh-cw"></iconify-icon>
+              更新
+            </button>
+          </div>
+        </div>
+
+        <div class="three-map-wrap">
+          <div id="pulse-real-map" class="pulse-three-map" role="img" aria-label="Renaiss regional community 3D map">
+            <div id="pulse-three-labels" class="three-label-layer" aria-hidden="true"></div>
+          </div>
+          <div id="pulse-map-callout" class="map-selected-pulse" aria-live="polite"></div>
+          <div class="map-legend" aria-label="Map legend">
+            <span><i></i> 點選地區後浮起發光，未選地區與底圖對齊</span>
+            <span id="map-provider-status">更新時間 --</span>
+          </div>
+        </div>
+      </article>
+
+      <aside class="pulse-side-panel">
+        <div class="pulse-side-head">
+          <strong id="pulse-selected-title">選擇地區</strong>
+          <span id="pulse-selected-account">--</span>
+        </div>
+        <div id="pulse-region-list" class="pulse-region-list"></div>
+      </aside>
+    </section>
+
+    <section class="pulse-detail-grid">
+      <article class="pulse-detail-card">
+        <h2>Selected Region</h2>
+        <div id="pulse-selected-card" class="selected-region-card"></div>
+      </article>
+      <article class="pulse-detail-card">
+        <h2>Recent Posts</h2>
+        <div id="pulse-recent-posts" class="pulse-recent-posts"></div>
+      </article>
+    </section>
+  </main>
+  <script defer src="./assets/community-region-outlines.js?v=20260525-community-map16"></script>
+  <script defer src="./assets/community-background-outlines.js?v=20260525-community-map16"></script>
+  <script defer src="./assets/community-map.js?v=20260525-community-map16"></script>
+</body>
+</html>

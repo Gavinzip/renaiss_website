@@ -1257,11 +1257,8 @@ def build_storycard_from_twitter_cli_item(item: dict[str, Any], username: str) -
 
     metrics_raw = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
     metrics = {
-        "likes": int(metrics_raw.get("likes", item.get("favorite_count", 0)) or 0),
-        "retweets": int(metrics_raw.get("retweets", item.get("retweet_count", 0)) or 0),
-        "replies": int(metrics_raw.get("replies", item.get("reply_count", 0)) or 0),
-        "quotes": int(metrics_raw.get("quotes", item.get("quote_count", 0)) or 0),
-        "views": int(metrics_raw.get("views", 0) or 0),
+        "likes": int(metrics_raw.get("likes", item.get("favorite_count", item.get("likes", 0))) or 0),
+        "replies": int(metrics_raw.get("replies", item.get("reply_count", item.get("conversation_count", item.get("replies", 0)))) or 0),
     }
     cover = extract_first_image(item.get("media"))
     reply_to_id = str(
@@ -1764,6 +1761,7 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
                     existing.reply_to_id = str(tweet_meta.get("reply_to_id") or tweet_meta.get("parent_id") or "").strip()
                 if not existing.cover_image:
                     existing.cover_image = str(tweet_meta.get("cover_image") or "").strip()
+                existing.metrics = _merge_metrics(existing.metrics, _metrics_from_tweet_meta(tweet_meta))
                 meta_text = clean_text(str(tweet_meta.get("text") or ""))
                 if meta_text and len(meta_text) > len(clean_text(existing.raw_text or "")):
                     existing.raw_text = meta_text[:2500]
@@ -1840,12 +1838,31 @@ def _token_overlap_ratio(a: str, b: str) -> float:
 
 
 def _sum_metrics(cards: list[StoryCard]) -> dict[str, int]:
-    out: dict[str, int] = {"likes": 0, "retweets": 0, "replies": 0, "quotes": 0, "views": 0}
+    out: dict[str, int] = {"likes": 0, "replies": 0}
     for card in cards:
         metrics = card.metrics if isinstance(card.metrics, dict) else {}
         for key in out:
             out[key] += int(metrics.get(key, 0) or 0)
     return out
+
+
+def _metrics_from_tweet_meta(tweet_meta: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(tweet_meta, dict):
+        return {}
+    metrics = tweet_meta.get("metrics") if isinstance(tweet_meta.get("metrics"), dict) else {}
+    return {
+        "likes": int(metrics.get("likes", 0) or 0),
+        "replies": int(metrics.get("replies", tweet_meta.get("conversation_count", 0)) or 0),
+    }
+
+
+def _merge_metrics(existing_metrics: dict[str, Any] | None, incoming_metrics: dict[str, int]) -> dict[str, int]:
+    keys = ("likes", "replies")
+    existing = existing_metrics if isinstance(existing_metrics, dict) else {}
+    merged: dict[str, int] = {}
+    for key in keys:
+        merged[key] = max(int(existing.get(key, 0) or 0), int(incoming_metrics.get(key, 0) or 0))
+    return merged
 
 
 def _merge_thread_group(group: list[StoryCard]) -> StoryCard:

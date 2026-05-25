@@ -758,6 +758,10 @@ def fetch_status_metadata(tweet_id: str, force: bool = False) -> dict[str, Any] 
         "parent_account": parent_account,
         "parent_text": clean_text(parent_text),
         "conversation_count": int(data.get("conversation_count") or 0),
+        "metrics": {
+            "likes": int(data.get("favorite_count") or data.get("likes") or 0),
+            "replies": int(data.get("conversation_count") or data.get("reply_count") or data.get("replies") or 0),
+        },
         "cover_image": _extract_syndication_cover(data),
     }
     SYNDICATION_META_CACHE[sid] = meta
@@ -1096,8 +1100,14 @@ def parse_status_page(
         cover = str(tweet_meta.get("cover_image") or "").strip()
 
     reply_to_id = ""
+    metrics: dict[str, int] = {}
     if isinstance(tweet_meta, dict):
         reply_to_id = str(tweet_meta.get("reply_to_id") or tweet_meta.get("parent_id") or "").strip()
+        metrics_raw = tweet_meta.get("metrics") if isinstance(tweet_meta.get("metrics"), dict) else {}
+        metrics = {
+            "likes": int(metrics_raw.get("likes", 0) or 0),
+            "replies": int(metrics_raw.get("replies", tweet_meta.get("conversation_count", 0)) or 0),
+        }
 
     card = StoryCard(
         id=tweet_id,
@@ -1114,7 +1124,7 @@ def parse_status_page(
         raw_text=content_source[:2500],
         provider=provider,
         cover_image=cover,
-        metrics={},
+        metrics=metrics,
         reply_to_id=reply_to_id,
         topic_labels=["other"],
         classified_by="ai",
@@ -1315,10 +1325,8 @@ def score_card(card: StoryCard) -> float:
 
     metrics = card.metrics or {}
     likes = int(metrics.get("likes", 0) or 0)
-    retweets = int(metrics.get("retweets", 0) or 0)
     replies = int(metrics.get("replies", 0) or 0)
-    views = int(metrics.get("views", 0) or 0)
-    score += min(4.0, likes / 25.0 + retweets / 8.0 + replies / 15.0 + views / 6000.0)
+    score += min(4.0, likes / 25.0 + replies / 15.0)
 
     # Penalize low-information short replies
     if len(strip_links_mentions(text)) < 28:

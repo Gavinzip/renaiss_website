@@ -5,9 +5,14 @@
 
   const targets = [
     ["./agent.html", "document"],
+    ["./community_map.html", "document"],
     ["./game.html", "document"],
     ["./feedback.html", "document"],
     ["./assets/agent.js?v=20260518-agent-page2", "script"],
+    ["./assets/community-map.css?v=20260525-community-map16", "style"],
+    ["./assets/community-region-outlines.js?v=20260525-community-map16", "script"],
+    ["./assets/community-background-outlines.js?v=20260525-community-map16", "script"],
+    ["./assets/community-map.js?v=20260525-community-map16", "script"],
     ["./assets/game-base.css?v=20260426-layout9", "style"],
     ["./assets/game-sections.css?v=20260426-layout10", "style"],
     ["./assets/game.js?v=20260426-layout9", "script"],
