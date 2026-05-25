@@ -13,12 +13,13 @@
     latScale: 0.48,
     lngScale: 0.48,
   };
-  const REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+  const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 
   const state = {
     animationFrame: 0,
     backgroundGroup: null,
     camera: null,
+    communityMetrics: null,
     generatedAt: "",
     labelLayer: null,
     mapRoot: null,
@@ -184,6 +185,7 @@
     const feed = payload?.feed && typeof payload.feed === "object" ? payload.feed : payload;
     const cards = Array.isArray(feed?.cards) ? feed.cards : [];
     state.generatedAt = String(feed?.generated_at || "");
+    state.communityMetrics = feed?.community_metrics && typeof feed.community_metrics === "object" ? feed.community_metrics : null;
     return cards;
   }
 
@@ -197,6 +199,21 @@
 
   function scoreFromTotals(totals) {
     return totals.likes + totals.replies;
+  }
+
+  function metricAccountFor(region) {
+    const accounts = state.communityMetrics?.accounts && typeof state.communityMetrics.accounts === "object"
+      ? state.communityMetrics.accounts
+      : {};
+    return accounts[String(region.account || "").toLowerCase()] || null;
+  }
+
+  function metricDeltaFor(region) {
+    const deltas = state.communityMetrics?.delta_24h_accounts && typeof state.communityMetrics.delta_24h_accounts === "object"
+      ? state.communityMetrics.delta_24h_accounts
+      : {};
+    const row = deltas[String(region.account || "").toLowerCase()];
+    return row && typeof row === "object" ? row : null;
   }
 
   function buildRegionData(cards) {
@@ -219,12 +236,21 @@
         acc.posts += 1;
         return acc;
       }, { likes: 0, replies: 0, posts: 0 });
-      const score = scoreFromTotals(totals);
-      const metricTotal = totals.likes + totals.replies;
+      const feedTotals = metricAccountFor(region);
+      const displayTotals = feedTotals
+        ? {
+          likes: Math.max(totals.likes, num(feedTotals.likes)),
+          replies: Math.max(totals.replies, num(feedTotals.replies)),
+          posts: Math.max(totals.posts, num(feedTotals.posts)),
+        }
+        : totals;
+      const score = Math.max(scoreFromTotals(displayTotals), num(feedTotals?.score));
+      const metricTotal = score;
       return {
         ...region,
         cards: cardsForRegion,
-        totals,
+        totals: displayTotals,
+        delta24: metricDeltaFor(region),
         score,
         metricTotal,
         latestAt: cardsForRegion[0]?.published_at || "",
@@ -772,7 +798,8 @@
   function updateMapProviderStatus() {
     const status = $("#map-provider-status");
     if (!status) return;
-    status.textContent = `更新時間 ${state.generatedAt ? formatDate(state.generatedAt) : "--"}`;
+    const updatedAt = state.communityMetrics?.updated_at || state.generatedAt;
+    status.textContent = `更新時間 ${updatedAt ? formatDate(updatedAt) : "--"}`;
   }
 
   function setViewMode(mode) {
@@ -808,9 +835,14 @@
 
   function renderSummary() {
     const hasMetrics = state.regions.some((row) => row.metricTotal > 0);
+    const computedTotal = state.regions.reduce((sum, row) => sum + row.score, 0);
+    const feedTotal = num(state.communityMetrics?.total_score);
+    const total = Math.max(computedTotal, feedTotal);
+    const delta = state.communityMetrics?.delta_24h_score;
+    const deltaText = delta === null || delta === undefined || delta === "" ? "24h --" : `24h ${delta >= 0 ? "+" : ""}${formatNumber(delta)}`;
     $("#pulse-data-status").textContent = hasMetrics
-      ? "每 30 分鐘自動同步 · 以按讚 + 留言計算"
-      : "每 30 分鐘自動同步 · 等待 X 互動數";
+      ? `每小時更新 · 總聲量 ${formatNumber(total)} · ${deltaText}`
+      : "每小時更新 · 等待 X 互動數";
     updateMapProviderStatus();
   }
 
@@ -863,9 +895,10 @@
       return;
     }
     callout.style.setProperty("--region-color", row.color);
+    const deltaText = row.delta24?.score === null || row.delta24?.score === undefined ? "24h --" : `24h ${row.delta24.score >= 0 ? "+" : ""}${formatNumber(row.delta24.score)}`;
     callout.innerHTML = `
       <strong>${escapeHtml(row.label)}聲量 ${formatNumber(row.score)}</strong>
-      <span>@${escapeHtml(row.account)} · ❤️${formatNumber(row.totals.likes)} · 💬${formatNumber(row.totals.replies)} · ${row.totals.posts} posts</span>
+      <span>@${escapeHtml(row.account)} · ❤️${formatNumber(row.totals.likes)} · 💬${formatNumber(row.totals.replies)} · ${deltaText}</span>
     `;
   }
 
@@ -893,6 +926,7 @@
       <div class="metric-grid">
         ${metricBox("Likes", row.totals.likes)}
         ${metricBox("Comments", row.totals.replies)}
+        ${metricBox("24h Change", row.delta24?.score ?? 0)}
         ${metricBox("Posts", row.totals.posts)}
       </div>
     `;
@@ -921,7 +955,7 @@
   }
 
   async function loadPulse() {
-    $("#pulse-data-status").textContent = "同步中 · 每 30 分鐘更新 · 以按讚 + 留言計算";
+    $("#pulse-data-status").textContent = "同步中 · 每小時更新 · 按讚+留言";
     try {
       const response = await fetch("./api/intel/feed?lang=zh-Hant", { cache: "no-store" });
       if (!response.ok) throw new Error(`feed ${response.status}`);

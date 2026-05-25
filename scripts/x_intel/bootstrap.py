@@ -56,6 +56,7 @@ JINA_MIN_INTERVAL_SECONDS = 6.0
 JINA_MAX_RETRIES = 3
 JINA_RETRY_BASE_SECONDS = 0.9
 JINA_RATE_LOCK = Lock()
+SYNDICATION_RATE_LOCK = Lock()
 JINA_LAST_REQUEST_AT = 0.0
 
 STATUS_RE = re.compile(r"https?://x\.com/([A-Za-z0-9_]+)/status/(\d+)", re.I)
@@ -293,6 +294,7 @@ class StoryCard:
 
 
 SYNDICATION_META_CACHE: dict[str, dict[str, Any]] = {}
+SYNDICATION_LAST_REQUEST_AT = 0.0
 
 
 def project_root() -> Path:
@@ -705,9 +707,17 @@ def fetch_status_metadata(tweet_id: str, force: bool = False) -> dict[str, Any] 
         return dict(cached) if cached else None
     params = {"id": sid, "token": "a"}
     try:
-        resp = requests.get(SYNDICATION_TWEET_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        min_interval = max(0.0, float(os.getenv("X_TWEET_RESULT_MIN_INTERVAL_SECONDS", "1.2") or "1.2"))
+        global SYNDICATION_LAST_REQUEST_AT
+        with SYNDICATION_RATE_LOCK:
+            if min_interval > 0:
+                elapsed = time.monotonic() - SYNDICATION_LAST_REQUEST_AT
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+            SYNDICATION_LAST_REQUEST_AT = time.monotonic()
+            resp = requests.get(SYNDICATION_TWEET_URL, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
     except Exception:
         return None
 

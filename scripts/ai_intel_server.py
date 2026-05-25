@@ -46,6 +46,12 @@ from x_intel_core import (
     update_x_source_accounts,
 )
 from x_intel.knowledge_agent import answer_knowledge_question
+from x_intel.community_metrics import (
+    COMMUNITY_METRIC_ACCOUNTS,
+    read_community_metrics_state,
+    run_community_metrics_backfill,
+    update_community_metrics_state,
+)
 from website_backup import get_website_backup_status, restore_website_data_from_backup, run_website_backup, start_website_backup_scheduler
 from website_storage import get_website_data_dir, setup_website_storage
 from website_i18n_runtime import (
@@ -98,6 +104,7 @@ SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
+COMMUNITY_METRICS_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
@@ -157,6 +164,10 @@ DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
 DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
 DEFAULT_X_SYNC_INTERVAL_HOURS = 0.5
 DEFAULT_X_SYNC_WINDOW_DAYS = 30
+DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS = 1.0
+DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS = 30
+DEFAULT_COMMUNITY_METRICS_MAX_CARDS = 160
+DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS = 3.0
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
@@ -1424,6 +1435,147 @@ def _start_x_sync_scheduler(
     Thread(target=_loop, daemon=True).start()
 
 
+def _community_metrics_state_snapshot() -> dict:
+    state = read_community_metrics_state(DATA_ROOT)
+    return state if isinstance(state, dict) else {}
+
+
+def _mark_community_metrics_schedule(
+    *,
+    enabled: bool,
+    interval_hours: float,
+    window_days: int,
+    next_run_at: str = "",
+    last_scheduled_at: str = "",
+    last_skip_reason: str = "",
+) -> None:
+    payload: dict[str, object] = {
+        "schedule_enabled": bool(enabled),
+        "schedule_interval_hours": float(interval_hours),
+        "schedule_window_days": int(window_days),
+    }
+    if next_run_at:
+        payload["next_run_at"] = next_run_at
+    if last_scheduled_at:
+        payload["last_scheduled_at"] = last_scheduled_at
+    if last_skip_reason:
+        payload["last_skip_reason"] = last_skip_reason
+    update_community_metrics_state(DATA_ROOT, payload)
+
+
+def _run_community_metrics_backfill(trigger: str = "scheduled") -> dict:
+    with SYNC_STATE_LOCK:
+        sync_running = str(SYNC_STATE.get("status") or "").strip().lower() == "running"
+    if sync_running:
+        state = update_community_metrics_state(
+            DATA_ROOT,
+            {
+                "status": "skipped",
+                "trigger": trigger,
+                "finished_at": _now_iso(),
+                "last_skip_reason": "x_sync_running",
+                "last_error": "community metrics skipped: X/Discord sync is running",
+            },
+        )
+        print("[ai-intel-community-metrics] skipped reason=x_sync_running", flush=True)
+        return state
+    if not COMMUNITY_METRICS_LOCK.acquire(blocking=False):
+        state = update_community_metrics_state(
+            DATA_ROOT,
+            {
+                "status": "skipped",
+                "trigger": trigger,
+                "finished_at": _now_iso(),
+                "last_skip_reason": "metrics_job_running",
+                "last_error": "community metrics skipped: another metrics job is running",
+            },
+        )
+        print("[ai-intel-community-metrics] skipped reason=metrics_job_running", flush=True)
+        return state
+    try:
+        state = run_community_metrics_backfill(
+            data_root=DATA_ROOT,
+            feed_path=FEED_PATH,
+            i18n_feed_path=I18N_FEED_PATH,
+            max_cards=max(1, int(os.getenv("COMMUNITY_METRICS_MAX_CARDS", str(DEFAULT_COMMUNITY_METRICS_MAX_CARDS)) or DEFAULT_COMMUNITY_METRICS_MAX_CARDS)),
+            delay_seconds=max(0.0, float(os.getenv("COMMUNITY_METRICS_DELAY_SECONDS", str(DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS)) or DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS)),
+            window_days=max(1, int(os.getenv("COMMUNITY_METRICS_WINDOW_DAYS", str(DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)) or DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)),
+            trigger=trigger,
+        )
+        print(
+            "[ai-intel-community-metrics] "
+            f"status={state.get('status')} checked={_safe_int(state.get('checked'), 0)} "
+            f"updated={_safe_int(state.get('updated'), 0)} errors={_safe_int(state.get('errors'), 0)}",
+            flush=True,
+        )
+        return state
+    except Exception as exc:
+        state = update_community_metrics_state(
+            DATA_ROOT,
+            {
+                "status": "failed",
+                "trigger": trigger,
+                "finished_at": _now_iso(),
+                "last_error": str(exc),
+            },
+        )
+        print(f"[ai-intel-community-metrics] failed: {exc}", flush=True)
+        return state
+    finally:
+        COMMUNITY_METRICS_LOCK.release()
+
+
+def _spawn_community_metrics_backfill(trigger: str = "manual") -> bool:
+    if COMMUNITY_METRICS_LOCK.locked():
+        return False
+
+    def _worker() -> None:
+        _run_community_metrics_backfill(trigger=trigger)
+
+    Thread(target=_worker, daemon=True).start()
+    return True
+
+
+def _start_community_metrics_scheduler(
+    *,
+    interval_hours: float = DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS,
+    window_days: int = DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS,
+    run_on_startup: bool = True,
+) -> None:
+    safe_interval_hours = max(1.0, float(interval_hours or DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS))
+    safe_window_days = max(1, int(window_days or DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS))
+    interval_seconds = int(round(safe_interval_hours * 60 * 60))
+    first_delay = 120 if run_on_startup else interval_seconds
+    first_next = (datetime.now(timezone.utc) + timedelta(seconds=first_delay)).isoformat()
+    _mark_community_metrics_schedule(
+        enabled=True,
+        interval_hours=safe_interval_hours,
+        window_days=safe_window_days,
+        next_run_at=first_next,
+    )
+
+    def _loop() -> None:
+        delay = first_delay
+        while True:
+            time.sleep(max(1, int(delay)))
+            scheduled_at = _now_iso()
+            next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
+            _mark_community_metrics_schedule(
+                enabled=True,
+                interval_hours=safe_interval_hours,
+                window_days=safe_window_days,
+                next_run_at=next_run,
+                last_scheduled_at=scheduled_at,
+            )
+            state = _run_community_metrics_backfill(trigger="scheduled")
+            if str(state.get("status") or "").lower() == "skipped":
+                delay = min(300, interval_seconds)
+            else:
+                delay = interval_seconds
+
+    Thread(target=_loop, daemon=True).start()
+
+
 def _backup_state_snapshot() -> dict:
     with BACKUP_STATE_LOCK:
         return dict(BACKUP_STATE)
@@ -1532,6 +1684,8 @@ def _build_admin_status(limit: int = 10) -> dict:
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
+    community_metrics_state = _community_metrics_state_snapshot()
+    community_metrics_payload = feed.get("community_metrics") if isinstance(feed.get("community_metrics"), dict) else {}
     x_source_config = read_x_source_config()
     public_feedback = _public_feedback_snapshot(limit=12)
 
@@ -1654,6 +1808,16 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "detail": f"queued={queued_jobs} running={running_jobs}",
             },
             {
+                "name": "community_metrics_agent",
+                "status": str(community_metrics_state.get("status") or ("ok" if community_metrics_payload else "idle")),
+                "detail": (
+                    f"accounts={len(COMMUNITY_METRIC_ACCOUNTS)} "
+                    f"total={_safe_int(community_metrics_payload.get('total_score'), 0)} "
+                    f"24h={community_metrics_payload.get('delta_24h_score') if community_metrics_payload.get('delta_24h_score') is not None else '--'} "
+                    f"next={str(community_metrics_state.get('next_run_at') or '--')}"
+                ),
+            },
+            {
                 "name": "content_refresh_agent",
                 "status": "running" if running_refresh > 0 else "idle",
                 "detail": f"running={running_refresh} recent={_safe_int(content_refresh.get('total'), 0)}",
@@ -1712,6 +1876,10 @@ def _build_admin_status(limit: int = 10) -> dict:
         "backup": {
             **backup_status,
             "runtime": backup_state,
+        },
+        "community_metrics": {
+            "runtime": community_metrics_state,
+            "feed": community_metrics_payload,
         },
         "public_feedback": public_feedback,
     }
@@ -2723,6 +2891,18 @@ def main() -> int:
         default=not _env_flag("X_SYNC_ENABLED", True),
         help="Disable automatic X/Discord intel sync scheduler",
     )
+    parser.add_argument(
+        "--community-metrics-interval-hours",
+        type=float,
+        default=float(os.getenv("COMMUNITY_METRICS_INTERVAL_HOURS", str(DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS)) or DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS),
+        help="Regional community metric backfill interval in hours",
+    )
+    parser.add_argument(
+        "--no-community-metrics-scheduler",
+        action="store_true",
+        default=not _env_flag("COMMUNITY_METRICS_ENABLED", True),
+        help="Disable automatic regional community metric backfill",
+    )
     args = parser.parse_args()
 
     langs = [str(x).strip() for x in str(args.news_langs or "").split(",") if str(x).strip()]
@@ -2744,6 +2924,18 @@ def main() -> int:
     if I18N_WATCHDOG_ENABLED:
         _resume_pending_i18n_from_current_feed(trigger="startup-watchdog")
         _start_i18n_watchdog(interval_seconds=I18N_WATCHDOG_INTERVAL_SECONDS)
+    if args.no_community_metrics_scheduler:
+        _mark_community_metrics_schedule(
+            enabled=False,
+            interval_hours=max(1.0, float(args.community_metrics_interval_hours)),
+            window_days=max(1, int(os.getenv("COMMUNITY_METRICS_WINDOW_DAYS", str(DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)) or DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)),
+        )
+    else:
+        _start_community_metrics_scheduler(
+            interval_hours=max(1.0, float(args.community_metrics_interval_hours)),
+            window_days=max(1, int(os.getenv("COMMUNITY_METRICS_WINDOW_DAYS", str(DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)) or DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS)),
+            run_on_startup=_env_flag("COMMUNITY_METRICS_RUN_ON_STARTUP", True),
+        )
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving api={ROOT} static={STATIC_ROOT} at http://{args.host}:{args.port}")
@@ -2782,6 +2974,16 @@ def main() -> int:
         f"enabled={bool(I18N_WATCHDOG_ENABLED)} "
         f"interval={int(I18N_WATCHDOG_INTERVAL_SECONDS)}s"
     )
+    if args.no_community_metrics_scheduler:
+        print("[ai-intel] community metrics backfill disabled")
+    else:
+        print(
+            "[ai-intel] community metrics backfill "
+            f"every {max(1.0, float(args.community_metrics_interval_hours)):g} hours; "
+            f"accounts={','.join(COMMUNITY_METRIC_ACCOUNTS)} "
+            f"basis=likes+replies "
+            f"delay={max(0.0, float(os.getenv('COMMUNITY_METRICS_DELAY_SECONDS', str(DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS)) or DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS)):g}s"
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

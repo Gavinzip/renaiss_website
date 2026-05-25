@@ -206,6 +206,7 @@
 .map-toolbar-copy {
   display: grid;
   gap: 0.14rem;
+  min-width: 0;
 }
 
 .map-actions {
@@ -228,8 +229,16 @@
 .map-toolbar span,
 .pulse-side-head span {
   color: #66809e;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 800;
+}
+
+.map-toolbar-copy span {
+  display: block;
+  max-width: min(44vw, 28rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .map-toolbar button {
