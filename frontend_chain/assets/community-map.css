@@ -60,11 +60,13 @@
 }
 
 .community-map-hero h1 {
-  max-width: 760px;
+  display: inline-block;
+  max-width: 100%;
   font-family: var(--display-font);
-  font-size: clamp(2.5rem, 5.9vw, 5.5rem);
-  line-height: 0.94;
+  font-size: clamp(2.28rem, 4.65vw, 4.38rem);
+  line-height: 0.96;
   letter-spacing: 0;
+  white-space: nowrap;
   background:
     linear-gradient(108deg, #13243a 0%, #334c68 17%, #eff7ff 28%, #375c86 38%, #2568ff 54%, #a75ce8 70%, #f1aa68 84%, #13243a 100%);
   background-size: 180% 100%;
@@ -791,7 +793,8 @@
   }
 
   .community-map-hero h1 {
-    font-size: clamp(2.1rem, 13vw, 3.5rem);
+    font-size: clamp(1.52rem, 8.4vw, 2.55rem);
+    white-space: nowrap;
   }
 
   .pulse-summary,
