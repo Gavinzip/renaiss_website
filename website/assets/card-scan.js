@@ -35,6 +35,8 @@
     selectedConditionKey: "",
     snkrHistoryByProduct: {},
     renaissMarketByKey: {},
+    chartHoverPoints: [],
+    chartSize: { width: 720, height: 260 },
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -63,6 +65,7 @@
     matches: $("#scan-matches-list"),
     chart: $("#scan-price-chart"),
     chartNote: $("#scan-chart-note"),
+    chartTooltip: $("#scan-chart-tooltip"),
     currentPrice: $("#scan-current-price"),
     productId: $("#scan-product-id"),
     rangeRow: $("#scan-range-row"),
@@ -504,6 +507,17 @@
       </defs>`;
   }
 
+  function chartHoverSvg(width, height) {
+    return `
+      <g id="scan-chart-hover-layer" class="scan-chart-hover-layer" style="display:none" aria-hidden="true">
+        <line id="scan-chart-hover-line" x1="0" y1="14" x2="0" y2="${height - 18}" stroke="rgba(31,58,92,.24)" stroke-width="1.2"/>
+        <circle id="scan-chart-hover-aura" cx="0" cy="0" r="16" fill="url(#scanChartPointAura)" opacity=".78"/>
+        <circle id="scan-chart-hover-ring" cx="0" cy="0" r="7" fill="rgba(255,255,255,.86)" stroke="url(#scanChartRainbow)" stroke-width="2.2"/>
+        <circle id="scan-chart-hover-dot" cx="0" cy="0" r="2.7" fill="#173454"/>
+      </g>
+      <rect class="scan-chart-hit-area" x="0" y="0" width="${width}" height="${height}" fill="transparent" pointer-events="all"/>`;
+  }
+
   function chartGrid(width, height, pad, innerH) {
     const horizontal = [0.22, 0.5, 0.78].map((ratio) => {
       const y = pad.top + innerH * ratio;
@@ -523,6 +537,9 @@
     const innerW = width - pad.left - pad.right;
     const innerH = height - pad.top - pad.bottom;
     const price = Number(currentPrice);
+    state.chartHoverPoints = [];
+    state.chartSize = { width, height };
+    hideChartHover();
     refs.chart.innerHTML = "";
 
     refs.chart.insertAdjacentHTML(
@@ -536,6 +553,15 @@
       if (markerPrice) {
         const y = pad.top + innerH * 0.48;
         const lineEnd = width - pad.right - 18;
+        state.chartHoverPoints = [{
+          x: lineEnd,
+          y,
+          point: {
+            label: "Live floor",
+            price: markerPrice,
+            sourceCount: 0,
+          },
+        }];
         const signal = [
           `M ${pad.left} ${y.toFixed(1)}`,
           `Q ${(pad.left + innerW * 0.12).toFixed(1)} ${(y - 12).toFixed(1)} ${(pad.left + innerW * 0.23).toFixed(1)} ${(y - 1).toFixed(1)}`,
@@ -555,7 +581,8 @@
              <circle cx="${lineEnd}" cy="${y}" r="2.2" fill="#ffffff"/>
              <text x="${pad.left}" y="${y - 20}" fill="#173454" font-size="21" font-weight="900">${escapeHtml(formatPrice(markerPrice))}</text>
              <text x="${width - pad.right}" y="${height - 18}" text-anchor="end" fill="rgba(54,78,105,.58)" font-size="14" font-weight="800">live floor</text>
-           </g>`
+           </g>
+           ${chartHoverSvg(width, height)}`
         );
         refs.chartNote.textContent = state.marketSource === "Renaiss"
           ? "Renaiss 目前只有即時價格或不足兩個歷史點；彩色線只代表目前價格，不代表完整歷史走勢。"
@@ -581,6 +608,7 @@
       const y = pad.top + innerH - ((point.price - domainMin) / span) * innerH;
       return { x, y, point };
     });
+    state.chartHoverPoints = coords;
     const line = smoothChartPath(coords);
     const area = `${line} L ${coords[coords.length - 1].x.toFixed(1)} ${pad.top + innerH} L ${coords[0].x.toFixed(1)} ${pad.top + innerH} Z`;
     const latest = coords[coords.length - 1];
@@ -599,9 +627,70 @@
         <text x="${width - pad.right}" y="${height - 15}" text-anchor="end" fill="rgba(54,78,105,.62)" font-size="15" font-weight="800">${escapeHtml(coords[coords.length - 1].point.label)}</text>
         <text x="${width - pad.right}" y="${pad.top + 15}" text-anchor="end" fill="rgba(54,78,105,.56)" font-size="14" font-weight="800">${escapeHtml(formatPrice(max))}</text>
         <text x="${width - pad.right}" y="${height - pad.bottom - 2}" text-anchor="end" fill="rgba(54,78,105,.44)" font-size="14" font-weight="800">${escapeHtml(formatPrice(min))}</text>
-      </g>`
+      </g>
+      ${chartHoverSvg(width, height)}`
     );
     refs.chartNote.textContent = `${points.length} price points · latest ${formatPrice(points[points.length - 1].price)}`;
+  }
+
+  function nearestChartPoint(clientX) {
+    const points = state.chartHoverPoints;
+    if (!points.length) return null;
+    const rect = refs.chart.getBoundingClientRect();
+    if (!rect.width) return points[points.length - 1];
+    const chartX = ((clientX - rect.left) / rect.width) * state.chartSize.width;
+    return points.reduce((nearest, point) => (
+      Math.abs(point.x - chartX) < Math.abs(nearest.x - chartX) ? point : nearest
+    ), points[0]);
+  }
+
+  function showChartHover(point) {
+    if (!point) return;
+    const layer = refs.chart.querySelector("#scan-chart-hover-layer");
+    const line = refs.chart.querySelector("#scan-chart-hover-line");
+    const aura = refs.chart.querySelector("#scan-chart-hover-aura");
+    const ring = refs.chart.querySelector("#scan-chart-hover-ring");
+    const dot = refs.chart.querySelector("#scan-chart-hover-dot");
+    if (!layer || !line || !aura || !ring || !dot) return;
+
+    layer.style.display = "";
+    line.setAttribute("x1", point.x.toFixed(1));
+    line.setAttribute("x2", point.x.toFixed(1));
+    [aura, ring, dot].forEach((node) => {
+      node.setAttribute("cx", point.x.toFixed(1));
+      node.setAttribute("cy", point.y.toFixed(1));
+    });
+
+    const chartRect = refs.chart.getBoundingClientRect();
+    const wrapRect = refs.chart.parentElement.getBoundingClientRect();
+    const left = (point.x / state.chartSize.width) * chartRect.width + chartRect.left - wrapRect.left;
+    const top = (point.y / state.chartSize.height) * chartRect.height + chartRect.top - wrapRect.top;
+    const clampedLeft = Math.max(78, Math.min(wrapRect.width - 78, left));
+    const clampedTop = Math.max(18, top);
+    const sourceCount = Number(point.point?.sourceCount);
+    const sourceLabel = Number.isFinite(sourceCount) && sourceCount > 1 ? `${sourceCount} trades` : "";
+    refs.chartTooltip.hidden = false;
+    refs.chartTooltip.style.left = `${clampedLeft}px`;
+    refs.chartTooltip.style.top = `${clampedTop}px`;
+    refs.chartTooltip.innerHTML = `
+      <span>${escapeHtml(point.point?.label || shortDate(point.point?.date) || "Price")}</span>
+      <strong>${escapeHtml(formatPrice(point.point?.price))}</strong>
+      ${sourceLabel ? `<em>${escapeHtml(sourceLabel)}</em>` : ""}
+    `;
+  }
+
+  function hideChartHover() {
+    const layer = refs.chart?.querySelector("#scan-chart-hover-layer");
+    if (layer) layer.style.display = "none";
+    if (refs.chartTooltip) {
+      refs.chartTooltip.hidden = true;
+      refs.chartTooltip.innerHTML = "";
+    }
+  }
+
+  function handleChartPointerMove(event) {
+    if (!state.chartHoverPoints.length) return;
+    showChartHover(nearestChartPoint(event.clientX));
   }
 
   function renderMatches() {
@@ -1076,6 +1165,9 @@
     });
     renderDetail();
   });
+  refs.chart.addEventListener("pointermove", handleChartPointerMove);
+  refs.chart.addEventListener("pointerleave", hideChartHover);
+  refs.chart.addEventListener("pointercancel", hideChartHover);
   refs.resetButton.addEventListener("click", reset);
   drawChart([], null);
 })();

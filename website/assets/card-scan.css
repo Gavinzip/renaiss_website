@@ -436,6 +436,17 @@ body.card-scan-body {
   }
 }
 
+@keyframes scan-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 7px)) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, calc(-100% - 12px)) scale(1);
+  }
+}
+
 .scan-card-detail {
   margin-top: 1rem;
   display: grid;
@@ -631,6 +642,62 @@ body.card-scan-body {
   display: block;
   width: 100%;
   height: 260px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.scan-chart-hover-layer {
+  pointer-events: none;
+}
+
+.scan-chart-hit-area {
+  cursor: crosshair;
+}
+
+.scan-chart-tooltip {
+  z-index: 3;
+  position: absolute;
+  min-width: 112px;
+  padding: 0.52rem 0.64rem;
+  border-radius: 14px;
+  border: 1px solid rgba(132, 190, 248, 0.46);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 14px 34px rgba(45, 86, 130, 0.18),
+    0 0 26px rgba(241, 108, 255, 0.12);
+  backdrop-filter: blur(16px);
+  color: #183456;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 12px));
+  animation: scan-tooltip-in 140ms ease both;
+}
+
+.scan-chart-tooltip span,
+.scan-chart-tooltip em {
+  display: block;
+  color: #667f9a;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.scan-chart-tooltip strong {
+  display: block;
+  margin-top: 0.16rem;
+  color: #173454;
+  font-size: 1rem;
+  font-weight: 950;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.scan-chart-tooltip em {
+  margin-top: 0.18rem;
+  color: #7690aa;
+  font-size: 0.6rem;
 }
 
 .scan-chart-note {

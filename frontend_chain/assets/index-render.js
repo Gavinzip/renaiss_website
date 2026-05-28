@@ -1409,6 +1409,37 @@
       return "";
     }
 
+    function sbtUnlockConditionLine(card) {
+      return firstSbtDetailValue(card, [/^\s*SBT\s*(?:解鎖條件|解锁条件)\s*[:：]\s*/i], 160);
+    }
+
+    function sbtNamesFromUnlockCondition(raw) {
+      const text = normalizeSbtText(raw, 180);
+      if (!text) return [];
+      const rows = [];
+      const explicitNames = text.matchAll(/\b([A-Za-z0-9][A-Za-z0-9 +'._-]{1,54}\s+SBT)\b/gi);
+      for (const match of explicitNames) rows.push(match[1]);
+      const combo = text.match(/\b([A-Za-z][A-Za-z0-9 -]*(?:\s*\/\s*[A-Za-z][A-Za-z0-9 -]*){1,5})\s*卡[^，。；;]*?(?:對應|对应)\s*SBT/i);
+      if (combo) {
+        combo[1]
+          .split("/")
+          .map((x) => normalizeSbtText(`${x} SBT`, 64))
+          .filter(Boolean)
+          .forEach((x) => rows.push(x));
+      }
+      const seen = new Set();
+      return rows
+        .map((x) => normalizeSbtText(x, 64))
+        .filter((x) => x && !isWeakSbtName(x))
+        .filter((x) => {
+          const key = x.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 4);
+    }
+
     function isActionableSbtMethod(raw) {
       const text = normalizeSbtMethodText(raw, 160);
       if (!text) return false;
@@ -1471,6 +1502,7 @@
         const rewardLine = firstSbtDetailValue(card, [/^\s*(?:獎勵|奖励)\s*[:：]\s*/i], 96);
         const rewardName = extractSbtNameFromText(rewardLine);
         if (rewardName) rows.push(rewardName);
+        rows.push(...sbtNamesFromUnlockCondition(sbtUnlockConditionLine(card)));
         rows.push(...sbtInlineEntriesForCard(card).map((entry) => entry.name));
       }
       const seen = new Set();
@@ -1502,7 +1534,8 @@
         const condition = firstSbtDetailValue(card, [/^\s*(?:領取條件|领取条件|取得條件|获取条件)\s*[:：]\s*/i], 96);
         const participation = firstSbtDetailValue(card, [/^\s*(?:參與方式|参与方式)\s*[:：]\s*/i], 96);
         const operation = firstSbtDetailValue(card, [/^\s*(?:操作流程)\s*[:：]\s*/i], 96);
-        const parts = [condition, participation, operation]
+        const unlockCondition = sbtUnlockConditionLine(card);
+        const parts = [condition, participation, operation, unlockCondition]
           .map((x) => normalizeSbtMethodText(x, 96))
           .filter(Boolean);
         const seen = new Set();
