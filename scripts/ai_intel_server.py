@@ -13,7 +13,10 @@ import os
 import re
 import secrets
 import time
+import urllib.error
+import urllib.request
 from http.cookies import SimpleCookie
+from decimal import Decimal, InvalidOperation
 from datetime import timedelta
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -21,6 +24,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import parse_qs
+from urllib.parse import quote
 from urllib.parse import unquote
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -168,9 +172,24 @@ DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS = 1.0
 DEFAULT_COMMUNITY_METRICS_WINDOW_DAYS = 30
 DEFAULT_COMMUNITY_METRICS_MAX_CARDS = 160
 DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS = 3.0
+CARD_SCAN_API_BASE = str(os.getenv("CARD_SCAN_API_BASE") or "https://renaissscan.zeabur.app").rstrip("/")
+CARD_SCAN_PROXY_MAX_BYTES = int(os.getenv("CARD_SCAN_PROXY_MAX_BYTES", str(12 * 1024 * 1024)) or (12 * 1024 * 1024))
+CARD_SCAN_PROXY_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_PROXY_TIMEOUT_SECONDS", "95") or 95)
+SNKRDUNK_BASE_URL = str(os.getenv("SNKRDUNK_BASE_URL") or "https://snkrdunk.com").rstrip("/")
+CARD_SCAN_SNKR_PER_PAGE = int(os.getenv("CARD_SCAN_SNKR_PER_PAGE", "100") or 100)
+CARD_SCAN_SNKR_MAX_PAGES = int(os.getenv("CARD_SCAN_SNKR_MAX_PAGES", "20") or 20)
+CARD_SCAN_SNKR_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_SNKR_TIMEOUT_SECONDS", "20") or 20)
+CARD_SCAN_SNKR_CACHE_SECONDS = float(os.getenv("CARD_SCAN_SNKR_CACHE_SECONDS", str(60 * 60)) or (60 * 60))
+RENAISS_API_BASE = str(os.getenv("RENAISS_API_BASE") or "https://api.renaiss.xyz").rstrip("/")
+CARD_SCAN_RENAISS_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_TIMEOUT_SECONDS", "20") or 20)
+CARD_SCAN_RENAISS_CACHE_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_CACHE_SECONDS", str(10 * 60)) or (10 * 60))
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
+CARD_SCAN_SNKR_HISTORY_CACHE: dict[str, tuple[float, dict]] = {}
+CARD_SCAN_SNKR_HISTORY_LOCK = Lock()
+CARD_SCAN_RENAISS_MARKET_CACHE: dict[str, tuple[float, dict]] = {}
+CARD_SCAN_RENAISS_MARKET_LOCK = Lock()
 AUTH_COOKIE_NAME = "intel_admin_session"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
 DEFAULT_ALLOWED_ORIGINS = {
@@ -274,6 +293,8 @@ def _parse_iso_utc(raw: str | None) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
     try:
         dt = datetime.fromisoformat(text)
     except Exception:
@@ -281,6 +302,77 @@ def _parse_iso_utc(raw: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _parse_iso_ms(raw: str | None) -> float | None:
+    dt = _parse_iso_utc(raw)
+    if not dt:
+        return None
+    return dt.timestamp() * 1000
+
+
+def _safe_float(raw: object) -> float | None:
+    try:
+        value = float(raw)
+    except Exception:
+        return None
+    if value != value:
+        return None
+    return value
+
+
+def _decimal_amount(raw: object) -> Decimal | None:
+    text = str(raw or "").strip()
+    if not text or text.startswith("NO-"):
+        return None
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite():
+        return None
+    return value
+
+
+def _usdt_wei_to_float(raw: object) -> float | None:
+    value = _decimal_amount(raw)
+    if value is None:
+        return None
+    return float(value / Decimal("1000000000000000000"))
+
+
+def _usd_cents_to_float(raw: object) -> float | None:
+    value = _decimal_amount(raw)
+    if value is None:
+        return None
+    return float(value / Decimal("100"))
+
+
+def _normalize_market_token(raw: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(raw or "").lower()).strip()
+
+
+def _normalize_card_number(raw: object) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    tokens = re.findall(r"[A-Za-z]*\d+[A-Za-z]*", text)
+    if tokens:
+        return tokens[-1].lstrip("0") or tokens[-1]
+    digits = re.findall(r"\d+", text)
+    return digits[-1].lstrip("0") if digits else text
+
+
+def _collectible_attribute(collectible: dict, name: str) -> str:
+    attrs = collectible.get("attributes")
+    if not isinstance(attrs, list):
+        return ""
+    for attr in attrs:
+        if not isinstance(attr, dict):
+            continue
+        if str(attr.get("trait") or "").strip().lower() == name.lower():
+            return str(attr.get("value") or "").strip()
+    return ""
 
 
 def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
@@ -2220,7 +2312,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
             "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -2430,6 +2522,506 @@ class Handler(SimpleHTTPRequestHandler):
             return False
         return self._require_admin_access()
 
+    def _send_card_scan_proxy(self, body: bytes) -> None:
+        if not self._is_trusted_write_origin():
+            self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
+            return
+        if len(body) <= 0:
+            self._send_json({"ok": False, "error": "file is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if len(body) > CARD_SCAN_PROXY_MAX_BYTES:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": f"image too large; max {CARD_SCAN_PROXY_MAX_BYTES // (1024 * 1024)}MB",
+                },
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return
+        content_type = str(self.headers.get("Content-Type") or "").strip()
+        if "multipart/form-data" not in content_type.lower():
+            self._send_json({"ok": False, "error": "multipart form-data is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        parsed = urlparse(self.path)
+        incoming = parse_qs(parsed.query, keep_blank_values=True)
+        params = {
+            "crop": "true",
+            "crop_mode": "tcgp_obb",
+            "top_k": "5",
+            "language_rerank": "true",
+            "language_ocr": "true",
+            "include_debug_crop_base64": "true",
+        }
+        allowed = {
+            "crop",
+            "crop_mode",
+            "fallback_to_original",
+            "top_k",
+            "per_index_top_k",
+            "visual_rerank",
+            "language_rerank",
+            "language_ocr",
+            "language_ocr_engine",
+            "card_code_ocr",
+            "slab_barcode_lookup",
+            "include_debug_crop_base64",
+        }
+        for key in allowed:
+            if key in incoming and incoming[key]:
+                params[key] = str(incoming[key][-1])
+        query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
+        target = f"{CARD_SCAN_API_BASE}/recognize?{query}"
+        request = urllib.request.Request(
+            target,
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": content_type,
+                "Content-Length": str(len(body)),
+                "User-Agent": "renaiss-aggregator-card-scan/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=CARD_SCAN_PROXY_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+                status = HTTPStatus(response.status) if response.status in HTTPStatus._value2member_map_ else HTTPStatus.OK
+        except urllib.error.HTTPError as exc:
+            raw = exc.read()
+            status = HTTPStatus(exc.code) if exc.code in HTTPStatus._value2member_map_ else HTTPStatus.BAD_GATEWAY
+        except TimeoutError:
+            self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"card scan failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+            if isinstance(payload, dict):
+                payload.setdefault("ok", 200 <= int(status) < 300)
+                payload.setdefault("_proxy", {"target": "recognize", "api_base": CARD_SCAN_API_BASE})
+                self._send_json(payload, status=status)
+                return
+        except Exception:
+            pass
+        self._send_json(
+            {"ok": False, "error": "card scan returned invalid json", "status": int(status)},
+            status=HTTPStatus.BAD_GATEWAY,
+        )
+
+    def _send_card_scan_snkr_history(self) -> None:
+        try:
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+            product_id = str((params.get("product_id") or [""])[0]).strip()
+        except Exception:
+            product_id = ""
+        if not product_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", product_id):
+            self._send_json({"ok": False, "error": "valid product_id is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        now = time.time()
+        with CARD_SCAN_SNKR_HISTORY_LOCK:
+            cached = CARD_SCAN_SNKR_HISTORY_CACHE.get(product_id)
+            if cached and now - cached[0] < CARD_SCAN_SNKR_CACHE_SECONDS:
+                payload = dict(cached[1])
+                payload.setdefault("cache", "hit")
+                self._send_json(payload)
+                return
+
+        try:
+            payload = self._fetch_snkr_trading_history(product_id)
+        except urllib.error.HTTPError as exc:
+            self._send_json(
+                {"ok": False, "error": f"SNKRDUNK returned HTTP {exc.code}", "product_id": product_id},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        except TimeoutError:
+            self._send_json({"ok": False, "error": "SNKRDUNK history timeout", "product_id": product_id}, status=HTTPStatus.GATEWAY_TIMEOUT)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"SNKRDUNK history failed: {exc}", "product_id": product_id}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        with CARD_SCAN_SNKR_HISTORY_LOCK:
+            CARD_SCAN_SNKR_HISTORY_CACHE[product_id] = (now, payload)
+        self._send_json(payload)
+
+    def _fetch_snkr_trading_history(self, product_id: str) -> dict:
+        cutoff_ms = (time.time() - 365 * 24 * 60 * 60) * 1000
+        trades: list[dict] = []
+        seen: set[str] = set()
+        pages = 0
+        for page in range(1, max(1, CARD_SCAN_SNKR_MAX_PAGES) + 1):
+            pages = page
+            query = f"perPage={CARD_SCAN_SNKR_PER_PAGE}&page={page}"
+            target = f"{SNKRDUNK_BASE_URL}/en/v1/streetwears/{quote(product_id, safe='')}/trading-histories?{query}"
+            request = urllib.request.Request(
+                target,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": f"{SNKRDUNK_BASE_URL}/",
+                    "Origin": SNKRDUNK_BASE_URL,
+                    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+                    "User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+                        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+                    ),
+                },
+            )
+            with urllib.request.urlopen(request, timeout=CARD_SCAN_SNKR_TIMEOUT_SECONDS) as response:
+                page_payload = json.loads(response.read().decode("utf-8"))
+            histories = page_payload.get("histories") if isinstance(page_payload, dict) else []
+            if not isinstance(histories, list) or not histories:
+                break
+            oldest_ms: float | None = None
+            for history in histories:
+                trade = self._snkr_trade_from_history(history)
+                if not trade:
+                    continue
+                parsed_ms = _parse_iso_ms(str(trade.get("date") or ""))
+                if parsed_ms is not None and (oldest_ms is None or parsed_ms < oldest_ms):
+                    oldest_ms = parsed_ms
+                key = f"{trade.get('date')}|{trade.get('price_usd')}|{trade.get('condition')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                trades.append(trade)
+            if oldest_ms is not None and oldest_ms <= cutoff_ms:
+                break
+            if len(histories) < CARD_SCAN_SNKR_PER_PAGE:
+                break
+        trades.sort(key=lambda item: str(item.get("date") or ""))
+        return {
+            "ok": True,
+            "product_id": product_id,
+            "source": "SNKRDUNK",
+            "pages": pages,
+            "trades": trades,
+            "trade_count": len(trades),
+            "cache": "miss",
+        }
+
+    def _snkr_trade_from_history(self, history: object) -> dict | None:
+        if not isinstance(history, dict):
+            return None
+        price = _safe_float(history.get("price"))
+        traded_at = str(history.get("tradedAt") or "").strip()
+        if price is None or price <= 0 or not traded_at:
+            return None
+        price_format = str(history.get("priceFormat") or "").strip()
+        price_usd = price if ("$" in price_format or "USD" in price_format.upper()) else None
+        return {
+            "date": traded_at,
+            "price": price,
+            "price_usd": price_usd,
+            "price_format": price_format,
+            "condition": str(history.get("condition") or "Unknown").strip() or "Unknown",
+        }
+
+    def _send_card_scan_renaiss_market(self) -> None:
+        try:
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+        except Exception:
+            params = {}
+        name = str((params.get("name") or [""])[0]).strip()
+        number = str((params.get("number") or [""])[0]).strip()
+        card_code = str((params.get("card_code") or [""])[0]).strip()
+        set_id = str((params.get("set_id") or [""])[0]).strip()
+        language = str((params.get("language") or [""])[0]).strip()
+        serial = str((params.get("serial") or [""])[0]).strip()
+        explicit_query = str((params.get("q") or [""])[0]).strip()
+        limit = max(1, min(50, _safe_int((params.get("limit") or ["24"])[0], 24)))
+
+        if not any([name, number, card_code, explicit_query]):
+            self._send_json({"ok": False, "error": "name, number, card_code, or q is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        cache_key = json.dumps(
+            {
+                "name": name,
+                "number": number,
+                "card_code": card_code,
+                "set_id": set_id,
+                "language": language,
+                "serial": serial,
+                "q": explicit_query,
+                "limit": limit,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        now = time.time()
+        with CARD_SCAN_RENAISS_MARKET_LOCK:
+            cached = CARD_SCAN_RENAISS_MARKET_CACHE.get(cache_key)
+            if cached and now - cached[0] < CARD_SCAN_RENAISS_CACHE_SECONDS:
+                payload = dict(cached[1])
+                payload.setdefault("cache", "hit")
+                self._send_json(payload)
+                return
+
+        try:
+            payload = self._fetch_renaiss_market(name, number, card_code, set_id, language, serial, explicit_query, limit)
+        except urllib.error.HTTPError as exc:
+            self._send_json(
+                {"ok": False, "error": f"Renaiss marketplace returned HTTP {exc.code}"},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        except TimeoutError:
+            self._send_json({"ok": False, "error": "Renaiss marketplace timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"Renaiss marketplace failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        with CARD_SCAN_RENAISS_MARKET_LOCK:
+            CARD_SCAN_RENAISS_MARKET_CACHE[cache_key] = (now, payload)
+        self._send_json(payload)
+
+    def _fetch_renaiss_market(
+        self,
+        name: str,
+        number: str,
+        card_code: str,
+        set_id: str,
+        language: str,
+        serial: str,
+        explicit_query: str,
+        limit: int,
+    ) -> dict:
+        normalized_number = _normalize_card_number(number or card_code)
+        queries: list[str] = []
+        seen_queries: set[str] = set()
+
+        def add_query(raw: str | None) -> None:
+            value = re.sub(r"\s+", " ", str(raw or "")).strip()
+            if len(value) < 3:
+                return
+            key = value.lower()
+            if key in seen_queries:
+                return
+            seen_queries.add(key)
+            queries.append(value)
+
+        add_query(explicit_query)
+        add_query(" ".join(part for part in [name, normalized_number] if part))
+        add_query(" ".join(part for part in [name, card_code] if part))
+        add_query(card_code)
+        add_query(normalized_number)
+        add_query(name)
+
+        candidates: dict[str, dict] = {}
+        for query in queries[:5]:
+            market = self._renaiss_marketplace_request(query, limit=max(limit, 24))
+            collection = market.get("collection") if isinstance(market, dict) else []
+            if not isinstance(collection, list):
+                continue
+            for collectible in collection:
+                if not isinstance(collectible, dict):
+                    continue
+                token_id = str(collectible.get("tokenId") or "").strip()
+                if not token_id:
+                    continue
+                candidates[token_id] = collectible
+
+        listings = [
+            self._renaiss_listing_payload(item, name, normalized_number, set_id, language, serial)
+            for item in candidates.values()
+        ]
+        listings = [item for item in listings if item.get("score", 0) > 0]
+        listings.sort(
+            key=lambda item: (
+                0 if item.get("confidence") == "exact" else 1,
+                0 if item.get("is_listed") else 1,
+                -int(item.get("score") or 0),
+                float(item.get("ask_usdt") or 10**12),
+            )
+        )
+        best = next((item for item in listings if item.get("is_listed")), listings[0] if listings else None)
+        if best and best.get("token_id"):
+            detail = self._fetch_renaiss_card_detail(str(best["token_id"]))
+            if detail:
+                best = dict(best)
+                best["detail"] = detail
+                for index, item in enumerate(listings):
+                    if item.get("token_id") == best.get("token_id"):
+                        listings[index] = best
+                        break
+
+        return {
+            "ok": True,
+            "source": "Renaiss",
+            "query": {
+                "name": name,
+                "number": normalized_number,
+                "card_code": card_code,
+                "set_id": set_id,
+                "language": language,
+                "serial": serial,
+                "queries": queries,
+            },
+            "listings": listings[:limit],
+            "best": best,
+            "cache": "miss",
+        }
+
+    def _renaiss_marketplace_request(self, query: str, limit: int = 24) -> dict:
+        params = {
+            "listedOnly": "false",
+            "limit": str(limit),
+            "offset": "0",
+            "sortBy": "listDate",
+            "sortOrder": "desc",
+            "search": query,
+        }
+        target = f"{RENAISS_API_BASE}/v0/marketplace?{self._query_string(params)}"
+        request = urllib.request.Request(
+            target,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-scan/1.0",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _fetch_renaiss_card_detail(self, token_id: str) -> dict | None:
+        if not re.fullmatch(r"[0-9]{10,90}", token_id):
+            return None
+        params = {
+            "includeActivities": "true",
+            "verbosePrice": "true",
+        }
+        target = f"{RENAISS_API_BASE}/v0/cards/{quote(token_id, safe='')}?{self._query_string(params)}"
+        request = urllib.request.Request(
+            target,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-scan/1.0",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        pricing = payload.get("pricing") if isinstance(payload.get("pricing"), dict) else {}
+        history = pricing.get("price_history") if isinstance(pricing, dict) else []
+        history_points: list[dict] = []
+        if isinstance(history, list):
+            for point in history:
+                if not isinstance(point, dict):
+                    continue
+                amount = point.get("amount") if isinstance(point.get("amount"), dict) else {}
+                price = self._renaiss_amount_to_usd(amount)
+                timestamp = str(point.get("timestamp") or "").strip()
+                date = self._renaiss_timestamp_to_iso(timestamp)
+                if price is None or not date:
+                    continue
+                history_points.append({"date": date, "price_usd": price, "source": "Renaiss"})
+        last_sale = self._renaiss_amount_to_usd(pricing.get("last_sale") if isinstance(pricing, dict) else None)
+        current = self._renaiss_amount_to_usd(pricing.get("price") if isinstance(pricing, dict) else None)
+        return {
+            "price_usd": current,
+            "last_sale_usd": last_sale,
+            "price_history": history_points,
+            "activity_count": len((payload.get("activities") or {}).get("activities") or []) if isinstance(payload.get("activities"), dict) else 0,
+        }
+
+    def _renaiss_listing_payload(
+        self,
+        collectible: dict,
+        target_name: str,
+        target_number: str,
+        target_set_id: str,
+        target_language: str,
+        target_serial: str,
+    ) -> dict:
+        token_id = str(collectible.get("tokenId") or "").strip()
+        card_number = _normalize_card_number(collectible.get("cardNumber"))
+        language = _collectible_attribute(collectible, "Language")
+        serial = _collectible_attribute(collectible, "Serial")
+        score = 0
+        reasons: list[str] = []
+        target_serial_digits = "".join(re.findall(r"\d+", target_serial))
+        serial_digits = "".join(re.findall(r"\d+", serial))
+        if target_serial_digits and serial_digits and serial_digits.endswith(target_serial_digits):
+            score += 90
+            reasons.append("serial")
+        if target_number and card_number and target_number == card_number:
+            score += 55
+            reasons.append("card number")
+        target_tokens = set(_normalize_market_token(target_name).split())
+        candidate_tokens = set(_normalize_market_token(" ".join(
+            str(collectible.get(key) or "") for key in ["name", "setName", "pokemonName"]
+        )).split())
+        if target_tokens and candidate_tokens:
+            overlap = len(target_tokens.intersection(candidate_tokens))
+            if overlap:
+                score += min(25, int((overlap / max(1, len(target_tokens))) * 25))
+                reasons.append("name")
+        if target_language and language and target_language.lower() in language.lower():
+            score += 12
+            reasons.append("language")
+        if target_set_id:
+            candidate_text = _normalize_market_token(" ".join(
+                str(collectible.get(key) or "") for key in ["name", "setName"]
+            ))
+            if _normalize_market_token(target_set_id) in candidate_text:
+                score += 10
+                reasons.append("set")
+        if str(collectible.get("gradingCompany") or "").strip():
+            score += 4
+            reasons.append("graded")
+        ask_usdt = _usdt_wei_to_float(collectible.get("askPriceInUSDT"))
+        fmv_usd = _usd_cents_to_float(collectible.get("fmvPriceInUSD"))
+        is_listed = ask_usdt is not None and ask_usdt > 0
+        confidence = "exact" if ("serial" in reasons or (score >= 55 and "card number" in reasons)) else ("similar" if score >= 25 else "none")
+        return {
+            "token_id": token_id,
+            "name": str(collectible.get("name") or ""),
+            "set_name": str(collectible.get("setName") or ""),
+            "card_number": str(collectible.get("cardNumber") or ""),
+            "pokemon_name": str(collectible.get("pokemonName") or ""),
+            "grading_company": str(collectible.get("gradingCompany") or ""),
+            "grade": str(collectible.get("grade") or ""),
+            "language": language,
+            "serial": serial,
+            "ask_usdt": ask_usdt,
+            "fmv_usd": fmv_usd,
+            "is_listed": is_listed,
+            "score": score,
+            "confidence": confidence,
+            "reasons": reasons,
+            "url": f"https://www.renaiss.xyz/card/{token_id}" if token_id else "",
+            "image_url": (
+                f"https://8nothtoc5ds7a0x3.public.blob.vercel-storage.com/graded-cards-renders/{quote(serial, safe='')}/nft_image.jpg"
+                if serial and re.fullmatch(r"[A-Za-z0-9_-]+", serial)
+                else ""
+            ),
+        }
+
+    def _renaiss_amount_to_usd(self, amount: object) -> float | None:
+        if not isinstance(amount, dict):
+            return None
+        token = str(amount.get("token") or "").strip().upper()
+        value = amount.get("value")
+        if token == "USDT":
+            return _usdt_wei_to_float(value)
+        return _safe_float(value)
+
+    def _renaiss_timestamp_to_iso(self, raw: str) -> str:
+        value = _safe_float(raw)
+        if value is None:
+            dt = _parse_iso_utc(raw)
+            return dt.isoformat() if dt else ""
+        return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+    def _query_string(self, params: dict[str, str]) -> str:
+        return "&".join(f"{quote(str(key), safe='')}={quote(str(value), safe='')}" for key, value in params.items())
+
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._set_cors_headers()
@@ -2441,6 +3033,12 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/auth/me":
             self._send_json(self._auth_me_payload())
+            return
+        if path == "/api/card-scan/snkr-history":
+            self._send_card_scan_snkr_history()
+            return
+        if path == "/api/card-scan/renaiss-market":
+            self._send_card_scan_renaiss_market()
             return
         if path == "/api/intel/admin-status":
             if not self._require_admin_access():
@@ -2515,12 +3113,16 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/agent",
             "/api/intel/translate-texts",
             "/api/intel/public-feedback",
+            "/api/card-scan/recognize",
         }:
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
 
         length = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(length) if length > 0 else b"{}"
+        if path == "/api/card-scan/recognize":
+            self._send_card_scan_proxy(body)
+            return
         try:
             payload = json.loads(body.decode("utf-8")) if body else {}
         except Exception:
@@ -2960,7 +3562,8 @@ def main() -> int:
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
-        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback"
+        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/card-scan/recognize, "
+        "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market"
     )
     print(
         "[ai-intel] auth mode: "

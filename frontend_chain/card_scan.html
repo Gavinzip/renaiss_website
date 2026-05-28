@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss Card Scan recognizes Pokemon and One Piece cards and surfaces market signals." />
+  <title>Renaiss Card Scan</title>
+  <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260528-card-scan1"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/card-scan.css?v=20260528-card-scan1" />
+</head>
+<body class="card-scan-body">
+  <main class="shell card-scan-shell">
+    <header class="nav">
+      <div class="nav-main-row">
+        <a class="brand" href="./index.html#hero">
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <span class="brand-text">Renaiss Aggregator</span>
+        </a>
+        <nav class="nav-links">
+          <a href="./game.html">Game</a>
+          <a href="./index.html#cat-events">聚合器</a>
+          <a href="./community_map.html">聲量地圖</a>
+          <a class="is-active" href="./card_scan.html" aria-current="page">Card Scan</a>
+          <a href="./agent.html">Renaiss Agent</a>
+          <a href="./beginner.html">新手教學</a>
+          <a href="./feedback.html">回饋</a>
+        </nav>
+        <div class="nav-actions">
+          <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">Open Renaiss</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="card-scan-hero observe" style="--delay: 42ms;">
+      <span class="chip card-scan-chip"><iconify-icon icon="lucide:scan-line"></iconify-icon> TCG Vision</span>
+      <h1 class="card-scan-title"><span>Card Scan</span></h1>
+      <p class="card-scan-sub">上傳或拍攝卡片，辨識 Pokemon / One Piece，並把 SNKR / Renaiss 市場訊號放到同一個畫面。</p>
+    </section>
+
+    <section class="card-scan-grid">
+      <article id="card-scan-dropzone" class="scan-dropzone" tabindex="0">
+        <div class="scan-drop-glow" aria-hidden="true"></div>
+        <input id="card-scan-file" class="scan-file-input" type="file" accept="image/*" capture="environment" />
+        <div id="scan-upload-copy" class="scan-upload-copy">
+          <span class="scan-upload-icon"><iconify-icon icon="lucide:image-up"></iconify-icon></span>
+          <h2>Drop a card image</h2>
+          <p>支援 PSA slab、單張卡、手機拍照。電腦版會在左側保留圖片，右側顯示辨識與價格資訊。</p>
+          <button id="card-scan-pick" class="scan-primary-btn" type="button">
+            <iconify-icon icon="lucide:camera"></iconify-icon>
+            <span>選擇圖片 / 拍照</span>
+          </button>
+        </div>
+
+        <div id="scan-preview-stage" class="scan-preview-stage" hidden>
+          <div class="scan-preview-card">
+            <img id="scan-input-preview" alt="Uploaded card preview" />
+          </div>
+          <div class="scan-preview-tools">
+            <div id="scan-image-tabs" class="scan-image-tabs">
+              <button type="button" class="is-active" data-scan-image-tab="input">原圖</button>
+              <button type="button" data-scan-image-tab="crop" disabled>裁切</button>
+              <button type="button" data-scan-image-tab="reference" disabled>參考圖</button>
+            </div>
+            <button id="card-scan-repick" class="scan-repick-btn" type="button">
+              <iconify-icon icon="lucide:image-plus"></iconify-icon>
+              <span>重新上傳</span>
+            </button>
+          </div>
+        </div>
+      </article>
+
+      <article class="scan-result-panel">
+        <div class="scan-result-head">
+          <div>
+            <span class="scan-kicker">Recognition</span>
+            <h2 id="scan-result-title">等待卡片</h2>
+          </div>
+          <button id="card-scan-reset" class="scan-ghost-btn" type="button" disabled>
+            <iconify-icon icon="lucide:rotate-ccw"></iconify-icon>
+            <span>重設</span>
+          </button>
+        </div>
+
+        <div id="card-scan-status" class="scan-status">
+          <span class="scan-status-dot"></span>
+          <span>選一張卡片開始辨識。</span>
+        </div>
+
+        <div id="scan-loading" class="scan-loading" hidden>
+          <div class="scan-orbit" aria-hidden="true"></div>
+          <div>
+            <strong>Reading visual fingerprint</strong>
+            <p>正在裁切、OCR 語言、比對 index 與 rerank。</p>
+          </div>
+        </div>
+
+        <div id="scan-empty-state" class="scan-empty-state">
+          <iconify-icon icon="lucide:badge-question-mark"></iconify-icon>
+          <p>結果會出現在這裡。辨識成功後可以切換 Top matches、查看 SNKR 連結與價格訊號。</p>
+        </div>
+
+        <div id="scan-card-detail" class="scan-card-detail" hidden>
+          <div class="scan-card-main">
+            <img id="scan-card-thumb" alt="" />
+            <div>
+              <div id="scan-card-score" class="scan-score-pill">--</div>
+              <h3 id="scan-card-name">--</h3>
+              <p id="scan-card-meta">--</p>
+            </div>
+          </div>
+          <div id="scan-market-metrics" class="scan-market-metrics"></div>
+          <div id="scan-diagnostics" class="scan-diagnostics" hidden></div>
+          <div id="scan-result-actions" class="scan-result-actions"></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="scan-market-layout">
+      <article class="scan-price-panel">
+        <div class="scan-section-head">
+          <div>
+            <span class="scan-kicker">Market chart</span>
+            <h2>Price Signal</h2>
+          </div>
+          <div id="scan-market-source-tabs" class="scan-market-source-tabs" hidden>
+            <button type="button" class="is-active" data-market-source="SNKR">SNKR</button>
+            <button type="button" data-market-source="Renaiss">Renaiss</button>
+          </div>
+        </div>
+        <div class="scan-price-summary">
+          <div>
+            <span>Current floor</span>
+            <strong id="scan-current-price">--</strong>
+          </div>
+          <div>
+            <span>Product</span>
+            <strong id="scan-product-id">--</strong>
+          </div>
+        </div>
+        <div class="scan-chart-wrap">
+          <svg id="scan-price-chart" class="scan-price-chart" viewBox="0 0 720 260" preserveAspectRatio="none" role="img" aria-label="Card price chart"></svg>
+          <div id="scan-chart-note" class="scan-chart-note">掃描後會顯示可用的價格資料。</div>
+        </div>
+        <div id="scan-condition-row" class="scan-condition-row" hidden></div>
+        <div id="scan-range-row" class="scan-range-row" hidden>
+          <button type="button" class="is-active" data-range="1d">1D</button>
+          <button type="button" data-range="1w">1W</button>
+          <button type="button" data-range="1m">1M</button>
+          <button type="button" data-range="1y">1Y</button>
+        </div>
+      </article>
+
+      <article class="scan-matches-panel">
+        <div class="scan-section-head">
+          <div>
+            <span class="scan-kicker">Top matches</span>
+            <h2>Candidate Stack</h2>
+          </div>
+        </div>
+        <div id="scan-matches-list" class="scan-matches-list">
+          <div class="scan-match-empty">尚未掃描。</div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="./assets/card-scan.js?v=20260528-card-scan1"></script>
+</body>
+</html>

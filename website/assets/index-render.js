@@ -222,6 +222,10 @@
     let uiLanguageApplyTimer = null;
     let intelFeedPrefetchArmed = false;
     let intelFeedPrefetchStarted = false;
+    let intelFeedPrefetchCancelled = false;
+    let intelFeedPrefetchActivityCleanup = null;
+    const intelFeedPrefetchTimers = new Set();
+    const intelFeedPrefetchControllers = new Set();
     const intelFeedLangInflight = new Map();
     let intelFeedRefreshSeq = 0;
     let intelLatestFeedGeneratedMs = 0;
@@ -704,7 +708,7 @@
             }
             setLangBuildStatus("");
             applyUiLanguage().catch(() => {});
-            prefetchIntelFeeds();
+            scheduleIntelFeedPrefetchOnActivity();
           })
           .catch((error) => {
             if (normalizeUiLang(currentUiLang) !== next) return;
@@ -2286,16 +2290,24 @@
         const canUseApi = window.location.protocol !== "file:";
         let apiError = null;
         if (canUseApi) {
+          let timeout = 0;
+          let externalAbortHandler = null;
           try {
             const controller = new AbortController();
-            const timeout = window.setTimeout(() => controller.abort(), 12000);
+            if (opts.signal?.aborted) {
+              throw new DOMException("Aborted", "AbortError");
+            }
+            if (opts.signal && typeof opts.signal.addEventListener === "function") {
+              externalAbortHandler = () => controller.abort();
+              opts.signal.addEventListener("abort", externalAbortHandler, { once: true });
+            }
+            timeout = window.setTimeout(() => controller.abort(), 12000);
             const cacheBust = (opts.cacheBust || adminMode) ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
             const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}${cacheBust}`), {
               cache: "no-store",
               credentials: "include",
               signal: controller.signal,
             });
-            window.clearTimeout(timeout);
             const payload = await response.json().catch(() => ({}));
             if (response.ok && payload?.ok && typeof payload?.feed === "object") {
               if (!payload.feed.lang) {
@@ -2310,6 +2322,11 @@
             }
           } catch (error) {
             apiError = error instanceof Error ? error : new Error(String(error || "api_fetch_failed"));
+          } finally {
+            if (timeout) window.clearTimeout(timeout);
+            if (opts.signal && externalAbortHandler && typeof opts.signal.removeEventListener === "function") {
+              opts.signal.removeEventListener("abort", externalAbortHandler);
+            }
           }
         }
         if (allowSnapshot) {
@@ -2380,37 +2397,67 @@
       }
     }
 
+    function cancelIntelFeedPrefetch() {
+      intelFeedPrefetchCancelled = true;
+      if (typeof intelFeedPrefetchActivityCleanup === "function") {
+        intelFeedPrefetchActivityCleanup();
+        intelFeedPrefetchActivityCleanup = null;
+      }
+      intelFeedPrefetchTimers.forEach((timerId) => window.clearTimeout(timerId));
+      intelFeedPrefetchTimers.clear();
+      intelFeedPrefetchControllers.forEach((controller) => controller.abort());
+      intelFeedPrefetchControllers.clear();
+    }
+
+    function scheduleIntelFeedPrefetchTimer(callback, delay) {
+      const timerId = window.setTimeout(() => {
+        intelFeedPrefetchTimers.delete(timerId);
+        callback();
+      }, Math.max(0, Number(delay) || 0));
+      intelFeedPrefetchTimers.add(timerId);
+    }
+
     function prefetchIntelFeeds() {
       if (location.protocol === "file:" || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchStarted = true;
+      intelFeedPrefetchCancelled = false;
       const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
       langs.forEach((lang, index) => {
-        window.setTimeout(() => {
-          if (intelCanEdit()) return;
+        scheduleIntelFeedPrefetchTimer(() => {
+          if (intelFeedPrefetchCancelled || intelCanEdit() || document.visibilityState === "hidden") return;
           if (isUsableIntelFeed(intelFeedLangCache.get(lang))) return;
-          fetchIntelFeed(lang, { allowSnapshot: false })
+          const controller = new AbortController();
+          intelFeedPrefetchControllers.add(controller);
+          fetchIntelFeed(lang, { allowSnapshot: false, signal: controller.signal })
             .then((payload) => {
+              if (intelFeedPrefetchCancelled) return;
               const mode = String(payload?._i18n?.mode || "");
               if (isUsableIntelFeed(payload) && mode !== "building") {
                 intelFeedLangCache.set(lang, payload);
                 saveIntelFeedSnapshot(lang, payload);
               }
             })
-            .catch(() => {});
-        }, 350 + index * 750);
+            .catch(() => {})
+            .finally(() => {
+              intelFeedPrefetchControllers.delete(controller);
+            });
+        }, 1200 + index * 1400);
       });
     }
 
     function scheduleIntelFeedPrefetchOnActivity() {
       if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted || intelCanEdit()) return;
       intelFeedPrefetchArmed = true;
-      const events = ["scroll", "pointerdown", "keydown", "touchstart"];
+      const events = ["scroll", "keydown"];
       let timeoutId = 0;
       const cleanup = () => {
         events.forEach((name) => window.removeEventListener(name, start));
         if (timeoutId) {
           window.clearTimeout(timeoutId);
           timeoutId = 0;
+        }
+        if (intelFeedPrefetchActivityCleanup === cleanup) {
+          intelFeedPrefetchActivityCleanup = null;
         }
       };
       const start = () => {
@@ -2422,8 +2469,38 @@
       events.forEach((name) => window.addEventListener(name, start, { once: true, passive: true }));
       timeoutId = window.setTimeout(() => {
         scheduleIdleTask(start);
-      }, 18000);
+      }, 24000);
+      intelFeedPrefetchActivityCleanup = cleanup;
     }
+
+    function installIntelBackgroundPrefetchCancelHook() {
+      const previousCancelBackgroundPrefetch = window.__cancelBackgroundPrefetch;
+      window.__cancelIntelFeedPrefetch = cancelIntelFeedPrefetch;
+      window.__cancelBackgroundPrefetch = () => {
+        if (typeof previousCancelBackgroundPrefetch === "function") {
+          try {
+            previousCancelBackgroundPrefetch();
+          } catch (_error) {}
+        }
+        cancelIntelFeedPrefetch();
+      };
+      document.addEventListener("click", (event) => {
+        const anchor = event.target?.closest?.("a[href]");
+        if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
+        let url = null;
+        try {
+          url = new URL(anchor.getAttribute("href") || "", document.baseURI);
+        } catch (_error) {
+          return;
+        }
+        if (url.origin === location.origin) {
+          cancelIntelFeedPrefetch();
+        }
+      }, { capture: true });
+      window.addEventListener("pagehide", cancelIntelFeedPrefetch);
+    }
+
+    installIntelBackgroundPrefetchCancelHook();
 
     async function attemptIntelAutoRepair(error) {
       const cached = readCachedIntelFeed(currentUiLang, true, { allowAdminSnapshot: true });
@@ -2448,7 +2525,7 @@
         renderIntelFeed(payload);
         scheduleLangFeedRefresh(payload);
         setIntelMessage(uiLabel("feedAutoRepaired"), "ok");
-        prefetchIntelFeeds();
+        scheduleIntelFeedPrefetchOnActivity();
         return true;
       } catch (_repairError) {
         if (!cached) {
@@ -3406,7 +3483,7 @@
       }
       try {
         await refreshIntelFeedForCurrentLang();
-        prefetchIntelFeeds();
+        scheduleIntelFeedPrefetchOnActivity();
       } catch (error) {
         await attemptIntelAutoRepair(error);
       }
