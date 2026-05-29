@@ -50,6 +50,8 @@
     renaissMarketByKey: {},
     chartHoverPoints: [],
     chartSize: { width: 720, height: 260 },
+    scanRequestId: 0,
+    scanController: null,
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -1041,6 +1043,7 @@
       refs.multiStrip.innerHTML = "";
       refs.empty.hidden = false;
       refs.detail.hidden = true;
+      refs.title.textContent = "沒有偵測到卡片";
       refs.diagnostics.hidden = true;
       refs.diagnostics.innerHTML = "";
       refs.matches.innerHTML = `<div class="scan-match-empty">沒有偵測到卡片。</div>`;
@@ -1191,7 +1194,9 @@
       setStatus(`辨識完成：${first.name_en || first.name || "card"}。`, "ok");
       renderDetail();
     } else {
-      setStatus(response?.error || "沒有辨識到可用結果。", "error");
+      const hasResults = Array.isArray(response?.results) && response.results.length > 0;
+      refs.title.textContent = hasResults ? "辨識失敗" : "沒有辨識結果";
+      setStatus(response?.error || "模型有回應，但沒有候選結果。", "error");
       refs.empty.hidden = false;
       refs.detail.hidden = true;
       refs.diagnostics.hidden = true;
@@ -1204,6 +1209,11 @@
 
   async function recognize(file) {
     if (!file) return;
+    if (state.scanController) {
+      state.scanController.abort();
+    }
+    const requestId = state.scanRequestId + 1;
+    state.scanRequestId = requestId;
     const isMultiScan = state.scanMode === "multi";
     state.file = file;
     state.response = null;
@@ -1242,6 +1252,7 @@
     const params = new URLSearchParams(isMultiScan ? MULTI_QUERY : DEFAULT_QUERY);
     const apiPath = isMultiScan ? MULTI_API_PATH : API_PATH;
     const controller = new AbortController();
+    state.scanController = controller;
     const timeout = window.setTimeout(() => controller.abort(), 105000);
     try {
       const response = await fetch(`${apiPath}?${params.toString()}`, {
@@ -1250,7 +1261,8 @@
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      if (requestId !== state.scanRequestId) return;
+      if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.error || `Card scan failed: HTTP ${response.status}`);
       }
       if (isMultiScan) {
@@ -1259,6 +1271,7 @@
         renderResponse(payload);
       }
     } catch (error) {
+      if (requestId !== state.scanRequestId) return;
       setLoading(false);
       refs.empty.hidden = false;
       refs.detail.hidden = true;
@@ -1266,13 +1279,22 @@
       refs.diagnostics.innerHTML = "";
       refs.multiStrip.hidden = true;
       refs.multiStrip.innerHTML = "";
+      refs.title.textContent = error?.name === "AbortError" ? "辨識逾時" : "辨識失敗";
       setStatus(error?.name === "AbortError" ? "辨識逾時，請再試一次。" : String(error?.message || error), "error");
     } finally {
       window.clearTimeout(timeout);
+      if (state.scanController === controller) {
+        state.scanController = null;
+      }
     }
   }
 
   function reset() {
+    state.scanRequestId += 1;
+    if (state.scanController) {
+      state.scanController.abort();
+      state.scanController = null;
+    }
     if (state.inputUrl) URL.revokeObjectURL(state.inputUrl);
     state.file = null;
     state.inputUrl = "";
