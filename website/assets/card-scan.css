@@ -31,7 +31,7 @@ body.card-scan-body {
 
 .card-scan-title {
   font-family: var(--display-font);
-  font-size: clamp(2.45rem, 6.3vw, 5.45rem);
+  font-size: clamp(1.9rem, 4.8vw, 4.05rem);
   line-height: 0.94;
   letter-spacing: 0;
   color: #172a42;
@@ -829,7 +829,7 @@ body.card-scan-body {
   }
 
   .card-scan-title {
-    font-size: clamp(2.15rem, 11vw, 3.65rem);
+    font-size: clamp(1.75rem, 8.6vw, 2.85rem);
   }
 
   .scan-dropzone {

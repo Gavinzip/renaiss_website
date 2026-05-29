@@ -180,6 +180,9 @@ CARD_SCAN_SNKR_PER_PAGE = int(os.getenv("CARD_SCAN_SNKR_PER_PAGE", "100") or 100
 CARD_SCAN_SNKR_MAX_PAGES = int(os.getenv("CARD_SCAN_SNKR_MAX_PAGES", "20") or 20)
 CARD_SCAN_SNKR_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_SNKR_TIMEOUT_SECONDS", "20") or 20)
 CARD_SCAN_SNKR_CACHE_SECONDS = float(os.getenv("CARD_SCAN_SNKR_CACHE_SECONDS", str(60 * 60)) or (60 * 60))
+CARD_SCAN_EXCHANGE_RATE_URL = str(os.getenv("CARD_SCAN_EXCHANGE_RATE_URL") or "https://open.er-api.com/v6/latest/USD").strip()
+CARD_SCAN_EXCHANGE_RATE_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_EXCHANGE_RATE_TIMEOUT_SECONDS", "8") or 8)
+CARD_SCAN_EXCHANGE_RATE_CACHE_SECONDS = float(os.getenv("CARD_SCAN_EXCHANGE_RATE_CACHE_SECONDS", str(6 * 60 * 60)) or (6 * 60 * 60))
 RENAISS_API_BASE = str(os.getenv("RENAISS_API_BASE") or "https://api.renaiss.xyz").rstrip("/")
 CARD_SCAN_RENAISS_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_TIMEOUT_SECONDS", "20") or 20)
 CARD_SCAN_RENAISS_CACHE_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_CACHE_SECONDS", str(10 * 60)) or (10 * 60))
@@ -188,6 +191,8 @@ I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
 CARD_SCAN_SNKR_HISTORY_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_SNKR_HISTORY_LOCK = Lock()
+CARD_SCAN_EXCHANGE_RATE_CACHE: tuple[float, dict] | None = None
+CARD_SCAN_EXCHANGE_RATE_LOCK = Lock()
 CARD_SCAN_RENAISS_MARKET_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_RENAISS_MARKET_LOCK = Lock()
 AUTH_COOKIE_NAME = "intel_admin_session"
@@ -2651,6 +2656,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _fetch_snkr_trading_history(self, product_id: str) -> dict:
         cutoff_ms = (time.time() - 365 * 24 * 60 * 60) * 1000
+        exchange_rates = self._fetch_card_scan_exchange_rates()
         trades: list[dict] = []
         seen: set[str] = set()
         pages = 0
@@ -2678,13 +2684,13 @@ class Handler(SimpleHTTPRequestHandler):
                 break
             oldest_ms: float | None = None
             for history in histories:
-                trade = self._snkr_trade_from_history(history)
+                trade = self._snkr_trade_from_history(history, exchange_rates)
                 if not trade:
                     continue
                 parsed_ms = _parse_iso_ms(str(trade.get("date") or ""))
                 if parsed_ms is not None and (oldest_ms is None or parsed_ms < oldest_ms):
                     oldest_ms = parsed_ms
-                key = f"{trade.get('date')}|{trade.get('price_usd')}|{trade.get('condition')}"
+                key = f"{trade.get('date')}|{trade.get('price_usd') or trade.get('price')}|{trade.get('condition')}"
                 if key in seen:
                     continue
                 seen.add(key)
@@ -2701,10 +2707,58 @@ class Handler(SimpleHTTPRequestHandler):
             "pages": pages,
             "trades": trades,
             "trade_count": len(trades),
+            "exchange_rate": {
+                "base": exchange_rates.get("base"),
+                "fetched_at": exchange_rates.get("fetched_at"),
+                "source": exchange_rates.get("source"),
+                "jpy_per_usd": exchange_rates.get("rates", {}).get("JPY"),
+            } if exchange_rates else None,
             "cache": "miss",
         }
 
-    def _snkr_trade_from_history(self, history: object) -> dict | None:
+    def _fetch_card_scan_exchange_rates(self) -> dict | None:
+        global CARD_SCAN_EXCHANGE_RATE_CACHE
+        now = time.time()
+        with CARD_SCAN_EXCHANGE_RATE_LOCK:
+            cached = CARD_SCAN_EXCHANGE_RATE_CACHE
+            if cached and now - cached[0] < CARD_SCAN_EXCHANGE_RATE_CACHE_SECONDS:
+                return cached[1]
+        if not CARD_SCAN_EXCHANGE_RATE_URL:
+            return None
+        request = urllib.request.Request(
+            CARD_SCAN_EXCHANGE_RATE_URL,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-scan/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=CARD_SCAN_EXCHANGE_RATE_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"[card-scan] exchange rate unavailable: {exc}", flush=True)
+            return None
+        rates = payload.get("rates") if isinstance(payload, dict) else None
+        if not isinstance(rates, dict):
+            return None
+        normalized_rates: dict[str, float] = {}
+        for key, value in rates.items():
+            numeric = _safe_float(value)
+            if numeric is not None and numeric > 0:
+                normalized_rates[str(key).upper()] = numeric
+        if "JPY" not in normalized_rates:
+            return None
+        data = {
+            "base": "USD",
+            "rates": normalized_rates,
+            "fetched_at": _now_iso(),
+            "source": CARD_SCAN_EXCHANGE_RATE_URL,
+        }
+        with CARD_SCAN_EXCHANGE_RATE_LOCK:
+            CARD_SCAN_EXCHANGE_RATE_CACHE = (now, data)
+        return data
+
+    def _snkr_trade_from_history(self, history: object, exchange_rates: dict | None = None) -> dict | None:
         if not isinstance(history, dict):
             return None
         price = _safe_float(history.get("price"))
@@ -2712,14 +2766,35 @@ class Handler(SimpleHTTPRequestHandler):
         if price is None or price <= 0 or not traded_at:
             return None
         price_format = str(history.get("priceFormat") or "").strip()
-        price_usd = price if ("$" in price_format or "USD" in price_format.upper()) else None
+        price_currency = self._snkr_price_currency(price, price_format)
+        price_usd = self._snkr_price_usd(price, price_currency, exchange_rates)
         return {
             "date": traded_at,
             "price": price,
             "price_usd": price_usd,
             "price_format": price_format,
+            "price_currency": price_currency,
             "condition": str(history.get("condition") or "Unknown").strip() or "Unknown",
         }
+
+    def _snkr_price_currency(self, price: float, price_format: str) -> str:
+        upper = price_format.upper()
+        if "$" in price_format or "USD" in upper:
+            return "USD"
+        if "¥" in price_format or "JPY" in upper:
+            return "JPY"
+        return "UNKNOWN"
+
+    def _snkr_price_usd(self, price: float, currency: str, exchange_rates: dict | None) -> float | None:
+        normalized = str(currency or "").upper()
+        if normalized in {"USD", "USDT"}:
+            return round(price, 2)
+        if normalized != "JPY" or not exchange_rates:
+            return None
+        rate = _safe_float((exchange_rates.get("rates") or {}).get("JPY"))
+        if rate is None or rate <= 0:
+            return None
+        return round(price / rate, 2)
 
     def _send_card_scan_renaiss_market(self) -> None:
         try:
