@@ -1,4 +1,5 @@
 (() => {
+  const PREFETCH_TIMEOUT_MS = 8000;
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   const effectiveType = String(connection?.effectiveType || "").toLowerCase();
   if (connection?.saveData || effectiveType.includes("2g")) return;
@@ -32,8 +33,8 @@
     ],
     "card_scan.html": [
       ["./card_scan.html", "document"],
-      ["./assets/card-scan.css?v=20260528-card-scan1", "style"],
-      ["./assets/card-scan.js?v=20260528-card-scan1", "script"],
+      ["./assets/card-scan.css?v=20260529-card-scan-beta2", "style"],
+      ["./assets/card-scan.js?v=20260529-card-scan-beta2", "script"],
     ],
     "game.html": [
       ["./game.html", "document"],
@@ -118,6 +119,7 @@
         addPreconnect(url);
         return;
       }
+      if (as === "document") return;
       if (url.origin !== location.origin) return;
       const key = url.href;
       if (completed.has(key) || queued.has(key) || key === activeUrl) return;
@@ -137,11 +139,12 @@
     }
 
     const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), PREFETCH_TIMEOUT_MS);
     activeController = controller;
     activeUrl = target.url.href;
     fetch(target.url.href, {
-      cache: "force-cache",
-      credentials: "same-origin",
+      cache: "no-store",
+      credentials: "omit",
       mode: "same-origin",
       priority: "low",
       signal: controller.signal,
@@ -153,6 +156,7 @@
       })
       .catch(() => {})
       .finally(() => {
+        window.clearTimeout(timeout);
         if (activeController === controller) {
           activeController = null;
           activeUrl = "";

@@ -2332,6 +2332,8 @@ class Handler(SimpleHTTPRequestHandler):
             return ""
         if path == "/" or path.endswith(".html"):
             return "no-store"
+        if path.endswith("/page-prefetch.js"):
+            return "no-store"
         if path.endswith((".js", ".css")):
             return "no-cache, max-age=0, must-revalidate"
         return ""
