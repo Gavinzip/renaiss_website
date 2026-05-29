@@ -606,17 +606,39 @@
     return `<g opacity=".9">${horizontal.join("")}${vertical.join("")}</g>`;
   }
 
+  function chartDimensions() {
+    const rect = refs.chart?.getBoundingClientRect?.();
+    const parentRect = refs.chart?.parentElement?.getBoundingClientRect?.();
+    const measuredWidth = Number(rect?.width || parentRect?.width || 0);
+    const measuredHeight = Number(rect?.height || 0);
+    const width = Math.max(280, Math.round(measuredWidth || 720));
+    const compact = width < 520;
+    const fallbackHeight = compact ? 210 : 260;
+    const height = Math.max(compact ? 180 : 220, Math.round(measuredHeight || fallbackHeight));
+    const pad = compact
+      ? { left: 26, right: 18, top: 24, bottom: 32 }
+      : { left: 44, right: 28, top: 30, bottom: 42 };
+    return { width, height, pad, compact };
+  }
+
   function drawChart(points, currentPrice) {
-    const width = 720;
-    const height = 260;
-    const pad = { left: 44, right: 28, top: 30, bottom: 42 };
+    const { width, height, pad, compact } = chartDimensions();
     const innerW = width - pad.left - pad.right;
     const innerH = height - pad.top - pad.bottom;
     const price = Number(currentPrice);
+    const axisFont = compact ? 11 : 14;
+    const bottomFont = compact ? 11 : 15;
+    const markerFont = compact ? 15 : 21;
+    const emptyFont = compact ? 14 : 19;
+    const glowStroke = compact ? 7 : 10;
+    const softStroke = compact ? 3.6 : 4.6;
+    const lineStroke = compact ? 2 : 2.2;
     state.chartHoverPoints = [];
     state.chartSize = { width, height };
     hideChartHover();
     refs.chart.innerHTML = "";
+    refs.chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    refs.chart.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
     refs.chart.insertAdjacentHTML(
       "beforeend",
@@ -649,14 +671,14 @@
         refs.chart.insertAdjacentHTML(
           "beforeend",
           `<g clip-path="url(#scanChartClip)">
-             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity=".30" filter="url(#scanChartGlow)"/>
-             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round" opacity=".56" filter="url(#scanChartGlow)"/>
-             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="${glowStroke}" stroke-linecap="round" stroke-linejoin="round" opacity=".30" filter="url(#scanChartGlow)"/>
+             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="${softStroke}" stroke-linecap="round" stroke-linejoin="round" opacity=".56" filter="url(#scanChartGlow)"/>
+             <path d="${signal}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="${lineStroke}" stroke-linecap="round" stroke-linejoin="round"/>
              <circle cx="${lineEnd}" cy="${y}" r="15" fill="url(#scanChartPointAura)" opacity=".7"/>
              <circle cx="${lineEnd}" cy="${y}" r="5.2" fill="#f7ff7c"/>
              <circle cx="${lineEnd}" cy="${y}" r="2.2" fill="#ffffff"/>
-             <text x="${pad.left}" y="${y - 20}" fill="#173454" font-size="21" font-weight="900">${escapeHtml(formatPrice(markerPrice))}</text>
-             <text x="${width - pad.right}" y="${height - 18}" text-anchor="end" fill="rgba(54,78,105,.58)" font-size="14" font-weight="800">live floor</text>
+             <text x="${pad.left}" y="${y - 18}" fill="#173454" font-size="${markerFont}" font-weight="900">${escapeHtml(formatPrice(markerPrice))}</text>
+             <text x="${width - pad.right}" y="${height - 14}" text-anchor="end" fill="rgba(54,78,105,.58)" font-size="${axisFont}" font-weight="800">live floor</text>
            </g>
            ${chartHoverSvg(width, height)}`
         );
@@ -666,7 +688,7 @@
       } else {
         refs.chart.insertAdjacentHTML(
           "beforeend",
-          `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="rgba(54,78,105,.64)" font-size="19" font-weight="800">No market price returned yet</text>`
+          `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="rgba(54,78,105,.64)" font-size="${emptyFont}" font-weight="800">No market price returned yet</text>`
         );
         refs.chartNote.textContent = "這張卡目前沒有可用的價格資料。";
       }
@@ -693,16 +715,16 @@
       `<g clip-path="url(#scanChartClip)">
         <path d="${area}" fill="url(#scanChartArea)" opacity=".72"/>
         <path d="${area}" fill="url(#scanChartRainbow)" opacity=".07"/>
-        <path d="${line}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity=".36" filter="url(#scanChartGlow)"/>
-        <path d="${line}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="${line}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="${compact ? 3.2 : 4}" stroke-linecap="round" stroke-linejoin="round" opacity=".36" filter="url(#scanChartGlow)"/>
+        <path d="${line}" fill="none" stroke="url(#scanChartRainbow)" stroke-width="${lineStroke}" stroke-linecap="round" stroke-linejoin="round"/>
         <line x1="0" y1="${latest.y.toFixed(1)}" x2="${width}" y2="${latest.y.toFixed(1)}" stroke="rgba(54,78,105,.14)" stroke-width="1"/>
         <circle cx="${latest.x.toFixed(1)}" cy="${latest.y.toFixed(1)}" r="13" fill="url(#scanChartPointAura)" opacity=".74"/>
         <circle cx="${latest.x.toFixed(1)}" cy="${latest.y.toFixed(1)}" r="5" fill="#f7ff7c"/>
         <circle cx="${latest.x.toFixed(1)}" cy="${latest.y.toFixed(1)}" r="2.1" fill="#ffffff"/>
-        <text x="${pad.left}" y="${height - 15}" fill="rgba(54,78,105,.62)" font-size="15" font-weight="800">${escapeHtml(coords[0].point.label)}</text>
-        <text x="${width - pad.right}" y="${height - 15}" text-anchor="end" fill="rgba(54,78,105,.62)" font-size="15" font-weight="800">${escapeHtml(coords[coords.length - 1].point.label)}</text>
-        <text x="${width - pad.right}" y="${pad.top + 15}" text-anchor="end" fill="rgba(54,78,105,.56)" font-size="14" font-weight="800">${escapeHtml(formatPrice(max))}</text>
-        <text x="${width - pad.right}" y="${height - pad.bottom - 2}" text-anchor="end" fill="rgba(54,78,105,.44)" font-size="14" font-weight="800">${escapeHtml(formatPrice(min))}</text>
+        <text x="${pad.left}" y="${height - 13}" fill="rgba(54,78,105,.62)" font-size="${bottomFont}" font-weight="800">${escapeHtml(coords[0].point.label)}</text>
+        <text x="${width - pad.right}" y="${height - 13}" text-anchor="end" fill="rgba(54,78,105,.62)" font-size="${bottomFont}" font-weight="800">${escapeHtml(coords[coords.length - 1].point.label)}</text>
+        <text x="${width - pad.right}" y="${pad.top + 13}" text-anchor="end" fill="rgba(54,78,105,.56)" font-size="${axisFont}" font-weight="800">${escapeHtml(formatPrice(max))}</text>
+        <text x="${width - pad.right}" y="${height - pad.bottom - 2}" text-anchor="end" fill="rgba(54,78,105,.44)" font-size="${axisFont}" font-weight="800">${escapeHtml(formatPrice(min))}</text>
       </g>
       ${chartHoverSvg(width, height)}`
     );

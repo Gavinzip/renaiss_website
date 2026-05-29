@@ -974,6 +974,7 @@ body.card-scan-body {
   border: 1px solid rgba(154, 205, 255, 0.34);
   box-shadow: 0 10px 24px rgba(70, 122, 180, 0.12);
   backdrop-filter: blur(12px);
+  line-height: 1.35;
 }
 
 .scan-range-row {
@@ -1128,5 +1129,54 @@ body.card-scan-body {
     grid-template-columns: 1fr;
     text-align: center;
     place-items: center;
+  }
+
+  .scan-section-head h2 {
+    font-size: clamp(1.12rem, 7vw, 1.58rem);
+    line-height: 1.05;
+  }
+
+  .scan-kicker,
+  .scan-price-summary span {
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+  }
+
+  .scan-price-summary strong {
+    font-size: clamp(1.22rem, 7vw, 1.72rem);
+    line-height: 1.08;
+  }
+
+  .scan-chart-wrap {
+    min-height: 0;
+    border-radius: 18px;
+  }
+
+  .scan-price-chart {
+    height: clamp(190px, 55vw, 230px);
+    touch-action: pan-y;
+  }
+
+  .scan-chart-note {
+    position: static;
+    margin: 0.64rem 0.72rem 0.74rem;
+    max-width: none;
+    border-radius: 18px;
+    font-size: clamp(0.68rem, 3.4vw, 0.8rem);
+    line-height: 1.38;
+    overflow-wrap: anywhere;
+  }
+
+  .scan-condition-row {
+    gap: 0.38rem;
+  }
+
+  .scan-condition-row button {
+    padding: 0.38rem 0.54rem;
+    font-size: 0.74rem;
+  }
+
+  .scan-condition-row button span {
+    font-size: 0.66rem;
   }
 }

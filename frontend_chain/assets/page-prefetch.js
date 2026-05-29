@@ -33,8 +33,8 @@
     ],
     "card_scan.html": [
       ["./card_scan.html", "document"],
-      ["./assets/card-scan.css?v=20260529-card-scan-beta2", "style"],
-      ["./assets/card-scan.js?v=20260529-card-scan-beta2", "script"],
+      ["./assets/card-scan.css?v=20260529-card-scan-chart1", "style"],
+      ["./assets/card-scan.js?v=20260529-card-scan-chart1", "script"],
     ],
     "game.html": [
       ["./game.html", "document"],
