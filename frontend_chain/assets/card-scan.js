@@ -1,5 +1,6 @@
 (() => {
   const API_PATH = "/api/card-scan/recognize";
+  const MULTI_API_PATH = "/api/card-scan/recognize-cards";
   const SNKR_HISTORY_PATH = "/api/card-scan/snkr-history";
   const RENAISS_MARKET_PATH = "/api/card-scan/renaiss-market";
   const DEFAULT_QUERY = {
@@ -9,6 +10,14 @@
     language_rerank: "true",
     language_ocr: "true",
     include_debug_crop_base64: "true",
+  };
+  const MULTI_QUERY = {
+    detector: "tcgp_obb",
+    max_cards: "20",
+    top_k: "5",
+    per_index_top_k: "5",
+    include_crop_base64: "true",
+    sort: "reading_order",
   };
   const RANGE_DAYS = { "1d": 1, "1w": 7, "1m": 31, "1y": 365 };
   const STANDARD_CONDITIONS = [
@@ -29,6 +38,10 @@
     cropUrl: "",
     referenceUrl: "",
     response: null,
+    scanMode: "single",
+    multiCards: [],
+    selectedCardIndex: 0,
+    activeRawResponse: null,
     selectedIndex: 0,
     range: "1y",
     marketSource: "SNKR",
@@ -46,12 +59,18 @@
     pickButton: $("#card-scan-pick"),
     repickButton: $("#card-scan-repick"),
     uploadCopy: $("#scan-upload-copy"),
+    uploadHint: $("#scan-upload-hint"),
+    betaToggle: $("#scan-beta-toggle"),
+    betaPanel: $("#scan-beta-panel"),
+    betaCopy: $("#scan-beta-copy"),
+    modeToggle: $("#scan-mode-toggle"),
     resetButton: $("#card-scan-reset"),
     previewStage: $("#scan-preview-stage"),
     previewImg: $("#scan-input-preview"),
     imageTabs: $("#scan-image-tabs"),
     title: $("#scan-result-title"),
     status: $("#card-scan-status"),
+    multiStrip: $("#scan-multi-strip"),
     loading: $("#scan-loading"),
     empty: $("#scan-empty-state"),
     detail: $("#scan-card-detail"),
@@ -90,6 +109,12 @@
     refs.dropzone.classList.toggle("has-preview", hasPreview);
     refs.uploadCopy.hidden = hasPreview;
     refs.previewStage.hidden = !hasPreview;
+  }
+
+  function setBetaPanel(open) {
+    if (!refs.betaToggle || !refs.betaPanel) return;
+    refs.betaPanel.hidden = !open;
+    refs.betaToggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   function formatScore(score) {
@@ -204,6 +229,57 @@
     const raw = response?.crop?.debug_crop_jpeg_base64 || response?.crop?.debug_crop_base64 || "";
     if (!raw) return "";
     return raw.startsWith("data:") ? raw : `data:image/jpeg;base64,${raw}`;
+  }
+
+  function cropUrlForMultiCard(card) {
+    const raw = (
+      card?.crop?.jpeg_base64
+      || card?.crop?.crop_base64
+      || card?.crop?.debug_crop_jpeg_base64
+      || card?.crop?.debug_crop_base64
+      || ""
+    );
+    if (!raw) return "";
+    return raw.startsWith("data:") ? raw : `data:image/jpeg;base64,${raw}`;
+  }
+
+  function multiCardResponse(card, payload) {
+    const cropRaw = card?.crop?.jpeg_base64 || card?.crop?.crop_base64 || "";
+    const results = Array.isArray(card?.results) ? card.results : [];
+    return {
+      ok: Boolean(payload?.ok),
+      status: results.length ? "ok" : "error",
+      results,
+      crop: {
+        status: payload?.detector || card?.class_name || "multi-card",
+        detector: payload?.detector || "",
+        fallback_used: false,
+        debug_crop_jpeg_base64: cropRaw,
+      },
+      timings: {
+        ...(payload?.timings && typeof payload.timings === "object" ? payload.timings : {}),
+        ...(card?.timings && typeof card.timings === "object" ? card.timings : {}),
+      },
+      input: payload?.input || {},
+      _multi_card: card,
+      _multi_payload: payload,
+    };
+  }
+
+  function normalizeMultiCards(payload) {
+    const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+    return cards.map((card, index) => {
+      const response = multiCardResponse(card, payload);
+      const best = Array.isArray(card?.results) ? card.results[0] : null;
+      return {
+        index,
+        card,
+        response,
+        cropUrl: cropUrlForMultiCard(card),
+        title: best?.name_en || best?.name || `Card ${index + 1}`,
+        score: best?.score,
+      };
+    });
   }
 
   function priceValueFor(match) {
@@ -858,16 +934,19 @@
   function renderDiagnostics() {
     const timings = state.response?.timings && typeof state.response.timings === "object" ? state.response.timings : {};
     const crop = state.response?.crop && typeof state.response.crop === "object" ? state.response.crop : {};
+    const multiCard = state.response?._multi_card;
     const rows = [
+      multiCard ? ["Card", `${state.selectedCardIndex + 1}/${state.multiCards.length}`] : null,
       ["Total", formatDuration(timings.total_seconds)],
       ["Crop", formatDuration(timings.crop_seconds)],
+      ["Detect", formatDuration(timings.detect_seconds)],
       ["OCR", formatDuration(timings.slab_barcode_seconds)],
       ["Embed", formatDuration(timings.embedding_seconds)],
       ["Search", formatDuration(timings.search_seconds)],
       ["Lang", formatDuration(timings.language_rerank_seconds)],
       ["Cropper", crop.detector || crop.status || "--"],
       ["Fallback", crop.fallback_used ? "Yes" : "No"],
-    ].filter(([, value]) => value && value !== "--");
+    ].filter(Boolean).filter(([, value]) => value && value !== "--");
 
     if (!rows.length) {
       refs.diagnostics.hidden = true;
@@ -882,6 +961,114 @@
         <strong>${escapeHtml(String(value))}</strong>
       </div>
     `).join("");
+  }
+
+  function renderMultiStrip() {
+    const cards = state.multiCards;
+    if (!cards.length) {
+      refs.multiStrip.hidden = true;
+      refs.multiStrip.innerHTML = "";
+      return;
+    }
+    refs.multiStrip.hidden = false;
+    refs.multiStrip.innerHTML = `
+      <div class="scan-multi-label">
+        <iconify-icon icon="lucide:scan-search"></iconify-icon>
+        <span>已偵測 ${cards.length} 張卡，切換目前查看的卡片。</span>
+      </div>
+      <div class="scan-multi-list">
+        ${cards.map((item, index) => {
+          const active = index === state.selectedCardIndex;
+          const best = Array.isArray(item.response?.results) ? item.response.results[0] : null;
+          const meta = [best?.set_id, best?.card_id || best?.card_code, best?.language].filter(Boolean).join(" · ");
+          return `
+            <button class="scan-multi-card ${active ? "is-active" : ""}" type="button" data-scan-card-index="${index}">
+              <span class="scan-multi-thumb">
+                ${item.cropUrl ? `<img src="${escapeAttr(item.cropUrl)}" alt="" loading="lazy" />` : `<iconify-icon icon="lucide:badge-question-mark"></iconify-icon>`}
+              </span>
+              <span class="scan-multi-copy">
+                <span class="scan-multi-count">Card ${index + 1} / ${cards.length}</span>
+                <strong>${escapeHtml(item.title || `Card ${index + 1}`)}</strong>
+                <em>${escapeHtml(meta || formatScore(item.score))}</em>
+              </span>
+              <span class="scan-multi-score">${escapeHtml(formatScore(item.score))}</span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    `;
+    updateMultiStripSelection();
+  }
+
+  function updateMultiStripSelection() {
+    refs.multiStrip.querySelectorAll("[data-scan-card-index]").forEach((button) => {
+      const active = Number(button.dataset.scanCardIndex) === state.selectedCardIndex;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function renderMultiResponse(payload) {
+    state.activeRawResponse = payload;
+    state.multiCards = normalizeMultiCards(payload);
+    state.selectedCardIndex = 0;
+    setLoading(false);
+
+    if (!state.multiCards.length) {
+      refs.multiStrip.hidden = true;
+      refs.multiStrip.innerHTML = "";
+      refs.empty.hidden = false;
+      refs.detail.hidden = true;
+      refs.diagnostics.hidden = true;
+      refs.diagnostics.innerHTML = "";
+      refs.matches.innerHTML = `<div class="scan-match-empty">沒有偵測到卡片。</div>`;
+      refs.currentPrice.textContent = "--";
+      refs.productId.textContent = "--";
+      refs.rangeRow.hidden = true;
+      refs.conditionRow.hidden = true;
+      refs.sourceTabs.hidden = true;
+      setStatus(payload?.error || "沒有偵測到可切換的卡片。", "error");
+      drawChart([], null);
+      return;
+    }
+
+    setStatus(`卡冊辨識完成：已偵測 ${state.multiCards.length} 張卡。`, "ok");
+    renderMultiStrip();
+    selectMultiCard(0);
+  }
+
+  function selectMultiCard(index) {
+    const item = state.multiCards[index];
+    if (!item) return;
+    state.selectedCardIndex = index;
+    state.response = item.response;
+    state.selectedIndex = 0;
+    state.marketSource = "SNKR";
+    state.selectedConditionKey = "";
+    state.cropUrl = item.cropUrl || "";
+    const first = currentMatch();
+    state.referenceUrl = first ? bestImageFor(first) : "";
+    setImageTabAvailability();
+    setPreview(state.cropUrl ? "crop" : "input");
+    updateMultiStripSelection();
+    if (first) {
+      setStatus(`卡冊 ${index + 1}/${state.multiCards.length}：${first.name_en || first.name || "card"}。`, "ok");
+      renderDetail();
+    } else {
+      refs.title.textContent = `Card ${index + 1}`;
+      setStatus(`卡冊 ${index + 1}/${state.multiCards.length}：這張卡沒有候選結果。`, "error");
+      refs.empty.hidden = false;
+      refs.detail.hidden = true;
+      refs.diagnostics.hidden = true;
+      refs.diagnostics.innerHTML = "";
+      refs.matches.innerHTML = `<div class="scan-match-empty">這張卡沒有候選結果。</div>`;
+      refs.currentPrice.textContent = "--";
+      refs.productId.textContent = "--";
+      refs.rangeRow.hidden = true;
+      refs.conditionRow.hidden = true;
+      refs.sourceTabs.hidden = true;
+      drawChart([], null);
+    }
   }
 
   function renderDetail() {
@@ -995,8 +1182,12 @@
 
   async function recognize(file) {
     if (!file) return;
+    const isMultiScan = state.scanMode === "multi";
     state.file = file;
     state.response = null;
+    state.multiCards = [];
+    state.selectedCardIndex = 0;
+    state.activeRawResponse = null;
     state.selectedIndex = 0;
     state.marketSource = "SNKR";
     state.selectedConditionKey = "";
@@ -1012,23 +1203,26 @@
     refs.diagnostics.innerHTML = "";
     refs.empty.hidden = true;
     refs.title.textContent = "辨識中";
-    refs.matches.innerHTML = `<div class="scan-match-empty">等待模型回傳...</div>`;
+    refs.multiStrip.hidden = true;
+    refs.multiStrip.innerHTML = "";
+    refs.matches.innerHTML = `<div class="scan-match-empty">${isMultiScan ? "等待卡冊模型回傳..." : "等待模型回傳..."}</div>`;
     refs.currentPrice.textContent = "--";
     refs.productId.textContent = "--";
     refs.rangeRow.hidden = true;
     refs.conditionRow.hidden = true;
     refs.sourceTabs.hidden = true;
     drawChart([], null);
-    setStatus("正在上傳圖片並辨識。");
+    setStatus(isMultiScan ? "正在讀取卡冊照片，偵測畫面中的卡片並逐張辨識。" : "正在上傳圖片並辨識。");
     setLoading(true);
 
     const form = new FormData();
     form.append("file", file, file.name || "card-image.jpg");
-    const params = new URLSearchParams(DEFAULT_QUERY);
+    const params = new URLSearchParams(isMultiScan ? MULTI_QUERY : DEFAULT_QUERY);
+    const apiPath = isMultiScan ? MULTI_API_PATH : API_PATH;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 105000);
     try {
-      const response = await fetch(`${API_PATH}?${params.toString()}`, {
+      const response = await fetch(`${apiPath}?${params.toString()}`, {
         method: "POST",
         body: form,
         signal: controller.signal,
@@ -1037,13 +1231,19 @@
       if (!response.ok) {
         throw new Error(payload?.error || `Card scan failed: HTTP ${response.status}`);
       }
-      renderResponse(payload);
+      if (isMultiScan) {
+        renderMultiResponse(payload);
+      } else {
+        renderResponse(payload);
+      }
     } catch (error) {
       setLoading(false);
       refs.empty.hidden = false;
       refs.detail.hidden = true;
       refs.diagnostics.hidden = true;
       refs.diagnostics.innerHTML = "";
+      refs.multiStrip.hidden = true;
+      refs.multiStrip.innerHTML = "";
       setStatus(error?.name === "AbortError" ? "辨識逾時，請再試一次。" : String(error?.message || error), "error");
     } finally {
       window.clearTimeout(timeout);
@@ -1057,12 +1257,17 @@
     state.cropUrl = "";
     state.referenceUrl = "";
     state.response = null;
+    state.multiCards = [];
+    state.selectedCardIndex = 0;
+    state.activeRawResponse = null;
     state.selectedIndex = 0;
     state.marketSource = "SNKR";
     state.selectedConditionKey = "";
     setPreviewMode(false);
     refs.fileInput.value = "";
     refs.detail.hidden = true;
+    refs.multiStrip.hidden = true;
+    refs.multiStrip.innerHTML = "";
     refs.diagnostics.hidden = true;
     refs.diagnostics.innerHTML = "";
     refs.empty.hidden = false;
@@ -1076,6 +1281,29 @@
     setLoading(false);
     setStatus("選一張卡片開始辨識。");
     drawChart([], null);
+  }
+
+  function setScanMode(mode, options = {}) {
+    const shouldRescan = Boolean(options.rescan);
+    const force = Boolean(options.force);
+    const nextMode = mode === "multi" ? "multi" : "single";
+    if (state.scanMode === nextMode && !force) return;
+    state.scanMode = nextMode;
+    refs.modeToggle?.querySelectorAll("[data-scan-mode]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.scanMode === nextMode);
+      button.setAttribute("aria-pressed", button.dataset.scanMode === nextMode ? "true" : "false");
+    });
+    if (refs.uploadHint) {
+      refs.uploadHint.textContent = "支援 PSA slab、單張卡、手機拍照。電腦版會在左側保留圖片，右側顯示辨識與價格資訊。";
+    }
+    if (refs.betaCopy) {
+      refs.betaCopy.textContent = nextMode === "multi"
+        ? "已啟用卡冊模式。請上傳一張卡冊頁或合照照片，系統會從同一張照片裡逐張建立結果與價格圖。"
+        : "上傳一張卡冊頁或合照照片，系統會從同一張照片裡偵測多張卡，再逐張切換候選結果與價格圖。";
+    }
+    if (state.file && shouldRescan && refs.loading.hidden) {
+      void recognize(state.file);
+    }
   }
 
   function escapeHtml(value) {
@@ -1094,6 +1322,15 @@
 
   refs.pickButton.addEventListener("click", () => refs.fileInput.click());
   refs.repickButton.addEventListener("click", () => refs.fileInput.click());
+  refs.betaToggle?.addEventListener("click", () => {
+    setBetaPanel(refs.betaPanel.hidden);
+  });
+  refs.modeToggle?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-scan-mode]");
+    if (!button) return;
+    setBetaPanel(true);
+    setScanMode(button.dataset.scanMode, { rescan: Boolean(state.file) });
+  });
   refs.dropzone.addEventListener("click", (event) => {
     if (event.target.closest("button, a")) return;
     if (state.inputUrl) return;
@@ -1138,6 +1375,11 @@
     state.selectedConditionKey = "";
     renderDetail();
   });
+  refs.multiStrip.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-scan-card-index]");
+    if (!button) return;
+    selectMultiCard(Number(button.dataset.scanCardIndex) || 0);
+  });
   refs.rangeRow.addEventListener("click", (event) => {
     const button = event.target.closest("[data-range]");
     if (!button) return;
@@ -1169,5 +1411,7 @@
   refs.chart.addEventListener("pointerleave", hideChartHover);
   refs.chart.addEventListener("pointercancel", hideChartHover);
   refs.resetButton.addEventListener("click", reset);
+  setBetaPanel(false);
+  setScanMode(state.scanMode, { force: true });
   drawChart([], null);
 })();

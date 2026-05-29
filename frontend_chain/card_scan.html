@@ -7,13 +7,13 @@
   <title>Renaiss Card Scan</title>
   <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
   <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
-  <script defer src="./assets/page-prefetch.js?v=20260528-card-scan1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260529-card-scan-cache1"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
-  <link rel="stylesheet" href="./assets/card-scan.css?v=20260528-card-scan1" />
+  <link rel="stylesheet" href="./assets/card-scan.css?v=20260529-card-scan-beta2" />
 </head>
 <body class="card-scan-body">
   <main class="shell card-scan-shell">
@@ -51,11 +51,34 @@
         <div id="scan-upload-copy" class="scan-upload-copy">
           <span class="scan-upload-icon"><iconify-icon icon="lucide:image-up"></iconify-icon></span>
           <h2>Drop a card image</h2>
-          <p>支援 PSA slab、單張卡、手機拍照。電腦版會在左側保留圖片，右側顯示辨識與價格資訊。</p>
-          <button id="card-scan-pick" class="scan-primary-btn" type="button">
-            <iconify-icon icon="lucide:camera"></iconify-icon>
-            <span>選擇圖片 / 拍照</span>
-          </button>
+          <p id="scan-upload-hint">支援 PSA slab、單張卡、手機拍照。電腦版會在左側保留圖片，右側顯示辨識與價格資訊。</p>
+          <div class="scan-upload-actions">
+            <button id="card-scan-pick" class="scan-primary-btn" type="button">
+              <iconify-icon icon="lucide:camera"></iconify-icon>
+              <span>選擇圖片 / 拍照</span>
+            </button>
+            <button id="scan-beta-toggle" class="scan-beta-btn" type="button" aria-expanded="false" aria-controls="scan-beta-panel">
+              <iconify-icon icon="lucide:flask-conical"></iconify-icon>
+              <span>Beta</span>
+            </button>
+          </div>
+          <div id="scan-beta-panel" class="scan-beta-panel" hidden>
+            <div class="scan-beta-title">
+              <span>Beta</span>
+              <strong>卡冊模式</strong>
+            </div>
+            <p id="scan-beta-copy">上傳一張卡冊頁或合照照片，系統會從同一張照片裡偵測多張卡，再逐張切換候選結果與價格圖。</p>
+            <div id="scan-mode-toggle" class="scan-mode-toggle" role="group" aria-label="掃描模式">
+              <button type="button" class="is-active" data-scan-mode="single" aria-pressed="true">
+                <iconify-icon icon="lucide:focus"></iconify-icon>
+                <span>單卡</span>
+              </button>
+              <button type="button" data-scan-mode="multi" aria-pressed="false">
+                <iconify-icon icon="lucide:layout-grid"></iconify-icon>
+                <span>卡冊</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         <div id="scan-preview-stage" class="scan-preview-stage" hidden>
@@ -92,6 +115,8 @@
           <span class="scan-status-dot"></span>
           <span>選一張卡片開始辨識。</span>
         </div>
+
+        <div id="scan-multi-strip" class="scan-multi-strip" hidden></div>
 
         <div id="scan-loading" class="scan-loading" hidden>
           <div class="scan-orbit" aria-hidden="true"></div>
@@ -172,6 +197,6 @@
     </section>
   </main>
 
-  <script src="./assets/card-scan.js?v=20260528-card-scan1"></script>
+  <script src="./assets/card-scan.js?v=20260529-card-scan-beta2"></script>
 </body>
 </html>
