@@ -29,6 +29,7 @@ I18N_STATE_LOCK = Lock()
 I18N_TRACE_LOCK = Lock()
 TRANSLATION_CACHE: dict[str, str] = {}
 TRANSLATION_CACHE_DIRTY = False
+I18N_BACKGROUND_YIELD_HOOK = None
 I18N_BUILD_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -140,6 +141,23 @@ I18N_VISIBLE_FEED_ROOT_KEYS = (
     "format_templates",
     "key_terms",
 )
+
+
+def configure_i18n_background_yield_hook(hook) -> None:
+    global I18N_BACKGROUND_YIELD_HOOK
+    I18N_BACKGROUND_YIELD_HOOK = hook if callable(hook) else None
+
+
+def _yield_to_priority_work(reason: str) -> None:
+    hook = I18N_BACKGROUND_YIELD_HOOK
+    if not callable(hook):
+        return
+    try:
+        hook(str(reason or "i18n"))
+    except Exception:
+        return
+
+
 CARD_ENTRY_KEY_RE = re.compile(r"^cards\[([^\]]+)\](?:\.|$)")
 ENTRY_PATH_SEGMENT_RE = re.compile(r"^([^\[\]]+)(?:\[([^\]]+)\])?$")
 
@@ -1655,6 +1673,7 @@ def _translate_feed_text_map(
                 _flush_translation_cache_unlocked()
 
     for start in range(0, len(pending_texts), chunk_size):
+        _yield_to_priority_work(f"i18n:{tag}:translate_chunk")
         chunk = pending_texts[start:start + chunk_size]
         chunk_index = (start // chunk_size) + 1
         chunk_entry_keys: list[str] = []
@@ -1718,6 +1737,7 @@ def _translate_feed_text_map(
                 }
             )
             for source in chunk:
+                _yield_to_priority_work(f"i18n:{tag}:retry_single")
                 single_keys = entry_keys_by_source.get(source, [])
                 single_card_ids: list[str] = []
                 seen_single_card_ids: set[str] = set()
@@ -2567,6 +2587,7 @@ def _build_i18n_feed_bundle(
     if I18N_FEED_PARALLEL_LANGS:
         threads: list[Thread] = []
         for tag in normalized_targets:
+            _yield_to_priority_work(f"i18n:{tag}:parallel_start")
             t = Thread(target=_run_lang, args=(tag,), daemon=True)
             t.start()
             threads.append(t)
@@ -2586,6 +2607,7 @@ def _build_i18n_feed_bundle(
             next_targets: list[str] = []
             progressed_this_round = False
             for tag in active_targets:
+                _yield_to_priority_work(f"i18n:{tag}:round_robin")
                 _append_i18n_translate_trace(
                     {
                         "stage": "translate_round_robin_turn",

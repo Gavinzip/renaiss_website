@@ -34,7 +34,7 @@
     "card_scan.html": [
       ["./card_scan.html", "document"],
       ["./assets/card-scan.css?v=20260529-card-scan-state1", "style"],
-      ["./assets/card-scan.js?v=20260529-card-scan-state1", "script"],
+      ["./assets/card-scan.js?v=20260601-priority-proxy1", "script"],
     ],
     "game.html": [
       ["./game.html", "document"],

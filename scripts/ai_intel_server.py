@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +61,7 @@ from website_backup import get_website_backup_status, restore_website_data_from_
 from website_storage import get_website_data_dir, setup_website_storage
 from website_i18n_runtime import (
     build_i18n_feed_bundle_async,
+    configure_i18n_background_yield_hook,
     configure_i18n_runtime,
     i18n_state_snapshot,
     localized_feed_from_bundle,
@@ -109,7 +111,14 @@ SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
 COMMUNITY_METRICS_LOCK = Lock()
+PRIORITY_ACTIVITY_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
+PRIORITY_ACTIVITY: dict[str, object] = {
+    "last_user_request_at": 0.0,
+    "last_card_scan_at": 0.0,
+    "active_card_scan": 0,
+    "last_background_log_at": 0.0,
+}
 SYNC_STATE: dict[str, object] = {
     "status": "idle",
     "started_at": "",
@@ -174,6 +183,7 @@ DEFAULT_COMMUNITY_METRICS_MAX_CARDS = 160
 DEFAULT_COMMUNITY_METRICS_DELAY_SECONDS = 3.0
 CARD_SCAN_API_BASE = str(os.getenv("CARD_SCAN_API_BASE") or "https://renaissscan.zeabur.app").rstrip("/")
 CARD_SCAN_PROXY_MAX_BYTES = int(os.getenv("CARD_SCAN_PROXY_MAX_BYTES", str(12 * 1024 * 1024)) or (12 * 1024 * 1024))
+CARD_SCAN_UPLOAD_TIMEOUT_SECONDS = max(1.0, float(os.getenv("CARD_SCAN_UPLOAD_TIMEOUT_SECONDS", "30") or 30))
 CARD_SCAN_PROXY_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_PROXY_TIMEOUT_SECONDS", "95") or 95)
 SNKRDUNK_BASE_URL = str(os.getenv("SNKRDUNK_BASE_URL") or "https://snkrdunk.com").rstrip("/")
 CARD_SCAN_SNKR_PER_PAGE = int(os.getenv("CARD_SCAN_SNKR_PER_PAGE", "100") or 100)
@@ -232,6 +242,11 @@ def _env_flag(name: str, default: bool = False) -> bool:
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 I18N_WATCHDOG_ENABLED = _env_flag("I18N_WATCHDOG_ENABLED", True)
 I18N_WATCHDOG_INTERVAL_SECONDS = max(30, int(os.getenv("I18N_WATCHDOG_INTERVAL_SECONDS", "60") or "60"))
+BACKGROUND_PRIORITY_ENABLED = _env_flag("BACKGROUND_PRIORITY_ENABLED", True)
+BACKGROUND_PRIORITY_RECENT_SECONDS = max(0.0, float(os.getenv("BACKGROUND_PRIORITY_RECENT_SECONDS", "8") or 8))
+BACKGROUND_PRIORITY_SLEEP_SECONDS = max(0.1, float(os.getenv("BACKGROUND_PRIORITY_SLEEP_SECONDS", "1.5") or 1.5))
+BACKGROUND_PRIORITY_MAX_WAIT_SECONDS = max(0.0, float(os.getenv("BACKGROUND_PRIORITY_MAX_WAIT_SECONDS", "30") or 30))
+BACKGROUND_PRIORITY_LOG_SECONDS = max(5.0, float(os.getenv("BACKGROUND_PRIORITY_LOG_SECONDS", "30") or 30))
 
 
 def _normalize_samesite(raw: str | None) -> str:
@@ -266,6 +281,111 @@ TRANSLATE_MAX_CHARS = 320
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_priority_request_path(path: str) -> bool:
+    raw = str(path or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("/api/card-scan/"):
+        return True
+    if raw.startswith("/api/wiki/") or raw.startswith("/api/auth/"):
+        return True
+    if raw in {"/", "/index.html", "/card_scan.html", "/beginner.html", "/agent.html"}:
+        return True
+    if raw.endswith(".html"):
+        return True
+    if raw.endswith((".js", ".css")) and "/assets/" in raw:
+        return True
+    if raw in {"/api/intel/feed", "/api/intel/admin-status"}:
+        return True
+    return False
+
+
+def _record_priority_request(path: str) -> None:
+    if not _is_priority_request_path(path):
+        return
+    now = time.monotonic()
+    with PRIORITY_ACTIVITY_LOCK:
+        PRIORITY_ACTIVITY["last_user_request_at"] = now
+        if str(path or "").startswith("/api/card-scan/"):
+            PRIORITY_ACTIVITY["last_card_scan_at"] = now
+
+
+def _begin_card_scan_proxy(target_name: str, body_bytes: int) -> float:
+    now = time.monotonic()
+    with PRIORITY_ACTIVITY_LOCK:
+        PRIORITY_ACTIVITY["last_user_request_at"] = now
+        PRIORITY_ACTIVITY["last_card_scan_at"] = now
+        PRIORITY_ACTIVITY["active_card_scan"] = max(0, int(PRIORITY_ACTIVITY.get("active_card_scan") or 0)) + 1
+    return now
+
+
+def _finish_card_scan_proxy() -> None:
+    with PRIORITY_ACTIVITY_LOCK:
+        PRIORITY_ACTIVITY["active_card_scan"] = max(0, int(PRIORITY_ACTIVITY.get("active_card_scan") or 0) - 1)
+
+
+def _priority_activity_snapshot() -> dict[str, object]:
+    now = time.monotonic()
+    with PRIORITY_ACTIVITY_LOCK:
+        active_card_scan = max(0, int(PRIORITY_ACTIVITY.get("active_card_scan") or 0))
+        last_user = float(PRIORITY_ACTIVITY.get("last_user_request_at") or 0.0)
+        last_scan = float(PRIORITY_ACTIVITY.get("last_card_scan_at") or 0.0)
+    return {
+        "active_card_scan": active_card_scan,
+        "recent_user_seconds": (now - last_user) if last_user else None,
+        "recent_scan_seconds": (now - last_scan) if last_scan else None,
+    }
+
+
+def _priority_is_busy() -> tuple[bool, str]:
+    if not BACKGROUND_PRIORITY_ENABLED:
+        return False, ""
+    snapshot = _priority_activity_snapshot()
+    active_card_scan = int(snapshot.get("active_card_scan") or 0)
+    if active_card_scan > 0:
+        return True, f"active_card_scan={active_card_scan}"
+    recent_scan = snapshot.get("recent_scan_seconds")
+    if isinstance(recent_scan, (int, float)) and recent_scan <= BACKGROUND_PRIORITY_RECENT_SECONDS:
+        return True, f"recent_card_scan={recent_scan:.1f}s"
+    recent_user = snapshot.get("recent_user_seconds")
+    if isinstance(recent_user, (int, float)) and recent_user <= BACKGROUND_PRIORITY_RECENT_SECONDS:
+        return True, f"recent_user_request={recent_user:.1f}s"
+    return False, ""
+
+
+def _yield_for_priority_work(reason: str = "background") -> None:
+    if not BACKGROUND_PRIORITY_ENABLED:
+        return
+    started = time.monotonic()
+    slept = 0.0
+    while True:
+        busy, busy_reason = _priority_is_busy()
+        if not busy:
+            return
+        if slept >= BACKGROUND_PRIORITY_MAX_WAIT_SECONDS:
+            return
+        now = time.monotonic()
+        should_log = False
+        with PRIORITY_ACTIVITY_LOCK:
+            last_log = float(PRIORITY_ACTIVITY.get("last_background_log_at") or 0.0)
+            if now - last_log >= BACKGROUND_PRIORITY_LOG_SECONDS:
+                PRIORITY_ACTIVITY["last_background_log_at"] = now
+                should_log = True
+        if should_log:
+            print(
+                f"[ai-intel-priority] background yield reason={reason} busy={busy_reason}",
+                flush=True,
+            )
+        nap = min(BACKGROUND_PRIORITY_SLEEP_SECONDS, max(0.0, BACKGROUND_PRIORITY_MAX_WAIT_SECONDS - slept))
+        if nap <= 0:
+            return
+        time.sleep(nap)
+        slept = time.monotonic() - started
+
+
+configure_i18n_background_yield_hook(_yield_for_priority_work)
 
 
 def _verify_password(raw_password: str) -> bool:
@@ -1414,11 +1534,18 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     started_monotonic = time.monotonic()
     _start_sync_state(trigger=trigger)
     try:
+        _yield_for_priority_work("x_sync_start")
+
+        def _priority_sync_progress(row: dict) -> None:
+            _record_sync_progress(row)
+            _yield_for_priority_work("x_sync_progress")
+
         result = sync_accounts(
             accounts=accounts,
             window_days=max(1, int(days)),
-            progress_callback=_record_sync_progress,
+            progress_callback=_priority_sync_progress,
         )
+        _yield_for_priority_work("x_sync_i18n_queue")
         build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
         return result
@@ -1443,6 +1570,7 @@ def _spawn_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> bo
 
 
 def _warm_i18n_bundle_from_feed() -> None:
+    _yield_for_priority_work("i18n_warm_start")
     if not FEED_PATH.exists():
         return
     try:
@@ -1455,6 +1583,7 @@ def _warm_i18n_bundle_from_feed() -> None:
 
 
 def _resume_pending_i18n_from_current_feed(trigger: str) -> dict:
+    _yield_for_priority_work(f"i18n_resume:{trigger}")
     if not FEED_PATH.exists():
         return {"queued": False, "langs": [], "reason": "feed_missing", "trigger": trigger}
     try:
@@ -1564,6 +1693,7 @@ def _mark_community_metrics_schedule(
 
 
 def _run_community_metrics_backfill(trigger: str = "scheduled") -> dict:
+    _yield_for_priority_work(f"community_metrics:{trigger}")
     with SYNC_STATE_LOCK:
         sync_running = str(SYNC_STATE.get("status") or "").strip().lower() == "running"
     if sync_running:
@@ -1719,6 +1849,7 @@ def _spawn_website_backup(trigger: str = "manual") -> bool:
 
     def _worker() -> None:
         started = _start_backup_state(trigger=trigger)
+        _yield_for_priority_work(f"website_backup:{trigger}")
         result = run_website_backup(DATA_ROOT, ROOT.parent, reason=trigger)
         _finish_backup_state(result, started)
 
@@ -2096,6 +2227,7 @@ def _refresh_pokemon_news_worker(lang: str, max_items: int, reason: str, delay_s
     if delay_seconds > 0:
         time.sleep(float(delay_seconds))
     try:
+        _yield_for_priority_work(f"pokemon_news:{reason}:{tag}")
         news = _get_pokemon_news(force=True, max_items=max_items, lang=tag)
         warning = str(news.get("warning") or "").strip()
         refresh_at = str(news.get("generated_at") or _now_iso()).strip() or _now_iso()
@@ -2187,6 +2319,7 @@ def _get_job(job_id: str) -> dict | None:
 def _run_analyze_job(job_id: str, url: str) -> None:
     _update_job(job_id, status="running", started_at=_now_iso(), message="背景分析進行中，可安全刷新頁面。")
     try:
+        _yield_for_priority_work("url_analyze_start")
         result = add_manual_tweet(url)
         if not isinstance(result, dict) or not bool(result.get("ok")):
             err_msg = str((result or {}).get("error") or "分析失敗")
@@ -2194,6 +2327,7 @@ def _run_analyze_job(job_id: str, url: str) -> None:
         tweet = result.get("tweet") if isinstance(result.get("tweet"), dict) else {}
         feed = result.get("feed") if isinstance(result.get("feed"), dict) else {}
         if feed:
+            _yield_for_priority_work("url_analyze_i18n_queue")
             build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
         _update_job(
             job_id,
@@ -2532,6 +2666,35 @@ class Handler(SimpleHTTPRequestHandler):
             return False
         return self._require_admin_access()
 
+    def _read_request_body(self, length: int, *, max_bytes: int | None = None, upload_timeout: bool = False) -> bytes | None:
+        if length <= 0:
+            return b"{}"
+        if max_bytes is not None and length > int(max_bytes):
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": f"request body too large; max {int(max_bytes) // (1024 * 1024)}MB",
+                },
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return None
+        timeout = CARD_SCAN_UPLOAD_TIMEOUT_SECONDS if upload_timeout else min(15.0, CARD_SCAN_UPLOAD_TIMEOUT_SECONDS)
+        try:
+            self.connection.settimeout(timeout)
+            return self.rfile.read(length)
+        except (TimeoutError, socket.timeout):
+            self._send_json({"ok": False, "error": "request body read timeout"}, status=HTTPStatus.REQUEST_TIMEOUT)
+            return None
+        except OSError as exc:
+            if _is_client_disconnect_error(exc):
+                return None
+            raise
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except Exception:
+                pass
+
     def _send_card_scan_proxy(self, body: bytes, target_name: str = "recognize") -> None:
         if not self._is_trusted_write_origin():
             self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
@@ -2617,25 +2780,44 @@ class Handler(SimpleHTTPRequestHandler):
                 "User-Agent": "renaiss-aggregator-card-scan/1.0",
             },
         )
+        proxy_started = _begin_card_scan_proxy(target_name, len(body))
         try:
-            with urllib.request.urlopen(request, timeout=CARD_SCAN_PROXY_TIMEOUT_SECONDS) as response:
-                raw = response.read()
-                status = HTTPStatus(response.status) if response.status in HTTPStatus._value2member_map_ else HTTPStatus.OK
-        except urllib.error.HTTPError as exc:
-            raw = exc.read()
-            status = HTTPStatus(exc.code) if exc.code in HTTPStatus._value2member_map_ else HTTPStatus.BAD_GATEWAY
-        except TimeoutError:
-            self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
-            return
-        except Exception as exc:
-            self._send_json({"ok": False, "error": f"card scan failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
-            return
+            try:
+                with urllib.request.urlopen(request, timeout=CARD_SCAN_PROXY_TIMEOUT_SECONDS) as response:
+                    raw = response.read()
+                    status = HTTPStatus(response.status) if response.status in HTTPStatus._value2member_map_ else HTTPStatus.OK
+            except urllib.error.HTTPError as exc:
+                raw = exc.read()
+                status = HTTPStatus(exc.code) if exc.code in HTTPStatus._value2member_map_ else HTTPStatus.BAD_GATEWAY
+            except (TimeoutError, socket.timeout):
+                self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+                return
+            except urllib.error.URLError as exc:
+                reason = getattr(exc, "reason", exc)
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+                    return
+                self._send_json({"ok": False, "error": f"card scan failed: {reason}"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"card scan failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+        finally:
+            _finish_card_scan_proxy()
+        proxy_elapsed_ms = max(0, int(round((time.monotonic() - proxy_started) * 1000)))
 
         try:
             payload = json.loads(raw.decode("utf-8")) if raw else {}
             if isinstance(payload, dict):
                 payload.setdefault("ok", 200 <= int(status) < 300)
-                payload.setdefault("_proxy", {"target": target_name, "api_base": CARD_SCAN_API_BASE})
+                proxy_meta = payload.get("_proxy") if isinstance(payload.get("_proxy"), dict) else {}
+                payload["_proxy"] = {
+                    **proxy_meta,
+                    "target": target_name,
+                    "api_base": CARD_SCAN_API_BASE,
+                    "elapsed_ms": proxy_elapsed_ms,
+                    "request_bytes": len(body),
+                }
                 self._send_json(payload, status=status)
                 return
         except Exception:
@@ -3235,6 +3417,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self._request_path()
+        _record_priority_request(path)
         if self._send_data_file(path):
             return
         if path == "/api/auth/me":
@@ -3299,6 +3482,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self._request_path()
+        _record_priority_request(path)
         if path not in {
             "/api/auth/login",
             "/api/auth/logout",
@@ -3325,8 +3509,19 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
 
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        body = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except Exception:
+            self._send_json({"ok": False, "error": "invalid Content-Length"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        is_card_scan_path = path in {"/api/card-scan/recognize", "/api/card-scan/recognize-cards"}
+        body = self._read_request_body(
+            length,
+            max_bytes=CARD_SCAN_PROXY_MAX_BYTES if is_card_scan_path else None,
+            upload_timeout=is_card_scan_path,
+        )
+        if body is None:
+            return
         if path == "/api/card-scan/recognize":
             self._send_card_scan_proxy(body)
             return

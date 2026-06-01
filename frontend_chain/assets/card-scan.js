@@ -3,6 +3,8 @@
   const MULTI_API_PATH = "/api/card-scan/recognize-cards";
   const SNKR_HISTORY_PATH = "/api/card-scan/snkr-history";
   const RENAISS_MARKET_PATH = "/api/card-scan/renaiss-market";
+  const SCAN_TIMEOUT_MS = 90000;
+  const SCAN_SLOW_NOTICE_MS = 15000;
   const DEFAULT_QUERY = {
     crop: "true",
     crop_mode: "tcgp_obb",
@@ -1253,7 +1255,12 @@
     const apiPath = isMultiScan ? MULTI_API_PATH : API_PATH;
     const controller = new AbortController();
     state.scanController = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 105000);
+    const timeout = window.setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
+    const slowNotice = window.setTimeout(() => {
+      if (requestId !== state.scanRequestId) return;
+      setStatus("辨識時間較長，仍在等待回應；若逾時會自動停止。");
+      refs.matches.innerHTML = `<div class="scan-match-empty">${isMultiScan ? "仍在等待卡冊模型回傳..." : "仍在等待模型回傳..."}</div>`;
+    }, SCAN_SLOW_NOTICE_MS);
     try {
       const response = await fetch(`${apiPath}?${params.toString()}`, {
         method: "POST",
@@ -1279,10 +1286,13 @@
       refs.diagnostics.innerHTML = "";
       refs.multiStrip.hidden = true;
       refs.multiStrip.innerHTML = "";
+      const message = error?.name === "AbortError" ? "網站代理逾時，請再試一次。" : String(error?.message || error);
       refs.title.textContent = error?.name === "AbortError" ? "辨識逾時" : "辨識失敗";
-      setStatus(error?.name === "AbortError" ? "辨識逾時，請再試一次。" : String(error?.message || error), "error");
+      refs.matches.innerHTML = `<div class="scan-match-empty">${escapeHtml(message)}</div>`;
+      setStatus(message, "error");
     } finally {
       window.clearTimeout(timeout);
+      window.clearTimeout(slowNotice);
       if (state.scanController === controller) {
         state.scanController = null;
       }
