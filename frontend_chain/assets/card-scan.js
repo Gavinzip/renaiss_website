@@ -11,7 +11,7 @@
     top_k: "5",
     language_rerank: "true",
     language_ocr: "true",
-    include_debug_crop_base64: "true",
+    include_debug_crop_base64: "false",
   };
   const MULTI_QUERY = {
     detector: "tcgp_obb",
@@ -1288,11 +1288,22 @@
         },
         signal: controller.signal,
       });
-      const payload = await response.json().catch(() => ({}));
+      if (requestId !== state.scanRequestId) return;
+      setStatus(`網站代理已回應 HTTP ${response.status}，正在讀取結果。追蹤碼：${traceId}`);
+      const rawPayload = await response.text();
+      if (requestId !== state.scanRequestId) return;
+      setStatus(`已收到結果，正在解析。追蹤碼：${traceId}`);
+      let payload = {};
+      try {
+        payload = rawPayload ? JSON.parse(rawPayload) : {};
+      } catch (parseError) {
+        throw new Error(`Card scan returned invalid JSON: ${String(parseError?.message || parseError)}`);
+      }
       if (requestId !== state.scanRequestId) return;
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.error || `Card scan failed: HTTP ${response.status}`);
       }
+      setStatus(`結果已解析，正在渲染畫面。追蹤碼：${traceId}`);
       if (isMultiScan) {
         renderMultiResponse(payload);
       } else {
