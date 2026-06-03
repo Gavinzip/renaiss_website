@@ -3,7 +3,7 @@
   const MULTI_API_PATH = "/api/card-scan/recognize-cards";
   const SNKR_HISTORY_PATH = "/api/card-scan/snkr-history";
   const RENAISS_MARKET_PATH = "/api/card-scan/renaiss-market";
-  const SCAN_TIMEOUT_MS = 90000;
+  const SCAN_TIMEOUT_MS = 110000;
   const SCAN_SLOW_NOTICE_MS = 15000;
   const DEFAULT_QUERY = {
     crop: "true",
@@ -54,6 +54,7 @@
     chartSize: { width: 720, height: 260 },
     scanRequestId: 0,
     scanController: null,
+    scanTraceId: "",
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -95,6 +96,20 @@
     conditionRow: $("#scan-condition-row"),
     sourceTabs: $("#scan-market-source-tabs"),
   };
+
+  function createScanTraceId(mode) {
+    const prefix = mode === "multi" ? "multi" : "single";
+    const timestamp = Date.now().toString(36);
+    let random = "";
+    if (window.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(6);
+      window.crypto.getRandomValues(bytes);
+      random = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    } else {
+      random = Math.random().toString(36).slice(2, 10);
+    }
+    return `scan-${prefix}-${timestamp}-${random}`;
+  }
 
   function setStatus(message, mode = "") {
     refs.status.classList.toggle("is-ok", mode === "ok");
@@ -1217,6 +1232,8 @@
     const requestId = state.scanRequestId + 1;
     state.scanRequestId = requestId;
     const isMultiScan = state.scanMode === "multi";
+    const traceId = createScanTraceId(isMultiScan ? "multi" : "single");
+    state.scanTraceId = traceId;
     state.file = file;
     state.response = null;
     state.multiCards = [];
@@ -1246,7 +1263,7 @@
     refs.conditionRow.hidden = true;
     refs.sourceTabs.hidden = true;
     drawChart([], null);
-    setStatus(isMultiScan ? "正在讀取卡冊照片，偵測畫面中的卡片並逐張辨識。" : "正在上傳圖片並辨識。");
+    setStatus(`${isMultiScan ? "正在讀取卡冊照片，偵測畫面中的卡片並逐張辨識。" : "正在上傳圖片並辨識。"} 追蹤碼：${traceId}`);
     setLoading(true);
 
     const form = new FormData();
@@ -1258,13 +1275,17 @@
     const timeout = window.setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
     const slowNotice = window.setTimeout(() => {
       if (requestId !== state.scanRequestId) return;
-      setStatus("辨識時間較長，仍在等待回應；若逾時會自動停止。");
+      setStatus(`辨識時間較長，仍在等待回應；若逾時會自動停止。追蹤碼：${traceId}`);
       refs.matches.innerHTML = `<div class="scan-match-empty">${isMultiScan ? "仍在等待卡冊模型回傳..." : "仍在等待模型回傳..."}</div>`;
     }, SCAN_SLOW_NOTICE_MS);
     try {
       const response = await fetch(`${apiPath}?${params.toString()}`, {
         method: "POST",
         body: form,
+        headers: {
+          Accept: "application/json",
+          "X-Renaiss-Scan-Id": traceId,
+        },
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
@@ -1286,7 +1307,10 @@
       refs.diagnostics.innerHTML = "";
       refs.multiStrip.hidden = true;
       refs.multiStrip.innerHTML = "";
-      const message = error?.name === "AbortError" ? "網站代理逾時，請再試一次。" : String(error?.message || error);
+      const message =
+        error?.name === "AbortError"
+          ? `網站代理逾時，請再試一次。追蹤碼：${traceId}`
+          : `${String(error?.message || error)} 追蹤碼：${traceId}`;
       refs.title.textContent = error?.name === "AbortError" ? "辨識逾時" : "辨識失敗";
       refs.matches.innerHTML = `<div class="scan-match-empty">${escapeHtml(message)}</div>`;
       setStatus(message, "error");

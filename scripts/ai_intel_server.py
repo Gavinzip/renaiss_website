@@ -326,6 +326,14 @@ def _finish_card_scan_proxy() -> None:
         PRIORITY_ACTIVITY["active_card_scan"] = max(0, int(PRIORITY_ACTIVITY.get("active_card_scan") or 0) - 1)
 
 
+def _safe_card_scan_trace_id(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        text = f"server-{secrets.token_urlsafe(8)}"
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "-", text)
+    return text[:96] or f"server-{secrets.token_urlsafe(8)}"
+
+
 def _priority_activity_snapshot() -> dict[str, object]:
     now = time.monotonic()
     with PRIORITY_ACTIVITY_LOCK:
@@ -2447,7 +2455,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", allow_origin)
         self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Renaiss-Scan-Id")
         self.send_header("Vary", "Origin")
 
     def _set_security_headers(self) -> None:
@@ -2637,7 +2645,7 @@ class Handler(SimpleHTTPRequestHandler):
         payload: dict,
         status: HTTPStatus = HTTPStatus.OK,
         extra_headers: dict[str, str] | list[tuple[str, str]] | None = None,
-    ) -> None:
+    ) -> bool:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(int(status))
@@ -2653,9 +2661,10 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_header(str(key), str(value))
             self.end_headers()
             self.wfile.write(raw)
+            return True
         except OSError as exc:
             if _is_client_disconnect_error(exc):
-                return
+                return False
             raise
 
     def _require_admin(self, path: str) -> bool:
@@ -2695,25 +2704,51 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
-    def _send_card_scan_proxy(self, body: bytes, target_name: str = "recognize") -> None:
+    def _send_card_scan_proxy(self, body: bytes, target_name: str = "recognize", trace_id: str | None = None) -> None:
+        trace_id = _safe_card_scan_trace_id(trace_id or self.headers.get("X-Renaiss-Scan-Id"))
+        origin = self._request_origin() or "-"
         if not self._is_trusted_write_origin():
-            self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
+            sent = self._send_json({"ok": False, "error": "Forbidden origin", "_proxy": {"trace_id": trace_id}}, status=HTTPStatus.FORBIDDEN)
+            print(
+                f"[card-scan-proxy] event=reject trace_id={trace_id} target={target_name} "
+                f"status=403 request_bytes={len(body)} origin={origin} reason=forbidden_origin client_sent={str(sent).lower()}",
+                flush=True,
+            )
             return
         if len(body) <= 0:
-            self._send_json({"ok": False, "error": "file is required"}, status=HTTPStatus.BAD_REQUEST)
+            sent = self._send_json({"ok": False, "error": "file is required", "_proxy": {"trace_id": trace_id}}, status=HTTPStatus.BAD_REQUEST)
+            print(
+                f"[card-scan-proxy] event=reject trace_id={trace_id} target={target_name} "
+                f"status=400 request_bytes={len(body)} origin={origin} reason=missing_file client_sent={str(sent).lower()}",
+                flush=True,
+            )
             return
         if len(body) > CARD_SCAN_PROXY_MAX_BYTES:
-            self._send_json(
+            sent = self._send_json(
                 {
                     "ok": False,
                     "error": f"image too large; max {CARD_SCAN_PROXY_MAX_BYTES // (1024 * 1024)}MB",
+                    "_proxy": {"trace_id": trace_id, "request_bytes": len(body)},
                 },
                 status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            print(
+                f"[card-scan-proxy] event=reject trace_id={trace_id} target={target_name} "
+                f"status=413 request_bytes={len(body)} origin={origin} reason=too_large client_sent={str(sent).lower()}",
+                flush=True,
             )
             return
         content_type = str(self.headers.get("Content-Type") or "").strip()
         if "multipart/form-data" not in content_type.lower():
-            self._send_json({"ok": False, "error": "multipart form-data is required"}, status=HTTPStatus.BAD_REQUEST)
+            sent = self._send_json(
+                {"ok": False, "error": "multipart form-data is required", "_proxy": {"trace_id": trace_id, "request_bytes": len(body)}},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            print(
+                f"[card-scan-proxy] event=reject trace_id={trace_id} target={target_name} "
+                f"status=400 request_bytes={len(body)} origin={origin} reason=bad_content_type client_sent={str(sent).lower()}",
+                flush=True,
+            )
             return
 
         parsed = urlparse(self.path)
@@ -2781,6 +2816,24 @@ class Handler(SimpleHTTPRequestHandler):
             },
         )
         proxy_started = _begin_card_scan_proxy(target_name, len(body))
+        print(
+            f"[card-scan-proxy] event=start trace_id={trace_id} target={target_name} "
+            f"request_bytes={len(body)} origin={origin} timeout_s={CARD_SCAN_PROXY_TIMEOUT_SECONDS}",
+            flush=True,
+        )
+
+        def build_proxy_meta(elapsed_ms: int) -> dict:
+            return {
+                "target": target_name,
+                "api_base": CARD_SCAN_API_BASE,
+                "elapsed_ms": elapsed_ms,
+                "request_bytes": len(body),
+                "trace_id": trace_id,
+            }
+
+        def elapsed_ms() -> int:
+            return max(0, int(round((time.monotonic() - proxy_started) * 1000)))
+
         try:
             try:
                 with urllib.request.urlopen(request, timeout=CARD_SCAN_PROXY_TIMEOUT_SECONDS) as response:
@@ -2790,41 +2843,95 @@ class Handler(SimpleHTTPRequestHandler):
                 raw = exc.read()
                 status = HTTPStatus(exc.code) if exc.code in HTTPStatus._value2member_map_ else HTTPStatus.BAD_GATEWAY
             except (TimeoutError, socket.timeout):
-                self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+                proxy_elapsed_ms = elapsed_ms()
+                sent = self._send_json(
+                    {"ok": False, "error": "card scan timeout", "_proxy": build_proxy_meta(proxy_elapsed_ms)},
+                    status=HTTPStatus.GATEWAY_TIMEOUT,
+                )
+                print(
+                    f"[card-scan-proxy] event=timeout trace_id={trace_id} target={target_name} "
+                    f"status=504 elapsed_ms={proxy_elapsed_ms} request_bytes={len(body)} client_sent={str(sent).lower()}",
+                    flush=True,
+                )
                 return
             except urllib.error.URLError as exc:
                 reason = getattr(exc, "reason", exc)
                 if isinstance(reason, (TimeoutError, socket.timeout)):
-                    self._send_json({"ok": False, "error": "card scan timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+                    proxy_elapsed_ms = elapsed_ms()
+                    sent = self._send_json(
+                        {"ok": False, "error": "card scan timeout", "_proxy": build_proxy_meta(proxy_elapsed_ms)},
+                        status=HTTPStatus.GATEWAY_TIMEOUT,
+                    )
+                    print(
+                        f"[card-scan-proxy] event=timeout trace_id={trace_id} target={target_name} "
+                        f"status=504 elapsed_ms={proxy_elapsed_ms} request_bytes={len(body)} client_sent={str(sent).lower()}",
+                        flush=True,
+                    )
                     return
-                self._send_json({"ok": False, "error": f"card scan failed: {reason}"}, status=HTTPStatus.BAD_GATEWAY)
+                proxy_elapsed_ms = elapsed_ms()
+                sent = self._send_json(
+                    {"ok": False, "error": f"card scan failed: {reason}", "_proxy": build_proxy_meta(proxy_elapsed_ms)},
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                print(
+                    f"[card-scan-proxy] event=upstream_error trace_id={trace_id} target={target_name} "
+                    f"status=502 elapsed_ms={proxy_elapsed_ms} request_bytes={len(body)} client_sent={str(sent).lower()} error={reason}",
+                    flush=True,
+                )
                 return
             except Exception as exc:
-                self._send_json({"ok": False, "error": f"card scan failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+                proxy_elapsed_ms = elapsed_ms()
+                sent = self._send_json(
+                    {"ok": False, "error": f"card scan failed: {exc}", "_proxy": build_proxy_meta(proxy_elapsed_ms)},
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                print(
+                    f"[card-scan-proxy] event=proxy_error trace_id={trace_id} target={target_name} "
+                    f"status=502 elapsed_ms={proxy_elapsed_ms} request_bytes={len(body)} client_sent={str(sent).lower()} error={exc}",
+                    flush=True,
+                )
                 return
         finally:
             _finish_card_scan_proxy()
-        proxy_elapsed_ms = max(0, int(round((time.monotonic() - proxy_started) * 1000)))
+        proxy_elapsed_ms = elapsed_ms()
 
         try:
             payload = json.loads(raw.decode("utf-8")) if raw else {}
             if isinstance(payload, dict):
                 payload.setdefault("ok", 200 <= int(status) < 300)
-                proxy_meta = payload.get("_proxy") if isinstance(payload.get("_proxy"), dict) else {}
+                upstream_proxy_meta = payload.get("_proxy") if isinstance(payload.get("_proxy"), dict) else {}
                 payload["_proxy"] = {
-                    **proxy_meta,
+                    **upstream_proxy_meta,
                     "target": target_name,
                     "api_base": CARD_SCAN_API_BASE,
                     "elapsed_ms": proxy_elapsed_ms,
                     "request_bytes": len(body),
+                    "trace_id": trace_id,
                 }
-                self._send_json(payload, status=status)
+                sent = self._send_json(payload, status=status)
+                print(
+                    f"[card-scan-proxy] event=finish trace_id={trace_id} target={target_name} "
+                    f"status={int(status)} elapsed_ms={proxy_elapsed_ms} request_bytes={len(body)} "
+                    f"response_bytes={len(raw)} client_sent={str(sent).lower()}",
+                    flush=True,
+                )
+                if not sent:
+                    print(
+                        f"[card-scan-proxy] event=client_disconnect trace_id={trace_id} target={target_name} "
+                        f"status={int(status)} elapsed_ms={proxy_elapsed_ms}",
+                        flush=True,
+                    )
                 return
         except Exception:
             pass
-        self._send_json(
-            {"ok": False, "error": "card scan returned invalid json", "status": int(status)},
+        sent = self._send_json(
+            {"ok": False, "error": "card scan returned invalid json", "status": int(status), "_proxy": build_proxy_meta(proxy_elapsed_ms)},
             status=HTTPStatus.BAD_GATEWAY,
+        )
+        print(
+            f"[card-scan-proxy] event=invalid_json trace_id={trace_id} target={target_name} "
+            f"status=502 upstream_status={int(status)} elapsed_ms={proxy_elapsed_ms} client_sent={str(sent).lower()}",
+            flush=True,
         )
 
     def _send_card_scan_snkr_history(self) -> None:
@@ -3515,18 +3622,31 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "invalid Content-Length"}, status=HTTPStatus.BAD_REQUEST)
             return
         is_card_scan_path = path in {"/api/card-scan/recognize", "/api/card-scan/recognize-cards"}
+        card_scan_trace_id = _safe_card_scan_trace_id(self.headers.get("X-Renaiss-Scan-Id")) if is_card_scan_path else ""
+        if is_card_scan_path:
+            print(
+                f"[card-scan-proxy] event=upload_start trace_id={card_scan_trace_id} path={path} "
+                f"content_length={length} origin={self._request_origin() or '-'}",
+                flush=True,
+            )
         body = self._read_request_body(
             length,
             max_bytes=CARD_SCAN_PROXY_MAX_BYTES if is_card_scan_path else None,
             upload_timeout=is_card_scan_path,
         )
         if body is None:
+            if is_card_scan_path:
+                print(
+                    f"[card-scan-proxy] event=upload_abort trace_id={card_scan_trace_id} path={path} "
+                    f"content_length={length}",
+                    flush=True,
+                )
             return
         if path == "/api/card-scan/recognize":
-            self._send_card_scan_proxy(body)
+            self._send_card_scan_proxy(body, trace_id=card_scan_trace_id)
             return
         if path == "/api/card-scan/recognize-cards":
-            self._send_card_scan_proxy(body, target_name="recognize-cards")
+            self._send_card_scan_proxy(body, target_name="recognize-cards", trace_id=card_scan_trace_id)
             return
         try:
             payload = json.loads(body.decode("utf-8")) if body else {}
