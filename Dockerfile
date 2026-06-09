@@ -3,21 +3,22 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates git \
+  && apt-get install -y --no-install-recommends \
+    python3 python3-pip ca-certificates git curl procps ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g mmx-cli@1.0.11
 
+COPY requirements.txt ./
+
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
-  requests \
-  beautifulsoup4 \
-  lxml \
-  python-dotenv
+  -r requirements.txt
 
 COPY . .
 
 ENV HOST=0.0.0.0
 ENV PORT=8787
+ENV PYTHONUNBUFFERED=1
 ENV NEWS_SEARCH_PROVIDER=mmx
 ENV NEWS_LANGS=zh-Hant,zh-Hans,en,ko
 ENV X_SYNC_RUN_ON_STARTUP=1
@@ -27,9 +28,13 @@ ENV APP_ENV=server
 ENV WEBSITE_STATIC_ROOT=website
 ENV WEBSITE_DATA_ROOT=/data/RENAISS_WEBSITE
 ENV WEBSITE_DATA_MIGRATE_ONCE=1
-ENV WEBSITE_DATA_RESTORE_ON_STARTUP=0
-ENV WEBSITE_DATA_RESTORE_POLICY=always
+ENV WEBSITE_DATA_RESTORE_ON_STARTUP=1
+ENV WEBSITE_DATA_RESTORE_POLICY=if-empty
 ENV WEBSITE_DATA_RESTORE_FORCE=0
+ENV X_SYNC_ENABLED=1
+ENV X_SYNC_RUN_ON_STARTUP=1
+ENV X_SYNC_INTERVAL_HOURS=0.5
+ENV X_SYNC_WINDOW_DAYS=30
 ENV I18N_FEED_FALLBACK_MODE=base
 ENV WEBSITE_BACKUP_ENABLED=0
 ENV WEBSITE_BACKUP_PROVIDER=git

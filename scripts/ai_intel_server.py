@@ -31,6 +31,9 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
+from expo_profile_store import ExpoProfileStore, ProfileIdentity
+from privy_auth import PrivyAuthError, claims_from_authorization_header
+from renaiss_wallet_client import sync_wallet_cards
 from x_intel_core import (
     ALLOWED_CARD_TYPES,
     ALLOWED_TOPIC_LABELS,
@@ -100,6 +103,7 @@ KNOWLEDGE_MEMORY_PATH = DATA_ROOT / "x_intel_knowledge_memory.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
+PROFILE_STORE = ExpoProfileStore(DATA_ROOT / "expo_profile.sqlite3")
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
@@ -213,6 +217,10 @@ DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
+    "http://127.0.0.1:8081",
+    "http://localhost:8081",
+    "http://127.0.0.1:19006",
+    "http://localhost:19006",
     "http://127.0.0.1:3000",
     "http://localhost:3000",
 }
@@ -3517,6 +3525,148 @@ class Handler(SimpleHTTPRequestHandler):
     def _query_string(self, params: dict[str, str]) -> str:
         return "&".join(f"{quote(str(key), safe='')}={quote(str(value), safe='')}" for key, value in params.items())
 
+    def _profile_claims(self):
+        try:
+            return claims_from_authorization_header(self.headers.get("Authorization"))
+        except PrivyAuthError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=exc.status)
+            return None
+
+    def _profile_auth_state(self, claims) -> dict | None:
+        if not claims:
+            return None
+        try:
+            return PROFILE_STORE.get_or_create_user(
+                ProfileIdentity(
+                    privy_user_id=claims.subject,
+                    email=claims.email,
+                    display_name=claims.name,
+                )
+            )
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"profile storage failed: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return None
+
+    def _send_profile_state(self, claims) -> None:
+        auth = self._profile_auth_state(claims)
+        if not auth:
+            return
+        state = PROFILE_STORE.load_sync_state(claims.subject)
+        self._send_json({"ok": True, **auth, "state": state})
+
+    def _send_profile_collection(self, claims) -> None:
+        auth = self._profile_auth_state(claims)
+        if not auth:
+            return
+        cards = PROFILE_STORE.load_wallet_cards(claims.subject)
+        self._send_json({"ok": True, **auth, "cards": cards, "count": len(cards)})
+
+    def _handle_profile_post(self, path: str, payload: dict) -> None:
+        if path in {"/api/expo-profile/accounts", "/api/expo-profile/login"}:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "Legacy username/password profile auth is disabled. Use Privy bearer auth.",
+                },
+                status=HTTPStatus.GONE,
+            )
+            return
+        if path == "/api/expo-profile/logout":
+            self._send_json({"ok": True, **PROFILE_STORE.empty_auth_state()})
+            return
+
+        claims = self._profile_claims()
+        if not claims:
+            return
+        auth = self._profile_auth_state(claims)
+        if not auth:
+            return
+
+        try:
+            if path == "/api/expo-profile/sync-state":
+                cards = payload.get("cards") if isinstance(payload.get("cards"), list) else []
+                preferences = payload.get("preferences") if isinstance(payload.get("preferences"), dict) else None
+                display_cache = payload.get("displayCache") if isinstance(payload.get("displayCache"), dict) else None
+                state = PROFILE_STORE.save_sync_state(
+                    claims.subject,
+                    cards=cards,
+                    preferences=preferences,
+                    display_cache=display_cache,
+                )
+                self._send_json({"ok": True, **PROFILE_STORE.auth_state(claims.subject), "state": state})
+                return
+
+            if path == "/api/expo-profile/account/delete":
+                next_auth = PROFILE_STORE.delete_user(claims.subject)
+                self._send_json({"ok": True, **next_auth})
+                return
+
+            if path == "/api/expo-profile/wallets":
+                next_auth = PROFILE_STORE.bind_wallet(
+                    claims.subject,
+                    address=str(payload.get("address") or ""),
+                    label=str(payload.get("label") or ""),
+                )
+                self._send_json({"ok": True, **next_auth})
+                return
+
+            if path == "/api/expo-profile/wallets/remove":
+                next_auth = PROFILE_STORE.remove_wallet(claims.subject, str(payload.get("walletId") or ""))
+                self._send_json({"ok": True, **next_auth})
+                return
+
+            if path == "/api/expo-profile/wallets/sync":
+                wallet_id = str(payload.get("walletId") or "").strip()
+                wallet = PROFILE_STORE.wallet_for_user(claims.subject, wallet_id)
+                if not wallet:
+                    self._send_json({"ok": False, "error": "wallet not found"}, status=HTTPStatus.NOT_FOUND)
+                    return
+                limit = _safe_int(payload.get("limit"), 80)
+                try:
+                    cards = sync_wallet_cards(str(wallet.get("address") or ""), max_cards=max(1, min(limit, 120)))
+                except Exception as exc:
+                    next_auth = PROFILE_STORE.mark_wallet_sync(
+                        claims.subject,
+                        wallet_id,
+                        status="error",
+                        error=str(exc),
+                    )
+                    self._send_json(
+                        {"ok": False, **next_auth, "cards": [], "syncedCardCount": 0, "error": str(exc)},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                PROFILE_STORE.save_wallet_cards(claims.subject, wallet_id, cards)
+                next_auth = PROFILE_STORE.mark_wallet_sync(
+                    claims.subject,
+                    wallet_id,
+                    status="synced",
+                    card_count=len(cards),
+                )
+                self._send_json(
+                    {
+                        "ok": True,
+                        **next_auth,
+                        "cards": cards,
+                        "syncedWalletId": wallet_id,
+                        "syncedCardCount": len(cards),
+                        "sync": {
+                            "source": "Renaiss public API",
+                            "wallet": wallet.get("address"),
+                            "count": len(cards),
+                        },
+                    }
+                )
+                return
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._set_cors_headers()
@@ -3535,6 +3685,22 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/card-scan/renaiss-market":
             self._send_card_scan_renaiss_market()
+            return
+        if path == "/api/expo-profile/me":
+            claims = self._profile_claims()
+            auth = self._profile_auth_state(claims)
+            if auth:
+                self._send_json({"ok": True, **auth})
+            return
+        if path == "/api/expo-profile/sync-state":
+            claims = self._profile_claims()
+            if claims:
+                self._send_profile_state(claims)
+            return
+        if path == "/api/expo-profile/collection":
+            claims = self._profile_claims()
+            if claims:
+                self._send_profile_collection(claims)
             return
         if path == "/api/intel/admin-status":
             if not self._require_admin_access():
@@ -3612,6 +3778,14 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/public-feedback",
             "/api/card-scan/recognize",
             "/api/card-scan/recognize-cards",
+            "/api/expo-profile/accounts",
+            "/api/expo-profile/login",
+            "/api/expo-profile/logout",
+            "/api/expo-profile/account/delete",
+            "/api/expo-profile/sync-state",
+            "/api/expo-profile/wallets",
+            "/api/expo-profile/wallets/remove",
+            "/api/expo-profile/wallets/sync",
         }:
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -3652,6 +3826,10 @@ class Handler(SimpleHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8")) if body else {}
         except Exception:
             payload = {}
+
+        if path.startswith("/api/expo-profile/"):
+            self._handle_profile_post(path, payload if isinstance(payload, dict) else {})
+            return
 
         if path == "/api/auth/login":
             username = str(payload.get("username") or "").strip()

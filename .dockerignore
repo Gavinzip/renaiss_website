@@ -1,6 +1,8 @@
 .env
 website/.env
 *.local.env
+.env.*
+!.env.example
 .git
 .gitignore
 __pycache__/
@@ -8,9 +10,11 @@ __pycache__/
 *.pyo
 .DS_Store
 logs/
+.run_logs/
 debug/
 debug_sniping_mode/
 minimax-output/
 .deploy/
 website/data/
 renaiss_sync_data/
+data
