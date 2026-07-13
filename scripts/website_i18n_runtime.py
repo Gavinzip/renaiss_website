@@ -21,6 +21,7 @@ FEED_PATH = DATA_ROOT / "x_intel_feed.json"
 I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 TRANSLATION_CACHE_PATH = DATA_ROOT / "i18n_text_cache.json"
 I18N_TRANSLATE_TRACE_PATH = DATA_ROOT / "i18n_translate_trace.jsonl"
+I18N_TRANSLATE_TRACE_MAX_BYTES = max(0, int(os.getenv("I18N_TRANSLATE_TRACE_MAX_BYTES", str(16 * 1024 * 1024)) or "0"))
 
 TRANSLATION_LOCK = Lock()
 TRANSLATION_REQUEST_LOCK = Lock()
@@ -36,6 +37,7 @@ I18N_BUILD_STATE: dict[str, object] = {
     "finished_at": "",
     "last_error": "",
     "source_generated_at": "",
+    "source_content_hash": "",
     "target_langs": [],
     "langs": [],
     "lang_progress": {},
@@ -44,7 +46,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 11
+I18N_BUILD_VERSION = 12
 I18N_QUEUE_MERGE_WAIT_SEC = 0.25
 I18N_FEED_TEXT_KEYS = {
     "headline",
@@ -82,10 +84,14 @@ I18N_FEED_LIST_KEYS = {
 I18N_MAX_TARGET_TEXTS = int(os.getenv("I18N_MAX_TARGET_TEXTS", "0") or "0")
 I18N_MAX_LIST_ITEMS_PER_FIELD = int(os.getenv("I18N_MAX_LIST_ITEMS_PER_FIELD", "0") or "0")
 I18N_MIN_ACCEPTABLE_COVERAGE = float(os.getenv("I18N_MIN_ACCEPTABLE_COVERAGE", "0.98") or "0.98")
-I18N_FEED_CHUNK_SIZE = max(1, int(os.getenv("I18N_FEED_CHUNK_SIZE", "3") or "3"))
+I18N_FEED_CHUNK_SIZE = max(1, int(os.getenv("I18N_FEED_CHUNK_SIZE", "16") or "16"))
 I18N_FEED_CHUNK_SIZE_BY_LANG = {
-    "ko": max(1, int(os.getenv("I18N_FEED_CHUNK_SIZE_KO", "2") or "2")),
+    "ko": max(1, int(os.getenv("I18N_FEED_CHUNK_SIZE_KO", "16") or "16")),
 }
+I18N_FEED_CHUNK_MAX_SOURCE_CHARS = max(
+    TRANSLATE_MAX_CHARS,
+    int(os.getenv("I18N_FEED_CHUNK_MAX_SOURCE_CHARS", "2400") or "2400"),
+)
 I18N_FEED_ROUND_ROBIN_CHUNKS_PER_TURN = max(1, int(os.getenv("I18N_FEED_ROUND_ROBIN_CHUNKS_PER_TURN", "1") or "1"))
 I18N_FEED_PARALLEL_LANGS = str(os.getenv("I18N_FEED_PARALLEL_LANGS", "0") or "0").strip().lower() in {
     "1",
@@ -188,6 +194,14 @@ def _append_i18n_translate_trace(payload: dict[str, object]) -> None:
         return
     try:
         with I18N_TRACE_LOCK:
+            if (
+                I18N_TRANSLATE_TRACE_MAX_BYTES
+                and I18N_TRANSLATE_TRACE_PATH.exists()
+                and I18N_TRANSLATE_TRACE_PATH.stat().st_size >= I18N_TRANSLATE_TRACE_MAX_BYTES
+            ):
+                previous = I18N_TRANSLATE_TRACE_PATH.with_suffix(I18N_TRANSLATE_TRACE_PATH.suffix + ".previous")
+                previous.unlink(missing_ok=True)
+                I18N_TRANSLATE_TRACE_PATH.replace(previous)
             with I18N_TRANSLATE_TRACE_PATH.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
     except Exception:
@@ -944,6 +958,49 @@ def _collect_feed_i18n_strings(node: object) -> list[str]:
     return [text for _, text in _collect_feed_i18n_entries(node)]
 
 
+def _feed_i18n_source_content_hash(feed: dict[str, object]) -> str:
+    """Return a stable identity for the text that actually needs translation.
+
+    A feed sync updates ``generated_at`` even when its visible source text is
+    unchanged. That timestamp is useful operational metadata, but must not
+    invalidate an in-progress localized bundle. Sorting by entry key also
+    keeps a card reorder from resetting completed translations.
+    """
+    entries = _collect_feed_i18n_entries(feed)
+    canonical = sorted((str(key), str(text)) for key, text in entries)
+    payload = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def feed_i18n_source_content_hash(feed: dict[str, object]) -> str:
+    """Public source identity shared by the runtime and its admin monitor."""
+    return _feed_i18n_source_content_hash(feed)
+
+
+def _bundle_matches_feed_source(bundle: object, source_content_hash: str) -> bool:
+    if not isinstance(bundle, dict) or not bundle:
+        return False
+    if int(bundle.get("version") or 0) != I18N_BUILD_VERSION:
+        return False
+    return str(bundle.get("source_content_hash") or "").strip() == str(source_content_hash or "").strip()
+
+
+def _mapping_from_localized_feed(
+    source_feed: dict[str, object], localized_feed: dict[str, object]
+) -> dict[str, str]:
+    """Recover the persisted translations and apply them to the latest feed.
+
+    The localized bundle contains a snapshot of the whole feed. Rebuilding
+    from its translated text map keeps fresh non-text fields (covers, dates,
+    statuses) when the source text itself is unchanged.
+    """
+    localized_entries = dict(_collect_feed_i18n_entries(localized_feed))
+    return {
+        entry_key: str(localized_entries.get(entry_key) or source_text)
+        for entry_key, source_text in _collect_feed_i18n_entries(source_feed)
+    }
+
+
 def _apply_feed_translation(node: object, mapping: dict[str, str]) -> object:
     def _walk(value: object, parent_key: str = "", path: str = "") -> object:
         if isinstance(value, dict):
@@ -1285,6 +1342,7 @@ def _fallback_feed_from_base(feed: dict[str, object], lang: str, reason: str) ->
     out["_i18n"] = {
         "mode": "base-fallback",
         "source_generated_at": str(feed.get("generated_at") or ""),
+        "source_content_hash": _feed_i18n_source_content_hash(feed),
         "qa": {"coverage": 0.0, "reason": reason},
         "state": _i18n_state_snapshot(),
     }
@@ -1472,12 +1530,34 @@ def _translate_chunk_agent(
         _append_i18n_translate_trace(row)
 
 
+def _chunk_feed_translation_texts(texts: list[str], max_items: int) -> list[list[str]]:
+    """Batch small items efficiently without overfilling a long-text request."""
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for text in texts:
+        source = str(text or "")
+        source_chars = max(1, len(source))
+        would_exceed_items = len(current) >= max_items
+        would_exceed_chars = current and current_chars + source_chars > I18N_FEED_CHUNK_MAX_SOURCE_CHARS
+        if would_exceed_items or would_exceed_chars:
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(source)
+        current_chars += source_chars
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _translate_feed_text_map(
     entries: list[tuple[str, str]] | list[str],
     lang: str,
     *,
     base_feed: dict[str, object] | None = None,
     source_generated_at: str = "",
+    source_content_hash: str = "",
     max_chunks: int | None = None,
 ) -> tuple[dict[str, str], dict[str, object], dict[str, dict[str, object]]]:
     tag = _normalize_lang_tag(lang)
@@ -1623,7 +1703,8 @@ def _translate_feed_text_map(
     chunks_processed = 0
     done_count = translated_count
     chunk_errors: list[str] = []
-    chunk_total = (len(pending_texts) + chunk_size - 1) // chunk_size if pending_texts else 0
+    text_chunks = _chunk_feed_translation_texts(pending_texts, chunk_size)
+    chunk_total = len(text_chunks)
     _append_i18n_translate_trace(
         {
             "stage": "translate_lang_start",
@@ -1652,6 +1733,7 @@ def _translate_feed_text_map(
             qa=qa,
             entry_states=entry_states,
             source_generated_at=source_generated_at,
+            source_content_hash=source_content_hash,
         )
 
     def _flush_translated_rows_to_cache() -> None:
@@ -1672,10 +1754,8 @@ def _translate_feed_text_map(
                 TRANSLATION_CACHE_DIRTY = True
                 _flush_translation_cache_unlocked()
 
-    for start in range(0, len(pending_texts), chunk_size):
+    for chunk_index, chunk in enumerate(text_chunks, start=1):
         _yield_to_priority_work(f"i18n:{tag}:translate_chunk")
-        chunk = pending_texts[start:start + chunk_size]
-        chunk_index = (start // chunk_size) + 1
         chunk_entry_keys: list[str] = []
         chunk_card_ids: list[str] = []
         seen_card_ids: set[str] = set()
@@ -1804,6 +1884,7 @@ def _translate_feed_text_map(
                 },
                 entry_states=entry_states,
                 source_generated_at=source_generated_at,
+                source_content_hash=source_content_hash,
             )
             chunks_processed += 1
             if chunks_limit and chunks_processed >= chunks_limit:
@@ -1879,6 +1960,7 @@ def _translate_feed_text_map(
             },
             entry_states=entry_states,
             source_generated_at=source_generated_at,
+            source_content_hash=source_content_hash,
         )
         chunks_processed += 1
         if chunks_limit and chunks_processed >= chunks_limit:
@@ -2076,13 +2158,15 @@ def _publish_partial_i18n_lang_bundle(
     qa: dict[str, object],
     entry_states: dict[str, dict[str, object]],
     source_generated_at: str,
+    source_content_hash: str,
 ) -> None:
     """Persist a best-effort localized feed while a language is still building."""
     tag = _normalize_lang_tag(lang)
     if tag == "zh-Hant" or not isinstance(base_feed, dict):
         return
     src_generated = str(source_generated_at or base_feed.get("generated_at") or "").strip()
-    if not src_generated:
+    src_content_hash = str(source_content_hash or _feed_i18n_source_content_hash(base_feed)).strip()
+    if not src_content_hash:
         return
     try:
         localized_obj = _apply_feed_translation(copy.deepcopy(base_feed), mapping)
@@ -2099,10 +2183,7 @@ def _publish_partial_i18n_lang_bundle(
 
         with I18N_LOCK:
             latest = _load_i18n_feed_bundle()
-            latest_version_ok = int(latest.get("version") or 0) == I18N_BUILD_VERSION if isinstance(latest, dict) else False
-            latest_source_ok = bool(
-                latest_version_ok and latest and str(latest.get("source_generated_at") or "").strip() == src_generated
-            )
+            latest_source_ok = _bundle_matches_feed_source(latest, src_content_hash)
             latest_langs = latest.get("langs") if latest_source_ok and isinstance(latest.get("langs"), dict) else {}
             latest_qa = latest.get("qa") if latest_source_ok and isinstance(latest.get("qa"), dict) else {}
             latest_cp_root = latest.get("card_progress") if latest_source_ok and isinstance(latest.get("card_progress"), dict) else {}
@@ -2126,16 +2207,18 @@ def _publish_partial_i18n_lang_bundle(
                 "version": I18N_BUILD_VERSION,
                 "generated_at": _now_iso(),
                 "source_generated_at": src_generated,
+                "source_content_hash": src_content_hash,
                 "langs": aligned_langs,
                 "qa": aligned_qa,
                 "card_progress": {
                     "base_lang": "zh-Hant",
                     "source_generated_at": src_generated,
+                    "source_content_hash": src_content_hash,
                     "langs": aligned_cp_langs,
                 },
                 "targets_count": aligned_total_entries,
             }
-            if not _is_active_i18n_source(src_generated):
+            if not _is_active_i18n_source(src_content_hash):
                 return
             _write_i18n_feed_bundle(bundle)
     except Exception as exc:
@@ -2144,6 +2227,7 @@ def _publish_partial_i18n_lang_bundle(
                 "stage": "partial_lang_publish_failed",
                 "lang": tag,
                 "source_generated_at": src_generated,
+                "source_content_hash": src_content_hash,
                 "status": "failed",
                 "error": str(exc)[:220],
             }
@@ -2296,13 +2380,14 @@ def _set_i18n_lang_progress(lang: str, *, total: int, done: int, status: str, mo
         }
 
 
-def _is_active_i18n_source(source_generated_at: str) -> bool:
-    expected = str(source_generated_at or "").strip()
+def _is_active_i18n_source(source_content_hash: str) -> bool:
+    """Check that a worker still owns the same translatable source content."""
+    expected = str(source_content_hash or "").strip()
     if not expected:
         return True
     with I18N_STATE_LOCK:
         status = str(I18N_BUILD_STATE.get("status") or "").strip().lower()
-        current = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
+        current = str(I18N_BUILD_STATE.get("source_content_hash") or "").strip()
     if status != "running":
         return True
     return current == expected
@@ -2317,22 +2402,23 @@ def _maybe_resume_pending_i18n_lang(feed: dict[str, object], lang: str, qa: dict
     if pending_count <= 0:
         return
     src_generated = str(feed.get("generated_at") or "").strip()
-    if not src_generated:
+    src_content_hash = _feed_i18n_source_content_hash(feed)
+    if not src_content_hash:
         return
 
     should_resume = True
     with I18N_STATE_LOCK:
         worker_active = bool(I18N_BUILD_STATE.get("worker_active"))
-        running_for = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
+        running_for = str(I18N_BUILD_STATE.get("source_content_hash") or "").strip()
         current_targets = I18N_BUILD_STATE.get("target_langs")
         target_set = {
             _normalize_lang_tag(str(x))
             for x in (current_targets if isinstance(current_targets, list) else [])
             if str(x).strip()
         }
-        if worker_active and running_for and running_for != src_generated:
+        if worker_active and running_for and running_for != src_content_hash:
             should_resume = False
-        elif worker_active and running_for == src_generated and (not target_set or tag in target_set):
+        elif worker_active and running_for == src_content_hash and (not target_set or tag in target_set):
             should_resume = False
 
     if not should_resume:
@@ -2342,6 +2428,7 @@ def _maybe_resume_pending_i18n_lang(feed: dict[str, object], lang: str, qa: dict
             "event": "auto_resume_pending_lang",
             "lang": tag,
             "source_generated_at": src_generated,
+            "source_content_hash": src_content_hash,
             "pending_count": pending_count,
             "ts": _now_iso(),
         }
@@ -2355,9 +2442,7 @@ def _pending_i18n_targets_for_feed(
 ) -> list[str]:
     if not isinstance(feed, dict):
         return []
-    src_generated = str(feed.get("generated_at") or "").strip()
-    if not src_generated:
-        return []
+    src_content_hash = _feed_i18n_source_content_hash(feed)
 
     requested = [
         _normalize_lang_tag(x)
@@ -2377,9 +2462,7 @@ def _pending_i18n_targets_for_feed(
     bundle = _load_i18n_feed_bundle()
     if not isinstance(bundle, dict) or not bundle:
         return targets
-    bundle_generated = str(bundle.get("source_generated_at") or "").strip()
-    bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION
-    if bundle_generated != src_generated or not bundle_version_ok:
+    if not _bundle_matches_feed_source(bundle, src_content_hash):
         return targets
 
     langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
@@ -2405,21 +2488,23 @@ def _resume_pending_i18n_from_feed(
         return {"queued": False, "langs": [], "trigger": trigger}
 
     src_generated = str(feed.get("generated_at") or "").strip() if isinstance(feed, dict) else ""
+    src_content_hash = _feed_i18n_source_content_hash(feed)
     with I18N_STATE_LOCK:
         worker_active = bool(I18N_BUILD_STATE.get("worker_active"))
-        running_for = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
+        running_for = str(I18N_BUILD_STATE.get("source_content_hash") or "").strip()
         current_targets = I18N_BUILD_STATE.get("target_langs")
         active_targets = {
             _normalize_lang_tag(str(x))
             for x in (current_targets if isinstance(current_targets, list) else [])
             if str(x).strip()
         }
-    if worker_active and running_for == src_generated and all(tag in active_targets for tag in pending_targets):
+    if worker_active and running_for == src_content_hash and all(tag in active_targets for tag in pending_targets):
         return {
             "queued": False,
             "langs": pending_targets,
             "trigger": trigger,
             "source_generated_at": src_generated,
+            "source_content_hash": src_content_hash,
             "reason": "already_running",
         }
 
@@ -2429,11 +2514,18 @@ def _resume_pending_i18n_from_feed(
             "trigger": str(trigger or "watchdog"),
             "langs": pending_targets,
             "source_generated_at": src_generated,
+            "source_content_hash": src_content_hash,
             "ts": _now_iso(),
         }
     )
     _build_i18n_feed_bundle_async(feed, force=False, target_langs=pending_targets)
-    return {"queued": True, "langs": pending_targets, "trigger": trigger, "source_generated_at": src_generated}
+    return {
+        "queued": True,
+        "langs": pending_targets,
+        "trigger": trigger,
+        "source_generated_at": src_generated,
+        "source_content_hash": src_content_hash,
+    }
 
 
 def _build_i18n_feed_bundle(
@@ -2442,6 +2534,7 @@ def _build_i18n_feed_bundle(
     target_langs: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     src_generated = str(feed.get("generated_at") or "").strip()
+    src_content_hash = _feed_i18n_source_content_hash(feed)
     request_langs = [
         _normalize_lang_tag(x)
         for x in (target_langs or I18N_TARGET_LANGS)
@@ -2461,8 +2554,7 @@ def _build_i18n_feed_bundle(
 
     with I18N_LOCK:
         cached = _load_i18n_feed_bundle()
-        cache_version_ok = int(cached.get("version") or 0) == I18N_BUILD_VERSION if isinstance(cached, dict) else False
-        cache_source_ok = bool(cache_version_ok and cached and str(cached.get("source_generated_at") or "").strip() == src_generated)
+        cache_source_ok = _bundle_matches_feed_source(cached, src_content_hash)
         cached_langs = cached.get("langs") if cache_source_ok and isinstance(cached.get("langs"), dict) else {}
         cached_qa = cached.get("qa") if cache_source_ok and isinstance(cached.get("qa"), dict) else {}
         cached_card_progress = cached.get("card_progress") if cache_source_ok and isinstance(cached.get("card_progress"), dict) else {}
@@ -2501,10 +2593,7 @@ def _build_i18n_feed_bundle(
     def _merge_lang_bundle(tag: str, localized: dict[str, object], qa: dict[str, object], card_progress: dict[str, object]) -> None:
         with I18N_LOCK:
             latest = _load_i18n_feed_bundle()
-            latest_version_ok = int(latest.get("version") or 0) == I18N_BUILD_VERSION if isinstance(latest, dict) else False
-            latest_source_ok = bool(
-                latest_version_ok and latest and str(latest.get("source_generated_at") or "").strip() == src_generated
-            )
+            latest_source_ok = _bundle_matches_feed_source(latest, src_content_hash)
 
             if latest_source_ok:
                 latest_langs_raw = latest.get("langs") if isinstance(latest.get("langs"), dict) else {}
@@ -2534,21 +2623,23 @@ def _build_i18n_feed_bundle(
                 "version": I18N_BUILD_VERSION,
                 "generated_at": _now_iso(),
                 "source_generated_at": src_generated,
+                "source_content_hash": src_content_hash,
                 "langs": aligned_langs,
                 "qa": aligned_qa,
                 "card_progress": {
                     "base_lang": "zh-Hant",
                     "source_generated_at": src_generated,
+                    "source_content_hash": src_content_hash,
                     "langs": aligned_cp_langs,
                 },
                 "targets_count": aligned_total_entries or total_entries,
             }
-            if not _is_active_i18n_source(src_generated):
+            if not _is_active_i18n_source(src_content_hash):
                 return
             _write_i18n_feed_bundle(bundle)
 
     def _run_lang(tag: str, max_chunks: int | None = None) -> dict[str, object]:
-        if not _is_active_i18n_source(src_generated):
+        if not _is_active_i18n_source(src_content_hash):
             return {"lang": tag, "status": "stale", "pending_count": 0, "translated": 0}
         try:
             mapping, qa, entry_states = _translate_feed_text_map(
@@ -2556,9 +2647,10 @@ def _build_i18n_feed_bundle(
                 tag,
                 base_feed=feed,
                 source_generated_at=src_generated,
+                source_content_hash=src_content_hash,
                 max_chunks=max_chunks,
             )
-            if not _is_active_i18n_source(src_generated):
+            if not _is_active_i18n_source(src_content_hash):
                 return qa
             localized_obj = _apply_feed_translation(copy.deepcopy(feed), mapping)
             localized = localized_obj if isinstance(localized_obj, dict) else dict(feed)
@@ -2663,6 +2755,7 @@ def _build_i18n_feed_bundle_async(
     if not isinstance(feed, dict):
         return
     src_generated = str(feed.get("generated_at") or "").strip()
+    src_content_hash = _feed_i18n_source_content_hash(feed)
     requested = [
         _normalize_lang_tag(x)
         for x in (target_langs or I18N_TARGET_LANGS)
@@ -2680,9 +2773,9 @@ def _build_i18n_feed_bundle_async(
 
     with I18N_STATE_LOCK:
         status = str(I18N_BUILD_STATE.get("status") or "idle").strip().lower()
-        running_for = str(I18N_BUILD_STATE.get("source_generated_at") or "").strip()
+        running_for = str(I18N_BUILD_STATE.get("source_content_hash") or "").strip()
         worker_active = bool(I18N_BUILD_STATE.get("worker_active"))
-        if status == "running" and running_for == src_generated:
+        if status == "running" and running_for == src_content_hash:
             current_targets = I18N_BUILD_STATE.get("target_langs")
             if not isinstance(current_targets, list):
                 current_targets = []
@@ -2716,6 +2809,7 @@ def _build_i18n_feed_bundle_async(
                 "finished_at": "",
                 "last_error": "",
                 "source_generated_at": src_generated,
+                "source_content_hash": src_content_hash,
                 "target_langs": list(target_tags),
                 "worker_active": True,
             }
@@ -2728,7 +2822,7 @@ def _build_i18n_feed_bundle_async(
             # into the same build round before the round-robin scheduler starts.
             time.sleep(I18N_QUEUE_MERGE_WAIT_SEC)
             with I18N_STATE_LOCK:
-                if str(I18N_BUILD_STATE.get("source_generated_at") or "").strip() != src_generated:
+                if str(I18N_BUILD_STATE.get("source_content_hash") or "").strip() != src_content_hash:
                     return
                 requested = [
                     str(x)
@@ -2770,6 +2864,7 @@ def _build_i18n_feed_bundle_async(
                             "finished_at": _now_iso(),
                             "last_error": first_err,
                             "source_generated_at": src_generated,
+                            "source_content_hash": src_content_hash,
                             "langs": sorted(requested),
                         }
                     )
@@ -2780,6 +2875,7 @@ def _build_i18n_feed_bundle_async(
                             "finished_at": _now_iso(),
                             "last_error": "",
                             "source_generated_at": src_generated,
+                            "source_content_hash": src_content_hash,
                             "langs": sorted(requested),
                         }
                     )
@@ -2790,6 +2886,7 @@ def _build_i18n_feed_bundle_async(
                             "finished_at": _now_iso(),
                             "last_error": "",
                             "source_generated_at": src_generated,
+                            "source_content_hash": src_content_hash,
                             "langs": sorted(requested),
                         }
                     )
@@ -2801,6 +2898,7 @@ def _build_i18n_feed_bundle_async(
                         "finished_at": _now_iso(),
                         "last_error": str(exc),
                         "source_generated_at": src_generated,
+                        "source_content_hash": src_content_hash,
                     }
                 )
         finally:
@@ -2829,6 +2927,7 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         out["_i18n"] = {
             "mode": "building",
             "source_generated_at": str(feed.get("generated_at") or ""),
+            "source_content_hash": _feed_i18n_source_content_hash(feed),
             "qa": {
                 "lang": tag,
                 "coverage": 0.0,
@@ -2877,16 +2976,15 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         localized["_i18n"] = {
             "mode": "pretranslated-partial",
             "source_generated_at": str(feed.get("generated_at") or ""),
+            "source_content_hash": _feed_i18n_source_content_hash(feed),
             "qa": qa_with_cards,
             "state": _i18n_state_snapshot(),
         }
         return localized
 
     bundle = _load_i18n_feed_bundle()
-    src_generated = str(feed.get("generated_at") or "").strip()
-    bundle_generated = str(bundle.get("source_generated_at") or "").strip() if isinstance(bundle, dict) else ""
-    bundle_version_ok = int(bundle.get("version") or 0) == I18N_BUILD_VERSION if isinstance(bundle, dict) else False
-    if not bundle or bundle_generated != src_generated or not bundle_version_ok:
+    src_content_hash = _feed_i18n_source_content_hash(feed)
+    if not _bundle_matches_feed_source(bundle, src_content_hash):
         _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _best_effort_partial_response("bundle_missing_or_outdated")
 
@@ -2902,7 +3000,9 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
         _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _best_effort_partial_response("lang_not_ready")
 
-    out = copy.deepcopy(localized)
+    localized_mapping = _mapping_from_localized_feed(feed, localized)
+    current_localized_obj = _apply_feed_translation(copy.deepcopy(feed), localized_mapping)
+    out = current_localized_obj if isinstance(current_localized_obj, dict) else copy.deepcopy(localized)
     if not isinstance(out, dict):
         return _base_building_response("lang_payload_invalid")
     out["lang"] = tag
@@ -2977,6 +3077,7 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             else "pretranslated-partial"
         ),
         "source_generated_at": str(bundle.get("source_generated_at") or ""),
+        "source_content_hash": str(bundle.get("source_content_hash") or ""),
         "qa": qa_with_cards,
         "state": _i18n_state_snapshot(),
     }
@@ -3089,6 +3190,7 @@ def _queue_i18n_retranslate(
         "mode": "full" if force_full else "incremental",
         "force_full": bool(force_full),
         "source_generated_at": str(feed.get("generated_at") or ""),
+        "source_content_hash": _feed_i18n_source_content_hash(feed),
     }
 
 

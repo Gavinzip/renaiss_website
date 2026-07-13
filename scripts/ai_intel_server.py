@@ -66,6 +66,7 @@ from website_i18n_runtime import (
     build_i18n_feed_bundle_async,
     configure_i18n_background_yield_hook,
     configure_i18n_runtime,
+    feed_i18n_source_content_hash,
     i18n_state_snapshot,
     localized_feed_from_bundle,
     queue_i18n_retranslate,
@@ -992,7 +993,13 @@ def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
     bundle = _read_i18n_bundle_snapshot()
     feed_generated_at = str(feed.get("generated_at") or "").strip()
     bundle_source_generated_at = str(bundle.get("source_generated_at") or "").strip()
-    source_in_sync = bool(feed_generated_at and bundle_source_generated_at and feed_generated_at == bundle_source_generated_at)
+    feed_source_content_hash = feed_i18n_source_content_hash(feed)
+    bundle_source_content_hash = str(bundle.get("source_content_hash") or "").strip()
+    source_in_sync = bool(
+        feed_source_content_hash
+        and bundle_source_content_hash
+        and feed_source_content_hash == bundle_source_content_hash
+    )
     bundle_langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
     bundle_qa = bundle.get("qa") if isinstance(bundle.get("qa"), dict) else {}
     bundle_card_progress_root = bundle.get("card_progress") if isinstance(bundle.get("card_progress"), dict) else {}
@@ -1152,6 +1159,8 @@ def _compute_i18n_alignment(feed: dict, i18n_state: dict) -> dict:
         "base_count": len(base_keys),
         "feed_generated_at": feed_generated_at,
         "bundle_source_generated_at": bundle_source_generated_at,
+        "feed_source_content_hash": feed_source_content_hash,
+        "bundle_source_content_hash": bundle_source_content_hash,
         "source_in_sync": source_in_sync,
         "langs": lang_rows,
         "ready_langs": ready_langs,

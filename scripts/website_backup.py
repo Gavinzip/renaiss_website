@@ -130,8 +130,17 @@ def _snapshot_dirty_repo(repo_dir: Path, branch: str, target_ref: str = "") -> s
     return str(snapshot_target)
 
 
-def _copytree_clean(source: Path, target: Path, include_volatile: bool) -> None:
+def _copytree_clean(source: Path, target: Path, include_volatile: bool, include_logs: bool) -> None:
     volatile_names = {"x_intel_jobs.json"} if not include_volatile else set()
+    if not include_logs:
+        volatile_names.update(
+            {
+                "i18n_translate_trace.jsonl",
+                "i18n_translate_trace.jsonl.previous",
+                "i18n_runtime_log.jsonl",
+                "intel_runtime_log.jsonl",
+            }
+        )
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
@@ -277,8 +286,14 @@ def run_website_backup(data_root: Path, project_root: Path, reason: str = "manua
         repo_dir = _backup_repo_dir(data_root)
         subdir = _backup_subdir(data_root)
         include_volatile = _truthy(os.getenv("WEBSITE_BACKUP_INCLUDE_VOLATILE", "0"))
+        include_logs = _truthy(os.getenv("WEBSITE_BACKUP_INCLUDE_LOGS", "0"))
         _ensure_repo(repo_url, repo_dir, branch, project_root)
-        _copytree_clean(data_root, repo_dir / subdir, include_volatile=include_volatile)
+        _copytree_clean(
+            data_root,
+            repo_dir / subdir,
+            include_volatile=include_volatile,
+            include_logs=include_logs,
+        )
         _run_git(["add", "-A"], repo_dir)
         if not _has_staged_changes(repo_dir):
             return {"ok": True, "changed": False, "reason": reason, "provider": provider, "branch": branch, "subdir": subdir}
@@ -308,6 +323,7 @@ def get_website_backup_status(data_root: Path) -> dict[str, Any]:
         "minute": int(str(os.getenv("WEBSITE_BACKUP_MINUTE") or "10") or 10),
         "run_on_startup": _truthy(os.getenv("WEBSITE_BACKUP_RUN_ON_STARTUP", "0")),
         "include_volatile": _truthy(os.getenv("WEBSITE_BACKUP_INCLUDE_VOLATILE", "0")),
+        "include_logs": _truthy(os.getenv("WEBSITE_BACKUP_INCLUDE_LOGS", "0")),
     }
 
 
