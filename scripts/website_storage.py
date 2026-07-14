@@ -50,6 +50,7 @@ def setup_website_storage(website_root: Path) -> dict[str, Any]:
     legacy_data_dir = (website_root / "data").resolve()
     target_root = get_website_data_dir(website_root)
     migrate_once = _truthy(os.getenv("WEBSITE_DATA_MIGRATE_ONCE", "1"), default=True)
+    link_legacy = _truthy(os.getenv("WEBSITE_STORAGE_LINK_LEGACY", "1"), default=True)
 
     if target_root == legacy_data_dir:
         target_root.mkdir(parents=True, exist_ok=True)
@@ -61,6 +62,17 @@ def setup_website_storage(website_root: Path) -> dict[str, Any]:
         }
 
     target_root.mkdir(parents=True, exist_ok=True)
+
+    # Isolated tests can use a temporary data root without mutating the normal
+    # website/data path or its persistent-storage symlink.
+    if not link_legacy:
+        return {
+            "data_dir": str(legacy_data_dir),
+            "website_data_root": str(target_root),
+            "using_symlink": False,
+            "migrated": False,
+        }
+
     migrated = False
 
     if migrate_once and legacy_data_dir.exists() and not legacy_data_dir.is_symlink() and _is_empty_dir(target_root):

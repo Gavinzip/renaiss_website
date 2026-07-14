@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import errno
+import gzip
 import hashlib
 import hmac
 import json
@@ -23,6 +24,7 @@ from datetime import timedelta
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import parse_qs
@@ -3200,6 +3202,35 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "failed to read data file")
         return True
 
+    def send_head(self):
+        """Serve small text assets with gzip when the browser supports it."""
+
+        path = Path(self.translate_path(self.path))
+        if (
+            self.command not in {"GET", "HEAD"}
+            or path.suffix.lower() not in {".css", ".js", ".json", ".svg", ".webmanifest"}
+            or "gzip" not in str(self.headers.get("Accept-Encoding") or "").lower()
+            or not path.is_file()
+        ):
+            return super().send_head()
+
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return super().send_head()
+
+        compressed = gzip.compress(raw, compresslevel=6)
+        if len(compressed) >= len(raw):
+            return super().send_head()
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(compressed)))
+        self.end_headers()
+        return BytesIO(compressed)
+
     def _request_origin(self) -> str:
         return str(self.headers.get("Origin") or "").strip()
 
@@ -3235,10 +3266,13 @@ class Handler(SimpleHTTPRequestHandler):
         path = self._request_path()
         if path.startswith("/api/") or path.startswith("/data/generated_covers/"):
             return ""
-        if path == "/" or path.endswith(".html"):
+        if path == "/" or path.endswith("/") or path.endswith(".html"):
             return "no-store"
         if path.endswith("/page-prefetch.js"):
             return "no-store"
+        filename = path.rsplit("/", 1)[-1]
+        if re.search(r"-[A-Za-z0-9_-]{8,}\.(?:css|js|json|svg|webp|png|jpe?g|gif|ico|woff2?)$", filename, re.IGNORECASE):
+            return "public, max-age=31536000, immutable"
         if path.endswith((".js", ".css")):
             return "no-cache, max-age=0, must-revalidate"
         return ""

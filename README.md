@@ -116,6 +116,7 @@ The legacy aliases `INTEL_CREATOR_USER`, `INTEL_CREATOR_PASS_HASH`, `INTEL_CREAT
 - `NEWS_INTERVAL_MINUTES`, `NEWS_LANGS`
 - `APP_ENV=server`, `WEBSITE_DATA_ROOT=/data/RENAISS_WEBSITE`
 - `WEBSITE_DATA_RESTORE_ON_STARTUP=0` (restore by admin button), `WEBSITE_DATA_RESTORE_POLICY=always`
+- `WEBSITE_STORAGE_LINK_LEGACY=0` (isolated local tests only; prevents `website/data` from being relinked)
 - `I18N_FEED_FALLBACK_MODE=hide` (do not return source-language cards for a target language while translation is incomplete)
 
 ### Recommended persistent data env for Zeabur
