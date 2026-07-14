@@ -13,7 +13,8 @@
 }
 
 .community-hub-page .shell {
-  width: min(1280px, calc(100% - 2rem));
+  width: calc(100% - clamp(1rem, 1.6vw, 2rem));
+  max-width: none;
   padding-bottom: 1.2rem;
 }
 
