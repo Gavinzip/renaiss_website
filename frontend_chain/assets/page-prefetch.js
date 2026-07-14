@@ -34,7 +34,14 @@
     "card_scan.html": [
       ["./card_scan.html", "document"],
       ["./assets/card-scan.css?v=20260529-card-scan-state1", "style"],
-      ["./assets/card-scan.js?v=20260603-scan-trace2", "script"],
+      ["./assets/card-scan.js?v=20260606-profile6", "script"],
+    ],
+    "profile.html": [
+      ["./profile.html", "document"],
+      ["./assets/index-base.css?v=20260507-logo-original1", "style"],
+      ["./assets/profile.css?v=20260606-profile6", "style"],
+      ["./assets/profile-pwa.js?v=20260606-profile6", "script"],
+      ["./assets/profile.js?v=20260606-profile6", "script"],
     ],
     "game.html": [
       ["./game.html", "document"],

@@ -890,7 +890,8 @@
         order: 1;
       }
 
-      .nav > .btn.btn-sub {
+      .nav > .btn.btn-sub,
+      .nav-game-actions {
         display: none;
       }
 

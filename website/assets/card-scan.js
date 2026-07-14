@@ -3,6 +3,8 @@
   const MULTI_API_PATH = "/api/card-scan/recognize-cards";
   const SNKR_HISTORY_PATH = "/api/card-scan/snkr-history";
   const RENAISS_MARKET_PATH = "/api/card-scan/renaiss-market";
+  const PROFILE_STORAGE_KEY = "renaiss_profile_state_v1";
+  const PROFILE_SCAN_QUEUE_KEY = "renaiss_profile_scan_additions_v1";
   const SCAN_TIMEOUT_MS = 110000;
   const SCAN_SLOW_NOTICE_MS = 15000;
   const DEFAULT_QUERY = {
@@ -1154,6 +1156,7 @@
       snkr.url ? `<a href="${escapeAttr(snkr.url)}" target="_blank" rel="noreferrer">Open SNKR</a>` : "",
       renaissListing?.url ? `<a href="${escapeAttr(renaissListing.url)}" target="_blank" rel="noreferrer">Open Renaiss</a>` : "",
       match.display_image_url ? `<a href="${escapeAttr(match.display_image_url)}" target="_blank" rel="noreferrer">Reference image</a>` : "",
+      `<button type="button" data-profile-track-card><iconify-icon icon="lucide:line-chart"></iconify-icon><span>送到 Profile</span></button>`,
     ].filter(Boolean).join("");
     refs.currentPrice.textContent = formatPrice(price);
     refs.productId.textContent = state.marketSource === "Renaiss"
@@ -1409,6 +1412,76 @@
     return escapeHtml(value).replace(/`/g, "&#96;");
   }
 
+  function readProfileScanQueue() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PROFILE_SCAN_QUEUE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeProfileScanQueue(items) {
+    localStorage.setItem(PROFILE_SCAN_QUEUE_KEY, JSON.stringify(items));
+  }
+
+  function profileScanPayload() {
+    const match = currentMatch();
+    if (!match) return null;
+    const snkr = snkrFor(match);
+    const productId = productIdFor(match);
+    const cached = productId ? state.snkrHistoryByProduct[productId] : null;
+    const history = historyFor(match);
+    const id = productId
+      ? `scan:snkr:${productId}`
+      : `scan:${match.game || match.game_family || ""}:${match.language || ""}:${match.card_id || match.card_code || Date.now()}`;
+    return {
+      id,
+      rawLookup: match,
+      name: match.name_en || match.name || "Scanned card",
+      setName: match.set_id || "",
+      number: match.card_id || match.card_code || "",
+      cardCode: match.card_id || match.card_code || "",
+      game: match.game_family || match.game || "",
+      language: match.language || "",
+      snkrProductId: productId,
+      imageUrl: bestImageFor(match),
+      cropUrl: state.cropUrl,
+      inputUrl: state.inputUrl,
+      marketPriceUsd: priceValueFor(match),
+      priceHistory: Array.isArray(history) ? history : [],
+      snkrTradeCount: Array.isArray(cached?.trades) ? cached.trades.length : 0,
+      url: snkr.url || "",
+      addedAt: new Date().toISOString(),
+    };
+  }
+
+  function sendCurrentCardToProfile() {
+    const profileState = readProfileState();
+    if (!profileState?.user?.isAuthenticated) {
+      setStatus("請先到 Profile 用帳號密碼登入，再把掃描結果加入 Own Profile。", "error");
+      return;
+    }
+    const payload = profileScanPayload();
+    if (!payload) {
+      setStatus("沒有可加入 Profile 的卡片。", "error");
+      return;
+    }
+    const queue = readProfileScanQueue();
+    const next = [payload, ...queue.filter((item) => String(item.id || "") !== payload.id)].slice(0, 40);
+    writeProfileScanQueue(next);
+    setStatus(`已送到 Profile：${payload.name}`, "ok");
+  }
+
+  function readProfileState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
   refs.pickButton.addEventListener("click", () => refs.fileInput.click());
   refs.repickButton.addEventListener("click", () => refs.fileInput.click());
   refs.betaToggle?.addEventListener("click", () => {
@@ -1495,6 +1568,11 @@
       item.classList.toggle("is-active", item === button);
     });
     renderDetail();
+  });
+  refs.actions.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-profile-track-card]");
+    if (!button) return;
+    sendCurrentCardToProfile();
   });
   refs.chart.addEventListener("pointermove", handleChartPointerMove);
   refs.chart.addEventListener("pointerleave", hideChartHover);

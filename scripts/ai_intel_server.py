@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
 import hashlib
 import hmac
@@ -31,9 +32,6 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
-from expo_profile_store import ExpoProfileStore, ProfileIdentity
-from privy_auth import PrivyAuthError, claims_from_authorization_header
-from renaiss_wallet_client import sync_wallet_cards
 from x_intel_core import (
     ALLOWED_CARD_TYPES,
     ALLOWED_TOPIC_LABELS,
@@ -45,6 +43,7 @@ from x_intel_core import (
     load_environment,
     read_x_source_config,
     refresh_card_content,
+    resolve_minimax_key,
     set_manual_selection,
     sync_accounts,
     update_card_classification_fields,
@@ -73,6 +72,17 @@ from website_i18n_runtime import (
     resume_pending_i18n_from_feed,
     translate_texts,
 )
+from directus_wiki import (
+    DirectusWikiError,
+    directus_wiki_enabled,
+    read_directus_beginner_wiki,
+    translate_directus_beginner_wiki,
+    wiki_data_hash,
+    write_directus_beginner_wiki,
+)
+from expo_profile_store import ExpoProfileStore, ProfileIdentity
+from privy_auth import PrivyAuthError, claims_from_authorization_header
+from renaiss_wallet_client import sync_wallet_cards
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,6 +114,8 @@ KNOWLEDGE_MEMORY_PATH = DATA_ROOT / "x_intel_knowledge_memory.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
 POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
+BEGINNER_WIKI_CONTENT_PATH = DATA_ROOT / "beginner_wiki_content.json"
+BEGINNER_WIKI_HISTORY_PATH = DATA_ROOT / "beginner_wiki_history.jsonl"
 PROFILE_STORE = ExpoProfileStore(DATA_ROOT / "expo_profile.sqlite3")
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
@@ -116,6 +128,7 @@ SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
 COMMUNITY_METRICS_LOCK = Lock()
+BEGINNER_WIKI_LOCK = Lock()
 PRIORITY_ACTIVITY_LOCK = Lock()
 SESSIONS: dict[str, dict[str, str]] = {}
 PRIORITY_ACTIVITY: dict[str, object] = {
@@ -204,6 +217,18 @@ CARD_SCAN_RENAISS_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_TIMEOUT_S
 CARD_SCAN_RENAISS_CACHE_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_CACHE_SECONDS", str(10 * 60)) or (10 * 60))
 CARD_SCAN_RENAISS_ACTIVITY_PAGE_LIMIT = max(1, min(50, int(os.getenv("CARD_SCAN_RENAISS_ACTIVITY_PAGE_LIMIT", "50") or 50)))
 CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES = max(1, min(10, int(os.getenv("CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES", "4") or 4)))
+CARD_PROFILE_CHAIN_PAGE_SIZE = max(100, min(10000, int(os.getenv("CARD_PROFILE_CHAIN_PAGE_SIZE", os.getenv("ONCHAIN_PAGE_SIZE", "10000")) or 10000)))
+CARD_PROFILE_CHAIN_TOKEN_SYMBOL = str(os.getenv("CARD_PROFILE_CHAIN_TOKEN_SYMBOL") or os.getenv("PROFILE_CHAIN_CARD_TOKEN_SYMBOL") or "RENAISS").strip().lower()
+CARD_PROFILE_CHAIN_API_URL_DEFAULT = "https://api.etherscan.io/v2/api"
+CARD_PROFILE_CHAIN_ID_DEFAULT = "56"
+CARD_PROFILE_CHAIN_ENV_PATHS = (
+    ROOT.parent / "old" / "tcg_pro" / ".env",
+    ROOT.parent / "renaiss_world" / ".env",
+    ROOT.parent / "other" / "bsc_scan" / ".env",
+)
+CARD_PROFILE_WALLET_MIGRATION_MAP_PATH = Path(
+    str(os.getenv("WALLET_MIGRATION_MAP_PATH") or os.getenv("CARD_PROFILE_WALLET_MIGRATION_MAP_PATH") or ROOT.parent / "renaiss_sync_data" / "state" / "wallet_migration_map.json")
+)
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
 POKEMON_NEWS_STATE: dict[str, dict] = {}
@@ -213,17 +238,154 @@ CARD_SCAN_EXCHANGE_RATE_CACHE: tuple[float, dict] | None = None
 CARD_SCAN_EXCHANGE_RATE_LOCK = Lock()
 CARD_SCAN_RENAISS_MARKET_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_RENAISS_MARKET_LOCK = Lock()
+CARD_PROFILE_WALLET_CACHE: dict[str, tuple[float, dict]] = {}
+CARD_PROFILE_WALLET_LOCK = Lock()
+CARD_PROFILE_CATALOG_CACHE: dict[str, tuple[float, dict]] = {}
+CARD_PROFILE_CATALOG_LOCK = Lock()
+CARD_PROFILE_MIGRATION_CACHE: tuple[float, dict[str, str], str] | None = None
+CARD_PROFILE_MIGRATION_LOCK = Lock()
+
+
+def _read_env_file_value(path: Path, key: str) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+    prefix = f"{key}="
+    export_prefix = f"export {key}="
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if raw.startswith(export_prefix):
+            raw = raw[len("export ") :]
+        if not raw.startswith(prefix):
+            continue
+        value = raw[len(prefix) :].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.strip()
+    return ""
+
+
+def _card_profile_config_value(key: str, default: str = "") -> tuple[str, str]:
+    env_value = str(os.getenv(key) or "").strip()
+    if env_value:
+        return env_value, "process_env"
+    for path in CARD_PROFILE_CHAIN_ENV_PATHS:
+        value = _read_env_file_value(path, key)
+        if value:
+            try:
+                source = str(path.relative_to(ROOT.parent))
+            except Exception:
+                source = path.name
+            return value, source
+    return default, "default" if default else ""
+
+
+def _card_profile_normalize_wallet(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    return value if re.fullmatch(r"0x[a-f0-9]{40}", value) else ""
+
+
+def _card_profile_extract_wallet_pair(row: dict) -> tuple[str, str] | None:
+    old_wallet = _card_profile_normalize_wallet(
+        row.get("old_wallet")
+        or row.get("oldWallet")
+        or row.get("source_wallet")
+        or row.get("sourceWallet")
+        or row.get("from")
+    )
+    new_wallet = _card_profile_normalize_wallet(
+        row.get("new_wallet")
+        or row.get("newWallet")
+        or row.get("target_wallet")
+        or row.get("targetWallet")
+        or row.get("to")
+    )
+    if old_wallet and new_wallet and old_wallet != new_wallet:
+        return old_wallet, new_wallet
+    return None
+
+
+def _card_profile_wallet_migration_map() -> tuple[dict[str, str], str]:
+    global CARD_PROFILE_MIGRATION_CACHE
+    path = CARD_PROFILE_WALLET_MIGRATION_MAP_PATH
+    cache_key = str(path)
+    now = time.time()
+    with CARD_PROFILE_MIGRATION_LOCK:
+        cached = CARD_PROFILE_MIGRATION_CACHE
+        if cached and cached[2] == cache_key and now - cached[0] < 300:
+            return dict(cached[1]), cache_key
+    if not path.exists():
+        with CARD_PROFILE_MIGRATION_LOCK:
+            CARD_PROFILE_MIGRATION_CACHE = (now, {}, cache_key)
+        return {}, cache_key
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    old_to_new: dict[str, str] = {}
+    rows: list[object] = []
+    if isinstance(payload, dict):
+        mappings = payload.get("mappings")
+        if isinstance(mappings, list):
+            rows.extend(mappings)
+        for key, value in payload.items():
+            if key == "mappings":
+                continue
+            old_wallet = _card_profile_normalize_wallet(key)
+            new_wallet = _card_profile_normalize_wallet(value)
+            if old_wallet and new_wallet and old_wallet != new_wallet:
+                old_to_new[old_wallet] = new_wallet
+    elif isinstance(payload, list):
+        rows.extend(payload)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pair = _card_profile_extract_wallet_pair(row)
+        if pair:
+            old_to_new[pair[0]] = pair[1]
+    with CARD_PROFILE_MIGRATION_LOCK:
+        CARD_PROFILE_MIGRATION_CACHE = (now, dict(old_to_new), cache_key)
+    return old_to_new, cache_key
+
+
+def _card_profile_related_wallets(address: str) -> tuple[list[str], dict]:
+    wallet = _card_profile_normalize_wallet(address)
+    if not wallet:
+        return [], {"migration_map_path": str(CARD_PROFILE_WALLET_MIGRATION_MAP_PATH), "legacy_wallet_count": 0}
+    old_to_new, map_path = _card_profile_wallet_migration_map()
+    related = [wallet]
+    seen = {wallet}
+    for old_wallet, new_wallet in old_to_new.items():
+        if new_wallet == wallet and old_wallet not in seen:
+            related.append(old_wallet)
+            seen.add(old_wallet)
+    if wallet in old_to_new and old_to_new[wallet] not in seen:
+        related.append(old_to_new[wallet])
+    return related, {
+        "migration_map_path": map_path,
+        "legacy_wallet_count": max(0, len(related) - 1),
+        "legacy_wallets": related[1:],
+    }
+
+
 AUTH_COOKIE_NAME = "intel_admin_session"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8787",
     "http://localhost:8787",
+    "http://127.0.0.1:8791",
+    "http://localhost:8791",
+    "http://127.0.0.1:8765",
+    "http://localhost:8765",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
     "http://127.0.0.1:8081",
     "http://localhost:8081",
     "http://127.0.0.1:19006",
     "http://localhost:19006",
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
 }
 PROTECTED_POST_PATHS = {
     "/api/intel/sync",
@@ -239,6 +401,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/backup",
     "/api/intel/restore",
     "/api/intel/retranslate",
+    "/api/wiki/beginner",
 }
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -251,6 +414,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 I18N_WATCHDOG_ENABLED = _env_flag("I18N_WATCHDOG_ENABLED", True)
 I18N_WATCHDOG_INTERVAL_SECONDS = max(30, int(os.getenv("I18N_WATCHDOG_INTERVAL_SECONDS", "60") or "60"))
+DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE = _env_flag("DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE", True)
 BACKGROUND_PRIORITY_ENABLED = _env_flag("BACKGROUND_PRIORITY_ENABLED", True)
 BACKGROUND_PRIORITY_RECENT_SECONDS = max(0.0, float(os.getenv("BACKGROUND_PRIORITY_RECENT_SECONDS", "8") or 8))
 BACKGROUND_PRIORITY_SLEEP_SECONDS = max(0.1, float(os.getenv("BACKGROUND_PRIORITY_SLEEP_SECONDS", "1.5") or 1.5))
@@ -277,12 +441,73 @@ AUTH_REQUIRED = _env_flag("INTEL_AUTH_REQUIRED", True)
 AUTH_USERNAME = str(os.getenv("INTEL_ADMIN_USER", "")).strip()
 AUTH_PASSWORD_HASH = str(os.getenv("INTEL_ADMIN_PASS_HASH", "")).strip()
 AUTH_PASSWORD_PLAIN = str(os.getenv("INTEL_ADMIN_PASS", "")).strip()
-AUTH_CONFIGURED = bool(AUTH_USERNAME and (AUTH_PASSWORD_HASH or AUTH_PASSWORD_PLAIN))
+CREATOR_USERNAME = str(os.getenv("WIKI_CREATOR_USER", "") or os.getenv("INTEL_CREATOR_USER", "")).strip()
+CREATOR_PASSWORD_HASH = str(os.getenv("WIKI_CREATOR_PASS_HASH", "") or os.getenv("INTEL_CREATOR_PASS_HASH", "")).strip()
+CREATOR_PASSWORD_PLAIN = str(os.getenv("WIKI_CREATOR_PASS", "") or os.getenv("INTEL_CREATOR_PASS", "")).strip()
 SESSION_TTL_SECONDS = max(300, int(os.getenv("INTEL_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL_SECONDS)) or DEFAULT_SESSION_TTL_SECONDS))
 COOKIE_SAMESITE = _normalize_samesite(os.getenv("INTEL_COOKIE_SAMESITE", "Lax"))
 COOKIE_SECURE_ENV = str(os.getenv("INTEL_COOKIE_SECURE", "")).strip().lower()
 COOKIE_DOMAIN = str(os.getenv("INTEL_COOKIE_DOMAIN", "")).strip()
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("INTEL_ALLOWED_ORIGINS", ""))
+
+
+def _auth_account(username: str, role: str, password_hash: str = "", password_plain: str = "") -> dict | None:
+    user = str(username or "").strip()
+    if not user:
+        return None
+    if not str(password_hash or "").strip() and not str(password_plain or "").strip():
+        return None
+    return {
+        "username": user,
+        "role": str(role or "creator").strip().lower() or "creator",
+        "password_hash": str(password_hash or "").strip(),
+        "password_plain": str(password_plain or ""),
+    }
+
+
+def _parse_creator_accounts(raw: str | None) -> list[dict]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = []
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        return []
+    accounts: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        account = _auth_account(
+            item.get("username") or item.get("user") or item.get("name"),
+            item.get("role") or "creator",
+            item.get("pass_hash") or item.get("password_hash") or item.get("hash") or "",
+            item.get("pass") or item.get("password") or "",
+        )
+        if account:
+            accounts.append(account)
+    return accounts
+
+
+def _build_auth_accounts() -> dict[str, dict]:
+    accounts: dict[str, dict] = {}
+    admin = _auth_account(AUTH_USERNAME, "admin", AUTH_PASSWORD_HASH, AUTH_PASSWORD_PLAIN)
+    if admin:
+        accounts[admin["username"]] = admin
+    creator = _auth_account(CREATOR_USERNAME, "creator", CREATOR_PASSWORD_HASH, CREATOR_PASSWORD_PLAIN)
+    if creator:
+        accounts[creator["username"]] = creator
+    for account in _parse_creator_accounts(os.getenv("WIKI_CREATOR_USERS_JSON") or os.getenv("INTEL_CREATOR_USERS_JSON")):
+        accounts[account["username"]] = account
+    return accounts
+
+
+AUTH_ACCOUNTS = _build_auth_accounts()
+AUTH_CONFIGURED = bool(AUTH_ACCOUNTS)
+ADMIN_CONFIGURED = any(account.get("role") == "admin" for account in AUTH_ACCOUNTS.values())
 
 TRANSLATE_MAX_ITEMS = 220
 TRANSLATE_MAX_CHARS = 320
@@ -405,12 +630,10 @@ def _yield_for_priority_work(reason: str = "background") -> None:
 configure_i18n_background_yield_hook(_yield_for_priority_work)
 
 
-def _verify_password(raw_password: str) -> bool:
+def _password_matches(raw_password: str, password_hash: str = "", password_plain: str = "") -> bool:
     password = str(raw_password or "")
-    if not AUTH_CONFIGURED:
-        return False
-    if AUTH_PASSWORD_HASH:
-        encoded = AUTH_PASSWORD_HASH
+    if password_hash:
+        encoded = str(password_hash or "").strip()
         if encoded.startswith("pbkdf2_sha256$"):
             parts = encoded.split("$", 3)
             if len(parts) != 4:
@@ -429,9 +652,28 @@ def _verify_password(raw_password: str) -> bool:
             _, salt, expected_hex = parts
             digest = hashlib.sha256(f"{salt}{password}".encode("utf-8")).hexdigest()
             return hmac.compare_digest(digest, expected_hex)
-    if AUTH_PASSWORD_PLAIN:
-        return hmac.compare_digest(password, AUTH_PASSWORD_PLAIN)
+    if password_plain:
+        return hmac.compare_digest(password, str(password_plain or ""))
     return False
+
+
+def _verify_password(raw_password: str) -> bool:
+    admin = AUTH_ACCOUNTS.get(AUTH_USERNAME)
+    if not admin:
+        return False
+    return _password_matches(raw_password, admin.get("password_hash", ""), admin.get("password_plain", ""))
+
+
+def _authenticate_account(username: str, raw_password: str) -> dict | None:
+    user = str(username or "").strip()
+    if not user:
+        return None
+    account = AUTH_ACCOUNTS.get(user)
+    if not account:
+        return None
+    if not _password_matches(raw_password, account.get("password_hash", ""), account.get("password_plain", "")):
+        return None
+    return dict(account)
 
 
 def _parse_iso_utc(raw: str | None) -> datetime | None:
@@ -531,7 +773,7 @@ def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
         SESSIONS.pop(sid, None)
 
 
-def _create_session(username: str) -> str:
+def _create_session(username: str, role: str = "admin") -> str:
     now = datetime.now(timezone.utc)
     expires = now + timedelta(seconds=SESSION_TTL_SECONDS)
     token = secrets.token_urlsafe(32)
@@ -539,6 +781,7 @@ def _create_session(username: str) -> str:
         _purge_sessions_unlocked(now.isoformat())
         SESSIONS[token] = {
             "username": username,
+            "role": str(role or "creator").strip().lower() or "creator",
             "created_at": now.isoformat(),
             "expires_at": expires.isoformat(),
         }
@@ -584,6 +827,509 @@ def _write_jobs_unlocked(jobs: dict) -> None:
     payload = {"updated_at": _now_iso(), "jobs": jobs}
     JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
     JOBS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_beginner_wiki_content() -> dict:
+    if directus_wiki_enabled():
+        return read_directus_beginner_wiki()
+    with BEGINNER_WIKI_LOCK:
+        if not BEGINNER_WIKI_CONTENT_PATH.exists():
+            return {"exists": False, "data": None, "meta": {"provider": "local"}}
+        try:
+            raw = json.loads(BEGINNER_WIKI_CONTENT_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"failed to read beginner wiki content: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("beginner wiki content format invalid")
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("beginner wiki data format invalid")
+    meta = {key: raw.get(key) for key in ["version", "updated_at", "updated_by", "updated_role", "revision"] if raw.get(key) is not None}
+    meta["provider"] = "local"
+    meta["source"] = "local-json"
+    meta["content_hash"] = wiki_data_hash(data)
+    return {"exists": True, "data": data, "meta": meta}
+
+
+def _validate_beginner_wiki_data(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("data must be an object")
+    guides = data.get("guides")
+    if not isinstance(guides, dict) or not guides:
+        raise ValueError("data.guides must be a non-empty object")
+    for lang, guide in guides.items():
+        if not isinstance(guide, dict):
+            raise ValueError(f"data.guides.{lang} must be an object")
+        sections = guide.get("sections")
+        if not isinstance(sections, list):
+            raise ValueError(f"data.guides.{lang}.sections must be an array")
+    return data
+
+
+class WikiEditConflictError(RuntimeError):
+    """Raised when a creator saves from a stale Wiki snapshot."""
+
+
+def _wiki_target_langs(source_lang: str) -> list[str]:
+    source = _normalize_lang_tag(source_lang)
+    return [lang for lang in I18N_MONITOR_LANGS if lang != source]
+
+
+def _wiki_translator(rows: list[str], lang: str) -> tuple[list[str], str]:
+    return translate_texts(
+        [str(row or "").strip()[:TRANSLATE_MAX_CHARS] for row in rows],
+        lang=_normalize_lang_tag(lang),
+    )
+
+
+def _should_translate_wiki_text(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text or re.match(r"^https?://", text, re.I):
+        return False
+    return bool(re.search(r"[A-Za-z\u3400-\u9fff\uac00-\ud7af]", text))
+
+
+def _translate_wiki_values(values: list[object], target_lang: str) -> tuple[list[str], str]:
+    rows = [str(value or "") for value in values]
+    indexed = [(idx, value) for idx, value in enumerate(rows) if _should_translate_wiki_text(value)]
+    if not indexed:
+        return rows, "empty"
+    translated_rows, mode = _wiki_translator([value for _, value in indexed], target_lang)
+    if mode == "no-key":
+        raise RuntimeError("missing_minimax_api_key")
+    out = list(rows)
+    for offset, (idx, fallback) in enumerate(indexed):
+        candidate = str(translated_rows[offset] if offset < len(translated_rows) else fallback).strip()
+        out[idx] = candidate or fallback
+    return out, mode
+
+
+_MISSING = object()
+
+
+def _path_value(node: object, path: tuple[object, ...]) -> object:
+    cur = node
+    for part in path:
+        if isinstance(cur, dict) and isinstance(part, str) and part in cur:
+            cur = cur[part]
+            continue
+        if isinstance(cur, list) and isinstance(part, int) and 0 <= part < len(cur):
+            cur = cur[part]
+            continue
+        return _MISSING
+    return cur
+
+
+def _collect_wiki_translation_refs(
+    node: object,
+    refs: list[tuple[object, object, tuple[object, ...]]],
+    skip_keys: set[str],
+    parent: object | None = None,
+    key: object | None = None,
+    path: tuple[object, ...] = (),
+) -> list[tuple[object, object, tuple[object, ...]]]:
+    if isinstance(node, str):
+        if parent is not None and key is not None and str(key) not in skip_keys and _should_translate_wiki_text(node):
+            refs.append((parent, key, path))
+        return refs
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            _collect_wiki_translation_refs(item, refs, skip_keys, node, index, (*path, index))
+        return refs
+    if isinstance(node, dict):
+        for child_key, value in node.items():
+            if str(child_key) in skip_keys:
+                continue
+            _collect_wiki_translation_refs(value, refs, skip_keys, node, child_key, (*path, child_key))
+    return refs
+
+
+def _translate_wiki_clone(
+    value: object,
+    target_lang: str,
+    skip_keys: set[str] | None = None,
+    previous_source: object | None = None,
+    current_target: object | None = None,
+) -> tuple[object, list[str]]:
+    cloned = copy.deepcopy(value)
+    refs: list[tuple[object, object, tuple[object, ...]]] = []
+    _collect_wiki_translation_refs(cloned, refs, skip_keys or set())
+    translate_jobs: list[tuple[object, object, str]] = []
+    for parent, key, path in refs:
+        source_value = str(parent[key] or "")  # type: ignore[index]
+        previous_value = _path_value(previous_source, path) if previous_source is not None else _MISSING
+        target_value = _path_value(current_target, path) if current_target is not None else _MISSING
+        if previous_value is not _MISSING and str(previous_value or "") == source_value and target_value is not _MISSING and str(target_value or "").strip():
+            parent[key] = str(target_value)  # type: ignore[index]
+            continue
+        translate_jobs.append((parent, key, source_value))
+    translated, mode = _translate_wiki_values([job[2] for job in translate_jobs], target_lang)
+    for index, (parent, key, fallback) in enumerate(translate_jobs):
+        parent[key] = translated[index] if index < len(translated) else fallback  # type: ignore[index]
+    return cloned, [mode] if mode and mode != "empty" else []
+
+
+def _set_localized_value(row: dict, field: str, lang: str, value: str) -> None:
+    current = row.get(field)
+    if not isinstance(current, dict):
+        current = {}
+    current[lang] = value
+    row[field] = current
+
+
+def _auto_translate_localized_rows(
+    rows: list,
+    previous_rows: list,
+    source: str,
+    target: str,
+    fields: list[str],
+) -> list[str]:
+    modes: list[str] = []
+    for field in fields:
+        jobs: list[tuple[int, str]] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            previous_row = previous_rows[index] if index < len(previous_rows) and isinstance(previous_rows[index], dict) else {}
+            source_value = _localized_source_value(row.get(field), source)
+            previous_value = _localized_source_value(previous_row.get(field), source)
+            target_value = _localized_source_value(row.get(field), target)
+            if source_value == previous_value and target_value:
+                _set_localized_value(row, field, target, target_value)
+            else:
+                jobs.append((index, source_value))
+        translated_values, field_mode = _translate_wiki_values([value for _, value in jobs], target)
+        modes.append(field_mode)
+        for offset, (index, fallback) in enumerate(jobs):
+            if index < len(rows) and isinstance(rows[index], dict):
+                _set_localized_value(rows[index], field, target, translated_values[offset] if offset < len(translated_values) else fallback)
+    return modes
+
+
+def _auto_translate_wiki_data(data: dict, source_lang: str, previous_data: dict | None = None) -> tuple[dict, list[str]]:
+    source = _normalize_lang_tag(source_lang)
+    translated_data = copy.deepcopy(data)
+    guides = translated_data.get("guides") if isinstance(translated_data.get("guides"), dict) else {}
+    labels = translated_data.get("labels") if isinstance(translated_data.get("labels"), dict) else {}
+    topics = translated_data.get("topics") if isinstance(translated_data.get("topics"), dict) else {}
+    menu_labels = translated_data.get("menuLabels") if isinstance(translated_data.get("menuLabels"), dict) else {}
+    faq = translated_data.get("faq") if isinstance(translated_data.get("faq"), dict) else {}
+    tools = translated_data.get("tools") if isinstance(translated_data.get("tools"), list) else []
+    commands = translated_data.get("commands") if isinstance(translated_data.get("commands"), list) else []
+    command_showcase = translated_data.get("commandShowcase") if isinstance(translated_data.get("commandShowcase"), dict) else {}
+    sbt_items = translated_data.get("sbtItems") if isinstance(translated_data.get("sbtItems"), list) else []
+    previous = previous_data if isinstance(previous_data, dict) else {}
+    previous_guides = previous.get("guides") if isinstance(previous.get("guides"), dict) else {}
+    previous_labels = previous.get("labels") if isinstance(previous.get("labels"), dict) else {}
+    previous_topics = previous.get("topics") if isinstance(previous.get("topics"), dict) else {}
+    previous_menu_labels = previous.get("menuLabels") if isinstance(previous.get("menuLabels"), dict) else {}
+    previous_faq = previous.get("faq") if isinstance(previous.get("faq"), dict) else {}
+    previous_tools = previous.get("tools") if isinstance(previous.get("tools"), list) else []
+    previous_commands = previous.get("commands") if isinstance(previous.get("commands"), list) else []
+    previous_command_showcase = previous.get("commandShowcase") if isinstance(previous.get("commandShowcase"), dict) else {}
+    previous_sbt_items = previous.get("sbtItems") if isinstance(previous.get("sbtItems"), list) else []
+    source_guide = guides.get(source)
+    if not isinstance(source_guide, dict):
+        raise ValueError(f"data.guides.{source} is required for translation")
+
+    modes: list[str] = []
+    source_labels = labels.get(source) if isinstance(labels.get(source), dict) else None
+    source_topics = topics.get(source) if isinstance(topics.get(source), list) else None
+    source_menu_labels = menu_labels.get(source) if isinstance(menu_labels.get(source), dict) else None
+    source_faq = faq.get(source) if isinstance(faq.get(source), list) else []
+    skip_section_keys = {"type", "topic", "image", "image_index", "imageUrl", "image_url", "layout"}
+    for target in _wiki_target_langs(source):
+        target_guide, guide_modes = _translate_wiki_clone(
+            source_guide,
+            target,
+            skip_section_keys,
+            previous_source=previous_guides.get(source),
+            current_target=guides.get(target),
+        )
+        guides[target] = target_guide
+        modes.extend(guide_modes)
+        if isinstance(source_labels, dict):
+            target_labels, label_modes = _translate_wiki_clone(
+                source_labels,
+                target,
+                previous_source=previous_labels.get(source),
+                current_target=labels.get(target),
+            )
+            labels[target] = target_labels
+            modes.extend(label_modes)
+        if isinstance(source_topics, list):
+            target_topics, topic_modes = _translate_wiki_clone(
+                source_topics,
+                target,
+                skip_keys={"id", "anchor", "icon"},
+                previous_source=previous_topics.get(source),
+                current_target=topics.get(target),
+            )
+            topics[target] = target_topics
+            modes.extend(topic_modes)
+        if isinstance(source_menu_labels, dict):
+            target_menu, menu_modes = _translate_wiki_clone(
+                source_menu_labels,
+                target,
+                skip_keys={"ids", "icon"},
+                previous_source=previous_menu_labels.get(source),
+                current_target=menu_labels.get(target),
+            )
+            menu_labels[target] = target_menu
+            modes.extend(menu_modes)
+        if isinstance(source_faq, list):
+            target_faq, faq_modes = _translate_wiki_clone(
+                source_faq,
+                target,
+                previous_source=previous_faq.get(source),
+                current_target=faq.get(target),
+            )
+            faq[target] = target_faq
+            modes.extend(faq_modes)
+        if tools:
+            name_jobs: list[tuple[int, str]] = []
+            label_jobs: list[tuple[int, str]] = []
+            for index, tool in enumerate(tools):
+                if not isinstance(tool, dict):
+                    continue
+                previous_tool = previous_tools[index] if index < len(previous_tools) and isinstance(previous_tools[index], dict) else {}
+                source_name = _localized_source_value(tool.get("name"), source)
+                previous_name = _localized_source_value(previous_tool.get("name"), source)
+                target_name = _localized_source_value(tool.get("name"), target)
+                if source_name == previous_name and target_name:
+                    _set_localized_value(tool, "name", target, target_name)
+                else:
+                    name_jobs.append((index, source_name))
+                source_label = _localized_source_value(tool.get("linkLabel"), source)
+                previous_label = _localized_source_value(previous_tool.get("linkLabel"), source)
+                target_label = _localized_source_value(tool.get("linkLabel"), target)
+                if source_label == previous_label and target_label:
+                    _set_localized_value(tool, "linkLabel", target, target_label)
+                else:
+                    label_jobs.append((index, source_label))
+            translated_names, name_mode = _translate_wiki_values([value for _, value in name_jobs], target)
+            translated_labels, label_mode = _translate_wiki_values([value for _, value in label_jobs], target)
+            modes.extend([name_mode, label_mode])
+            for offset, (index, fallback) in enumerate(name_jobs):
+                if index < len(tools) and isinstance(tools[index], dict):
+                    _set_localized_value(tools[index], "name", target, translated_names[offset] if offset < len(translated_names) else fallback)
+            for offset, (index, fallback) in enumerate(label_jobs):
+                if index < len(tools) and isinstance(tools[index], dict):
+                    _set_localized_value(tools[index], "linkLabel", target, translated_labels[offset] if offset < len(translated_labels) else fallback)
+        if commands:
+            modes.extend(_auto_translate_localized_rows(commands, previous_commands, source, target, ["name", "desc", "meta"]))
+        showcase_images = command_showcase.get("images") if isinstance(command_showcase.get("images"), list) else []
+        previous_showcase_images = previous_command_showcase.get("images") if isinstance(previous_command_showcase.get("images"), list) else []
+        if showcase_images:
+            modes.extend(_auto_translate_localized_rows(showcase_images, previous_showcase_images, source, target, ["caption"]))
+        if sbt_items:
+            modes.extend(_auto_translate_localized_rows(sbt_items, previous_sbt_items, source, target, ["name", "requirement", "badge"]))
+
+    translated_data["guides"] = guides
+    translated_data["labels"] = labels
+    translated_data["topics"] = topics
+    translated_data["menuLabels"] = menu_labels
+    translated_data["faq"] = faq
+    translated_data["tools"] = tools
+    translated_data["commands"] = commands
+    translated_data["commandShowcase"] = command_showcase
+    translated_data["sbtItems"] = sbt_items
+    return translated_data, sorted(set(mode for mode in modes if mode and mode != "empty"))
+
+
+def _localized_source_value(value: object, source_lang: str) -> str:
+    if isinstance(value, dict):
+        return str(value.get(source_lang) or value.get("zh-Hant") or value.get("en") or "")
+    return str(value or "")
+
+
+def _merge_localized_source_field(latest_value: object, draft_value: object, source_lang: str) -> dict:
+    merged = copy.deepcopy(latest_value) if isinstance(latest_value, dict) else {}
+    merged[source_lang] = _localized_source_value(draft_value, source_lang)
+    return merged
+
+
+def _merge_source_language_map(latest: dict, draft: dict, key: str, source: str) -> None:
+    latest_map = latest.get(key) if isinstance(latest.get(key), dict) else {}
+    draft_map = draft.get(key) if isinstance(draft.get(key), dict) else {}
+    merged = dict(latest_map)
+    if source in draft_map:
+        merged[source] = copy.deepcopy(draft_map[source])
+    latest[key] = merged
+
+
+def _merge_localized_row_list(
+    latest_rows: list,
+    draft_rows: list,
+    source: str,
+    fields: list[str],
+) -> list[dict]:
+    merged_rows: list[dict] = []
+    for index, draft_row in enumerate(draft_rows):
+        if not isinstance(draft_row, dict):
+            continue
+        latest_row = latest_rows[index] if index < len(latest_rows) and isinstance(latest_rows[index], dict) else {}
+        merged_row = copy.deepcopy(draft_row)
+        for field in fields:
+            merged_row[field] = _merge_localized_source_field(latest_row.get(field), draft_row.get(field), source)
+        merged_rows.append(merged_row)
+    return merged_rows
+
+
+def _merge_wiki_source_language(latest_data: object, draft_data: dict, source_lang: str) -> dict:
+    """Apply only the creator's current source language onto the latest Wiki.
+
+    The browser still submits a full draft because it is editing a rich page,
+    but the server must not trust stale sibling translations from that draft.
+    """
+
+    source = _normalize_lang_tag(source_lang)
+    latest = copy.deepcopy(latest_data) if isinstance(latest_data, dict) else {}
+    draft = copy.deepcopy(draft_data)
+
+    latest_guides = latest.get("guides") if isinstance(latest.get("guides"), dict) else {}
+    draft_guides = draft.get("guides") if isinstance(draft.get("guides"), dict) else {}
+    source_guide = draft_guides.get(source)
+    if not isinstance(source_guide, dict):
+        raise ValueError(f"data.guides.{source} is required for source language save")
+    latest["guides"] = dict(latest_guides)
+    latest["guides"][source] = source_guide
+
+    for key in ["labels", "topics", "menuLabels"]:
+        _merge_source_language_map(latest, draft, key, source)
+    if isinstance(draft.get("images"), list):
+        latest["images"] = copy.deepcopy(draft["images"])
+
+    latest_faq = latest.get("faq") if isinstance(latest.get("faq"), dict) else {}
+    draft_faq = draft.get("faq") if isinstance(draft.get("faq"), dict) else {}
+    latest["faq"] = dict(latest_faq)
+    if isinstance(draft_faq.get(source), list):
+        latest["faq"][source] = copy.deepcopy(draft_faq[source])
+
+    latest_tools = latest.get("tools") if isinstance(latest.get("tools"), list) else []
+    draft_tools = draft.get("tools") if isinstance(draft.get("tools"), list) else []
+    latest["tools"] = _merge_localized_row_list(latest_tools, draft_tools, source, ["name", "linkLabel"])
+
+    if isinstance(draft.get("commands"), list):
+        latest_commands = latest.get("commands") if isinstance(latest.get("commands"), list) else []
+        latest["commands"] = _merge_localized_row_list(latest_commands, draft["commands"], source, ["name", "desc", "meta"])
+
+    if isinstance(draft.get("commandShowcase"), dict):
+        latest_showcase = latest.get("commandShowcase") if isinstance(latest.get("commandShowcase"), dict) else {}
+        draft_showcase = copy.deepcopy(draft["commandShowcase"])
+        latest_images = latest_showcase.get("images") if isinstance(latest_showcase.get("images"), list) else []
+        draft_images = draft_showcase.get("images") if isinstance(draft_showcase.get("images"), list) else []
+        draft_showcase["images"] = _merge_localized_row_list(latest_images, draft_images, source, ["caption"])
+        latest["commandShowcase"] = draft_showcase
+
+    latest_sbt = latest.get("sbtItems") if isinstance(latest.get("sbtItems"), list) else []
+    draft_sbt = draft.get("sbtItems") if isinstance(draft.get("sbtItems"), list) else []
+    merged_sbt = _merge_localized_row_list(latest_sbt, draft_sbt, source, ["name", "requirement", "badge"])
+    if merged_sbt:
+        latest["sbtItems"] = merged_sbt
+    return latest
+
+
+def _append_beginner_wiki_history(record: dict) -> None:
+    BEGINNER_WIKI_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with BEGINNER_WIKI_HISTORY_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _write_beginner_wiki_content(
+    data: dict,
+    user: str,
+    role: str,
+    source_lang: str = "",
+    base_hash: str = "",
+    auto_translate: bool = True,
+) -> dict:
+    clean_data = _validate_beginner_wiki_data(data)
+    if directus_wiki_enabled():
+        source = _normalize_lang_tag(source_lang or "zh-Hant")
+        should_translate = bool(auto_translate and DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE)
+        if should_translate and any(lang not in {"zh-Hant", "zh-Hans"} for lang in _wiki_target_langs(source)):
+            load_environment()
+            if not resolve_minimax_key():
+                raise RuntimeError("missing_minimax_api_key")
+        with BEGINNER_WIKI_LOCK:
+            current = read_directus_beginner_wiki(force=True)
+            current_meta = current.get("meta") if isinstance(current, dict) else {}
+            current_hash = str((current_meta or {}).get("content_hash") or "").strip()
+            expected_hash = str(base_hash or "").strip()
+            if expected_hash and current_hash and not hmac.compare_digest(expected_hash, current_hash):
+                raise WikiEditConflictError("Wiki 已被其他人更新，請重新載入後再儲存，避免覆蓋對方。")
+            merged_data = _merge_wiki_source_language(current.get("data"), clean_data, source)
+            translation_modes: list[str] = []
+            if should_translate:
+                merged_data, translation_modes = _auto_translate_wiki_data(
+                    merged_data,
+                    source,
+                    previous_data=current.get("data") if isinstance(current, dict) else None,
+                )
+            saved = write_directus_beginner_wiki(
+                merged_data,
+                user=user,
+                role=role,
+                source_lang=source,
+            )
+            saved_meta = saved.get("meta") if isinstance(saved, dict) else {}
+            if isinstance(saved_meta, dict):
+                saved_meta["auto_translate"] = bool(should_translate)
+                saved_meta["translation_modes"] = translation_modes
+                saved_meta["content_hash"] = wiki_data_hash(saved.get("data"))
+            return saved
+    now = _now_iso()
+    current = _read_beginner_wiki_content()
+    current_meta = current.get("meta") if isinstance(current, dict) else {}
+    current_hash = str((current_meta or {}).get("content_hash") or "").strip()
+    expected_hash = str(base_hash or "").strip()
+    if expected_hash and current_hash and not hmac.compare_digest(expected_hash, current_hash):
+        raise WikiEditConflictError("Wiki 已被其他人更新，請重新載入後再儲存，避免覆蓋對方。")
+    revision = int((current_meta or {}).get("revision") or 0) + 1
+    payload = {
+        "version": 1,
+        "revision": revision,
+        "updated_at": now,
+        "updated_by": str(user or "unknown"),
+        "updated_role": str(role or "creator"),
+        "content_hash": wiki_data_hash(clean_data),
+        "data": clean_data,
+    }
+    with BEGINNER_WIKI_LOCK:
+        BEGINNER_WIKI_CONTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = BEGINNER_WIKI_CONTENT_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_path, BEGINNER_WIKI_CONTENT_PATH)
+        _append_beginner_wiki_history(
+            {
+                "revision": revision,
+                "updated_at": now,
+                "updated_by": payload["updated_by"],
+                "updated_role": payload["updated_role"],
+                "languages": sorted(str(x) for x in clean_data.get("guides", {}).keys()),
+            }
+        )
+    return payload
+
+
+def _beginner_wiki_history(limit: int = 20) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    if not BEGINNER_WIKI_HISTORY_PATH.exists():
+        return []
+    try:
+        lines = BEGINNER_WIKI_HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    items: list[dict] = []
+    for line in reversed(lines[-safe_limit:]):
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items
 
 
 def _trim_jobs_unlocked(jobs: dict) -> None:
@@ -2593,15 +3339,30 @@ class Handler(SimpleHTTPRequestHandler):
         return self._session_id_from_cookie() or self._session_id_from_auth_header()
 
     def _current_user(self) -> str:
+        session = self._current_session()
+        return str(session.get("username") or "").strip() if session else ""
+
+    def _current_role(self) -> str:
+        session = self._current_session()
+        return str(session.get("role") or "").strip().lower() if session else ""
+
+    def _current_session(self) -> dict:
         if not AUTH_REQUIRED:
-            return "admin"
+            return {"username": "admin", "role": "admin"}
         session_id = self._session_id_from_request()
         if not session_id:
-            return ""
+            return {}
         state = _get_session(session_id)
         if not state:
-            return ""
-        return str(state.get("username") or "").strip()
+            return {}
+        return state
+
+    def _permission_payload(self, role: str) -> dict:
+        normalized = str(role or "").strip().lower()
+        return {
+            "admin": normalized == "admin",
+            "wiki_edit": normalized in {"admin", "creator"},
+        }
 
     def _auth_me_payload(self) -> dict:
         if not AUTH_REQUIRED:
@@ -2611,6 +3372,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "auth_configured": AUTH_CONFIGURED,
                 "authenticated": True,
                 "user": "admin",
+                "role": "admin",
+                "permissions": self._permission_payload("admin"),
                 "mode": "open",
             }
         if not AUTH_CONFIGURED:
@@ -2620,23 +3383,29 @@ class Handler(SimpleHTTPRequestHandler):
                 "auth_configured": False,
                 "authenticated": False,
                 "user": "",
+                "role": "",
+                "permissions": self._permission_payload(""),
                 "mode": "misconfigured",
-                "error": "INTEL_ADMIN_USER / INTEL_ADMIN_PASS_HASH 未設定，管理功能已鎖定。",
+                "error": "INTEL_ADMIN_USER / INTEL_ADMIN_PASS_HASH 或 WIKI_CREATOR_USER / WIKI_CREATOR_PASS_HASH 未設定，管理功能已鎖定。",
             }
-        user = self._current_user()
+        session = self._current_session()
+        user = str(session.get("username") or "").strip()
+        role = str(session.get("role") or "").strip().lower()
         return {
             "ok": True,
             "auth_required": True,
             "auth_configured": True,
             "authenticated": bool(user),
             "user": user,
+            "role": role,
+            "permissions": self._permission_payload(role),
             "mode": "protected",
         }
 
     def _require_admin_access(self) -> bool:
         if not AUTH_REQUIRED:
             return True
-        if not AUTH_CONFIGURED:
+        if not ADMIN_CONFIGURED:
             self._send_json(
                 {
                     "ok": False,
@@ -2645,8 +3414,19 @@ class Handler(SimpleHTTPRequestHandler):
                 status=HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return False
-        if self._current_user():
+        if self._current_role() == "admin":
             return True
+        if self._current_user():
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "此操作需要 admin 權限；creator 只能編輯 Wiki。",
+                    "auth_required": True,
+                    "role": self._current_role(),
+                },
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return False
         self._send_json(
             {
                 "ok": False,
@@ -2654,6 +3434,32 @@ class Handler(SimpleHTTPRequestHandler):
                 "auth_required": True,
             },
             status=HTTPStatus.UNAUTHORIZED,
+        )
+        return False
+
+    def _require_wiki_editor_access(self) -> bool:
+        if not AUTH_REQUIRED:
+            return True
+        if not AUTH_CONFIGURED:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "尚未設定 admin 或 creator 帳號。",
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return False
+        role = self._current_role()
+        if role in {"admin", "creator"}:
+            return True
+        self._send_json(
+            {
+                "ok": False,
+                "error": "需要 creator 或 admin 權限才能編輯 Wiki。",
+                "auth_required": True,
+                "role": role,
+            },
+            status=HTTPStatus.UNAUTHORIZED if not role else HTTPStatus.FORBIDDEN,
         )
         return False
 
@@ -2691,6 +3497,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
             return False
         return self._require_admin_access()
+
+    def _require_wiki_editor(self) -> bool:
+        if not self._is_trusted_write_origin():
+            self._send_json({"ok": False, "error": "Forbidden origin"}, status=HTTPStatus.FORBIDDEN)
+            return False
+        return self._require_wiki_editor_access()
 
     def _read_request_body(self, length: int, *, max_bytes: int | None = None, upload_timeout: bool = False) -> bytes | None:
         if length <= 0:
@@ -3316,6 +4128,686 @@ class Handler(SimpleHTTPRequestHandler):
             return json_payload
         return {"collection": []}
 
+    def _send_card_profile_wallet_collection(self) -> None:
+        try:
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+        except Exception:
+            params = {}
+        address = str((params.get("address") or params.get("wallet") or [""])[0]).strip().lower()
+        limit = max(1, min(120, _safe_int((params.get("limit") or ["80"])[0], 80)))
+        if not re.fullmatch(r"0x[a-fA-F0-9]{40}", address):
+            self._send_json({"ok": False, "error": "valid wallet address is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        now = time.time()
+        cache_key = f"{address}:{limit}"
+        with CARD_PROFILE_WALLET_LOCK:
+            cached = CARD_PROFILE_WALLET_CACHE.get(cache_key)
+            if cached and now - cached[0] < CARD_SCAN_RENAISS_CACHE_SECONDS:
+                payload = dict(cached[1])
+                payload.setdefault("cache", "hit")
+                self._send_json(payload)
+                return
+
+        try:
+            payload = self._fetch_card_profile_wallet_collection(address, limit)
+        except urllib.error.HTTPError as exc:
+            self._send_json(
+                {"ok": False, "error": f"Renaiss wallet collection returned HTTP {exc.code}", "wallet": address},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        except TimeoutError:
+            self._send_json({"ok": False, "error": "Renaiss wallet collection timeout", "wallet": address}, status=HTTPStatus.GATEWAY_TIMEOUT)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"Renaiss wallet collection failed: {exc}", "wallet": address}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        with CARD_PROFILE_WALLET_LOCK:
+            CARD_PROFILE_WALLET_CACHE[cache_key] = (now, payload)
+        self._send_json(payload)
+
+    def _send_card_profile_catalog_search(self) -> None:
+        try:
+            incoming = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+        except Exception:
+            incoming = {}
+        allowed = {"q", "game", "language", "index", "set_id", "card_code", "snkr_product_id", "limit"}
+        params: dict[str, str] = {}
+        for key in allowed:
+            if key in incoming and incoming[key]:
+                value = str(incoming[key][-1]).strip()
+                if value:
+                    params[key] = value
+        if "limit" in params:
+            params["limit"] = str(max(1, min(80, _safe_int(params["limit"], 20))))
+        else:
+            params["limit"] = "20"
+        if not any(key in params for key in ("q", "set_id", "card_code", "snkr_product_id")):
+            self._send_json({"ok": False, "error": "q, set_id, card_code, or snkr_product_id is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        cache_key = json.dumps(params, ensure_ascii=False, sort_keys=True)
+        now = time.time()
+        with CARD_PROFILE_CATALOG_LOCK:
+            cached = CARD_PROFILE_CATALOG_CACHE.get(cache_key)
+            if cached and now - cached[0] < CARD_SCAN_RENAISS_CACHE_SECONDS:
+                payload = dict(cached[1])
+                payload.setdefault("cache", "hit")
+                self._send_json(payload)
+                return
+
+        target = f"{CARD_SCAN_API_BASE}/catalog-search?{self._query_string(params)}"
+        request = urllib.request.Request(
+            target,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-profile/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+                status = HTTPStatus(response.status) if response.status in HTTPStatus._value2member_map_ else HTTPStatus.OK
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+            if not isinstance(payload, dict):
+                payload = {"ok": True, "results": payload}
+            payload.setdefault("ok", 200 <= int(status) < 300)
+            payload["_proxy"] = {"target": "catalog-search", "api_base": CARD_SCAN_API_BASE, "cache": "miss"}
+        except urllib.error.HTTPError as exc:
+            self._send_json({"ok": False, "error": f"catalog-search returned HTTP {exc.code}"}, status=HTTPStatus.BAD_GATEWAY)
+            return
+        except (TimeoutError, socket.timeout):
+            self._send_json({"ok": False, "error": "catalog-search timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"catalog-search failed: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        with CARD_PROFILE_CATALOG_LOCK:
+            CARD_PROFILE_CATALOG_CACHE[cache_key] = (now, payload)
+        self._send_json(payload)
+
+    def _fetch_card_profile_wallet_collection(self, address: str, limit: int) -> dict:
+        collection, resolution = self._fetch_card_profile_chain_collection(address, limit)
+        if collection:
+            cards = [
+                self._card_profile_collectible_payload(
+                    item,
+                    address,
+                    ownership_verified=True,
+                    wallet_source="chain_official",
+                )
+                for item in collection[:limit]
+            ]
+            cards = self._enrich_card_profile_cards_with_catalog(cards)
+            catalog_matched_count = sum(1 for card in cards if card.get("catalog_match_status") == "matched")
+            return {
+                "ok": True,
+                "source": "Renaiss",
+                "wallet": address,
+                "cards": cards,
+                "count": len(cards),
+                "resolution": {
+                    **resolution,
+                    "matched": True,
+                    "display_source": "chain_official",
+                    "catalog_matched_count": catalog_matched_count,
+                    "catalog_unmatched_count": max(0, len(cards) - catalog_matched_count),
+                },
+                "cache": "miss",
+            }
+
+        return {
+            "ok": True,
+            "source": "Renaiss",
+            "wallet": address,
+            "cards": [],
+            "count": 0,
+            "resolution": {
+                **resolution,
+                "matched": False,
+                "display_source": "empty",
+            },
+            "cache": "miss",
+        }
+
+    def _card_profile_bscscan_config(self) -> dict:
+        api_key, key_source = _card_profile_config_value("BSCSCAN_API_KEY")
+        if not api_key:
+            raise RuntimeError("BSCSCAN_API_KEY is required for wallet ownership sync")
+        api_url, url_source = _card_profile_config_value("BSCSCAN_API_URL", CARD_PROFILE_CHAIN_API_URL_DEFAULT)
+        chain_id, chain_source = _card_profile_config_value("BSCSCAN_CHAIN_ID", CARD_PROFILE_CHAIN_ID_DEFAULT)
+        return {
+            "api_key": api_key,
+            "api_url": api_url or CARD_PROFILE_CHAIN_API_URL_DEFAULT,
+            "chain_id": str(chain_id or CARD_PROFILE_CHAIN_ID_DEFAULT),
+            "page_size": CARD_PROFILE_CHAIN_PAGE_SIZE,
+            "token_symbol": CARD_PROFILE_CHAIN_TOKEN_SYMBOL,
+            "config_source": {
+                "api_key": key_source,
+                "api_url": url_source,
+                "chain_id": chain_source,
+            },
+        }
+
+    def _bsc_account_api_fetch_all(self, address: str, action: str = "tokennfttx", sort: str = "asc") -> tuple[list[dict], dict]:
+        cfg = self._card_profile_bscscan_config()
+        rows: list[dict] = []
+        page = 1
+        while True:
+            params = {
+                "chainid": cfg["chain_id"],
+                "module": "account",
+                "action": action,
+                "address": address,
+                "page": str(page),
+                "offset": str(cfg["page_size"]),
+                "sort": sort,
+                "apikey": cfg["api_key"],
+            }
+            target = f"{cfg['api_url']}?{self._query_string(params)}"
+            request = urllib.request.Request(
+                target,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "renaiss-aggregator-card-profile/1.0",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise RuntimeError("BscScan returned an invalid response")
+            result = payload.get("result")
+            status = str(payload.get("status") or "")
+            message = str(payload.get("message") or "")
+            if status != "1":
+                if isinstance(result, str) and "No transactions found" in result:
+                    break
+                raise RuntimeError(f"BscScan {action} failed: {message or result or 'unknown error'}")
+            if not isinstance(result, list):
+                break
+            page_rows = [row for row in result if isinstance(row, dict)]
+            rows.extend(page_rows)
+            if len(page_rows) < int(cfg["page_size"]):
+                break
+            page += 1
+        return rows, {
+            "bscscan_action": action,
+            "bscscan_rows": len(rows),
+            "bscscan_config_source": cfg.get("config_source") or {},
+        }
+
+    def _card_profile_transfer_order_key(self, row: dict) -> tuple[int, int, int, int]:
+        return (
+            _safe_int(row.get("timeStamp") or row.get("timestamp"), 0),
+            _safe_int(row.get("blockNumber"), 0),
+            _safe_int(row.get("transactionIndex"), 0),
+            _safe_int(row.get("nonce"), 0),
+        )
+
+    def _card_profile_transfer_iso(self, row: dict) -> str:
+        timestamp = _safe_int(row.get("timeStamp") or row.get("timestamp"), 0)
+        if timestamp <= 0:
+            return ""
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+    def _card_profile_transfer_acquisition_payload(self, row: dict, owner_address: str, owner_kind: str) -> dict:
+        token_id = str(row.get("tokenID") or row.get("tokenId") or "").strip()
+        tx_hash = str(row.get("hash") or "").strip().lower()
+        from_address = str(row.get("from") or "").strip().lower()
+        to_address = str(row.get("to") or "").strip().lower()
+        timestamp = _safe_int(row.get("timeStamp") or row.get("timestamp"), 0)
+        return {
+            "token_id": token_id,
+            "acquired_at": self._card_profile_transfer_iso(row),
+            "acquired_timestamp": timestamp,
+            "acquisition_address": owner_address,
+            "acquisition_address_kind": owner_kind,
+            "from_address": from_address,
+            "to_address": to_address,
+            "tx_hash": tx_hash,
+            "block_number": str(row.get("blockNumber") or ""),
+            "source": "bsc_token_transfer",
+            "transfer_type": "mint" if from_address in {"", "0x0000000000000000000000000000000000000000"} else "transfer",
+        }
+
+    def _card_profile_acquisition_by_token(self, address: str, primary_rows: list[dict]) -> tuple[dict[str, dict], dict]:
+        related_wallets, migration_meta = _card_profile_related_wallets(address)
+        related_lookup = set(related_wallets)
+        rows_by_wallet: dict[str, list[dict]] = {address: primary_rows}
+        errors: list[dict] = []
+        for wallet in related_wallets[1:]:
+            try:
+                rows, _ = self._bsc_account_api_fetch_all(wallet, action="tokennfttx", sort="asc")
+                rows_by_wallet[wallet] = rows
+            except Exception as exc:
+                errors.append({"wallet": wallet, "error": str(exc)})
+
+        acquisition_by_token: dict[str, tuple[tuple[int, int, int, int], dict]] = {}
+        symbol_filter = str(CARD_PROFILE_CHAIN_TOKEN_SYMBOL or "").strip().lower()
+        for wallet, rows in rows_by_wallet.items():
+            owner_kind = "current_wallet" if wallet == address else "legacy_wallet"
+            for row in rows:
+                token_id = str(row.get("tokenID") or row.get("tokenId") or "").strip()
+                to_address = str(row.get("to") or "").strip().lower()
+                if not token_id or to_address not in related_lookup:
+                    continue
+                if symbol_filter:
+                    symbol = str(row.get("tokenSymbol") or "").strip().lower()
+                    token_name = str(row.get("tokenName") or "").strip().lower()
+                    if symbol:
+                        if symbol != symbol_filter:
+                            continue
+                    elif token_name and symbol_filter not in token_name:
+                        continue
+                order_key = self._card_profile_transfer_order_key(row)
+                if order_key[0] <= 0:
+                    continue
+                current = acquisition_by_token.get(token_id)
+                if current is None or order_key < current[0]:
+                    acquisition_by_token[token_id] = (
+                        order_key,
+                        self._card_profile_transfer_acquisition_payload(row, wallet, owner_kind),
+                    )
+        return {token_id: payload for token_id, (_, payload) in acquisition_by_token.items()}, {
+            **migration_meta,
+            "acquisition_related_wallet_count": len(related_wallets),
+            "legacy_acquisition_errors": errors,
+        }
+
+    def _fetch_card_profile_owned_token_ids_chain(self, address: str) -> tuple[list[str], dict]:
+        nft_rows, resolution = self._bsc_account_api_fetch_all(address, action="tokennfttx", sort="asc")
+        latest_by_key: dict[str, tuple[tuple[int, int, int, int], str, str]] = {}
+        symbol_filter = str(CARD_PROFILE_CHAIN_TOKEN_SYMBOL or "").strip().lower()
+        for row in nft_rows:
+            token_id = str(row.get("tokenID") or row.get("tokenId") or "").strip()
+            contract = str(row.get("contractAddress") or "").strip().lower()
+            to_address = str(row.get("to") or "").strip().lower()
+            from_address = str(row.get("from") or "").strip().lower()
+            if not token_id or not contract or (not to_address and not from_address):
+                continue
+            if symbol_filter:
+                symbol = str(row.get("tokenSymbol") or "").strip().lower()
+                token_name = str(row.get("tokenName") or "").strip().lower()
+                if symbol:
+                    if symbol != symbol_filter:
+                        continue
+                elif token_name and symbol_filter not in token_name:
+                    continue
+            order_key = self._card_profile_transfer_order_key(row)
+            key = f"{contract}:{token_id}"
+            previous = latest_by_key.get(key)
+            if previous is None or order_key >= previous[0]:
+                latest_by_key[key] = (order_key, to_address, token_id)
+
+        owned_rows = [
+            (order_key, token_id)
+            for order_key, owner_address, token_id in latest_by_key.values()
+            if owner_address == address
+        ]
+        owned_rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        seen: set[str] = set()
+        token_ids: list[str] = []
+        for _, token_id in owned_rows:
+            if token_id in seen:
+                continue
+            seen.add(token_id)
+            token_ids.append(token_id)
+        acquisition_by_token, acquisition_resolution = self._card_profile_acquisition_by_token(address, nft_rows)
+        return token_ids, {
+            **resolution,
+            **acquisition_resolution,
+            "strategy": "bsc_token_transfers_collectible_detail",
+            "token_symbol_filter": symbol_filter or "",
+            "latest_token_state_count": len(latest_by_key),
+            "owned_token_count": len(token_ids),
+            "sort_source": "latest_token_transfer_desc",
+            "_acquisition_by_token": acquisition_by_token,
+        }
+
+    def _fetch_card_profile_chain_collection(self, address: str, limit: int) -> tuple[list[dict], dict]:
+        token_ids, resolution = self._fetch_card_profile_owned_token_ids_chain(address)
+        acquisition_by_token = resolution.pop("_acquisition_by_token", {})
+        collection: list[dict] = []
+        for token_id in token_ids[:limit]:
+            try:
+                collectible = self._renaiss_collectible_by_token(token_id)
+            except Exception as exc:
+                collection.append({
+                    "tokenId": token_id,
+                    "name": f"Renaiss token #{token_id[-6:]}",
+                    "chainOwnerAddress": address,
+                    "ownerAddress": address,
+                    "chainAcquisition": acquisition_by_token.get(token_id) or {},
+                    "detailError": str(exc),
+                })
+                continue
+            if not isinstance(collectible, dict):
+                collectible = {}
+            official_owner = self._card_profile_owner_address(collectible)
+            row = {
+                **collectible,
+                "tokenId": str(collectible.get("tokenId") or token_id),
+                "chainOwnerAddress": address,
+                "officialOwnerAddress": official_owner,
+                "ownerAddress": address,
+                "chainAcquisition": acquisition_by_token.get(token_id) or {},
+            }
+            collection.append(row)
+        return collection, {
+            **resolution,
+            "collectible_detail_count": len(collection),
+        }
+
+    def _enrich_card_profile_cards_with_catalog(self, cards: list[dict]) -> list[dict]:
+        enriched: list[dict] = []
+        for card in cards:
+            next_card = dict(card)
+            match_payload = self._card_profile_catalog_match(card)
+            if match_payload:
+                catalog = match_payload.get("record") if isinstance(match_payload.get("record"), dict) else {}
+                next_card["catalog_match_status"] = "matched"
+                next_card["catalog_match"] = match_payload
+                next_card["catalog_name"] = str(catalog.get("name_en") or catalog.get("name") or catalog.get("name_ja") or "")
+                next_card["catalog_set_id"] = str(catalog.get("set_id") or "")
+                next_card["catalog_card_code"] = str(catalog.get("card_code") or "")
+                next_card["catalog_image_url"] = str(catalog.get("display_image_url") or catalog.get("reference_image_url") or catalog.get("image_url") or "")
+                snkr = catalog.get("snkr") if isinstance(catalog.get("snkr"), dict) else {}
+                if snkr.get("product_id"):
+                    next_card["snkr_product_id"] = str(snkr.get("product_id"))
+                if not next_card.get("card_code") and next_card.get("catalog_card_code"):
+                    next_card["card_code"] = next_card["catalog_card_code"]
+                if not next_card.get("image_url") and next_card.get("catalog_image_url"):
+                    next_card["image_url"] = next_card["catalog_image_url"]
+            else:
+                next_card["catalog_match_status"] = "unmatched"
+            enriched.append(next_card)
+        return enriched
+
+    def _card_profile_catalog_match(self, card: dict) -> dict | None:
+        game = self._card_profile_catalog_game(card)
+        language = self._card_profile_catalog_language(card)
+        card_number = self._card_profile_card_number(card)
+        subject = self._card_profile_subject_name(card)
+        set_hint = self._card_profile_set_hint(card)
+        queries = self._card_profile_catalog_queries(card, subject, card_number, set_hint)
+        candidates: list[tuple[int, dict, str]] = []
+        for query in queries:
+            params = {"q": query, "game": game, "language": language, "limit": "8"}
+            try:
+                payload = self._card_profile_catalog_request(params)
+            except Exception:
+                continue
+            rows = payload.get("results") if isinstance(payload.get("results"), list) else []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                score = self._score_card_profile_catalog_record(row, subject, card_number, set_hint)
+                if score <= 0:
+                    continue
+                candidates.append((score, row, query))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], _safe_float(item[1].get("score")) or 0), reverse=True)
+        score, record, query = candidates[0]
+        if score < 70:
+            return None
+        return {
+            "status": "matched",
+            "confidence": "exact" if score >= 120 else "likely",
+            "score": score,
+            "query": query,
+            "record": record,
+        }
+
+    def _card_profile_catalog_request(self, params: dict[str, str]) -> dict:
+        normalized = {key: str(value) for key, value in params.items() if str(value or "").strip()}
+        cache_key = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        now = time.time()
+        with CARD_PROFILE_CATALOG_LOCK:
+            cached = CARD_PROFILE_CATALOG_CACHE.get(cache_key)
+            if cached and now - cached[0] < CARD_SCAN_RENAISS_CACHE_SECONDS:
+                return dict(cached[1])
+        target = f"{CARD_SCAN_API_BASE}/catalog-search?{self._query_string(normalized)}"
+        request = urllib.request.Request(
+            target,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-profile/1.0",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            payload = {"status": "ok", "results": payload if isinstance(payload, list) else []}
+        with CARD_PROFILE_CATALOG_LOCK:
+            CARD_PROFILE_CATALOG_CACHE[cache_key] = (now, payload)
+        return payload
+
+    def _card_profile_catalog_game(self, card: dict) -> str:
+        text = " ".join(str(card.get(key) or "") for key in ("game", "name", "set_name", "setName")).lower()
+        if "one piece" in text or "onepiece" in text:
+            return "onepiece"
+        return "pokemon" if "pokemon" in text or "pokémon" in text else "pokemon"
+
+    def _card_profile_catalog_language(self, card: dict) -> str:
+        text = " ".join(str(card.get(key) or "") for key in ("language", "name")).lower()
+        if "japanese" in text or " ja" in f" {text}" or "pokemon japanese" in text:
+            return "ja"
+        if "english" in text or " en" in f" {text}":
+            return "en"
+        return "ja"
+
+    def _card_profile_card_number(self, card: dict) -> str:
+        for key in ("card_code", "cardCode", "card_number", "cardNumber", "number"):
+            value = str(card.get(key) or "").strip()
+            if value:
+                return value.lstrip("#")
+        name = str(card.get("name") or "")
+        match = re.search(r"#\s*([A-Za-z0-9-]+)", name)
+        return match.group(1).strip() if match else ""
+
+    def _card_profile_subject_name(self, card: dict) -> str:
+        name = str(card.get("name") or "").strip()
+        match = re.search(r"#\s*[A-Za-z0-9-]+\s+(.+)$", name)
+        if match:
+            return match.group(1).strip()
+        return str(card.get("pokemon_name") or card.get("catalog_name") or name).strip()
+
+    def _card_profile_set_hint(self, card: dict) -> str:
+        text = str(card.get("set_name") or card.get("setName") or card.get("name") or "").strip()
+        known_hints = (
+            "Vmax Climax",
+            "Pokemon 151",
+            "Sv2a-Pokemon 151",
+            "XY Starter Pack",
+            "Xy Starter Pack",
+            "Starter Pack",
+        )
+        lowered = text.lower()
+        for hint in known_hints:
+            if hint.lower() in lowered:
+                return hint
+        match = re.search(r"Pokemon Japanese\s+(.+?)\s+#", text, flags=re.IGNORECASE)
+        return match.group(1).strip() if match else ""
+
+    def _card_profile_catalog_queries(self, card: dict, subject: str, card_number: str, set_hint: str) -> list[str]:
+        raw_name = str(card.get("name") or "").strip()
+        candidates = [
+            " ".join(part for part in (set_hint, f"#{card_number}" if card_number else "", subject) if part),
+            " ".join(part for part in (set_hint, card_number, subject) if part),
+            " ".join(part for part in (subject, f"#{card_number}" if card_number else "") if part),
+            raw_name,
+            subject,
+        ]
+        out: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            value = re.sub(r"\s+", " ", candidate).strip()
+            key = value.lower()
+            if not value or key in seen:
+                continue
+            seen.add(key)
+            out.append(value)
+        return out[:5]
+
+    def _score_card_profile_catalog_record(self, record: dict, subject: str, card_number: str, set_hint: str) -> int:
+        score = 0
+        target_number = card_number.lstrip("#").lower()
+        record_number = str(record.get("card_code") or record.get("card_id") or "").strip().lstrip("#").lower()
+        if target_number:
+            if record_number == target_number:
+                score += 80
+            elif record_number:
+                return 0
+        subject_tokens = set(_normalize_market_token(subject).split())
+        record_text = " ".join(
+            str(record.get(key) or "")
+            for key in ("name", "name_en", "name_ja", "set_id", "card_id", "canonical_key")
+        )
+        record_tokens = set(_normalize_market_token(record_text).split())
+        if subject_tokens:
+            overlap = len(subject_tokens.intersection(record_tokens))
+            if overlap:
+                score += min(40, int((overlap / max(1, len(subject_tokens))) * 40))
+        set_score = self._score_card_profile_catalog_set(record, set_hint)
+        if set_hint:
+            if set_score <= 0:
+                return 0
+            score += set_score
+        score += min(20, int(_safe_float(record.get("score")) or 0))
+        return score
+
+    def _score_card_profile_catalog_set(self, record: dict, set_hint: str) -> int:
+        if not set_hint:
+            return 0
+        normalized_hint = _normalize_market_token(set_hint)
+        set_id = str(record.get("set_id") or "").strip().lower()
+        record_text = _normalize_market_token(" ".join(
+            str(record.get(key) or "")
+            for key in ("set_id", "card_id", "canonical_key", "name", "name_en", "name_ja")
+        ))
+        aliases = {
+            "vmax climax": {"s8b", "vmax climax"},
+            "pokemon 151": {"sv2a", "pokemon 151"},
+            "sv2a pokemon 151": {"sv2a", "pokemon 151"},
+            "xy starter pack": {"xy", "xy starter pack", "starter pack"},
+            "xy starter": {"xy", "xy starter pack", "starter pack"},
+            "starter pack": {"xy", "xy starter pack", "starter pack"},
+        }
+        expected = aliases.get(normalized_hint, {normalized_hint})
+        for alias in expected:
+            alias_norm = _normalize_market_token(alias)
+            if alias_norm and (set_id == alias_norm or alias_norm in record_text):
+                return 50
+        return 0
+
+    def _renaiss_collectible_list_request(self, json_payload: dict) -> dict:
+        input_payload = {"json": json_payload}
+        params = {
+            "input": json.dumps(input_payload, ensure_ascii=False, separators=(",", ":")),
+        }
+        target = f"{RENAISS_WEB_BASE}/api/trpc/collectible.list?{self._query_string(params)}"
+        request = urllib.request.Request(
+            target,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "renaiss-aggregator-card-profile/1.0",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=CARD_SCAN_RENAISS_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if isinstance(payload, list) and payload:
+            payload = payload[0]
+        if not isinstance(payload, dict):
+            return {"collection": []}
+        error = payload.get("error")
+        if isinstance(error, dict):
+            raise RuntimeError(str(error.get("message") or "Renaiss collectible.list error"))
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+        out = data.get("json") if isinstance(data, dict) and isinstance(data.get("json"), dict) else {}
+        return out if isinstance(out, dict) else {"collection": []}
+
+    def _card_profile_owner_address(self, collectible: dict) -> str:
+        owner = collectible.get("owner") if isinstance(collectible.get("owner"), dict) else {}
+        return str(
+            collectible.get("ownerAddress")
+            or collectible.get("ownerWalletAddress")
+            or collectible.get("walletAddress")
+            or owner.get("address")
+            or owner.get("walletAddress")
+            or ""
+        ).strip().lower()
+
+    def _card_profile_collectible_payload(
+        self,
+        collectible: dict,
+        wallet_address: str,
+        ownership_verified: bool = True,
+        wallet_source: str = "owner_verified",
+    ) -> dict:
+        token_id = str(collectible.get("tokenId") or collectible.get("id") or "").strip()
+        card_number = str(collectible.get("cardNumber") or collectible.get("card_code") or "").strip()
+        language = _collectible_attribute(collectible, "Language")
+        serial = _collectible_attribute(collectible, "Serial")
+        ask_usdt = _usdt_wei_to_float(collectible.get("askPriceInUSDT"))
+        fmv_usd = _usd_cents_to_float(collectible.get("fmvPriceInUSD"))
+        buyback_usd = _usd_cents_to_float(collectible.get("buybackBaseValueInUSD"))
+        price_usd = ask_usdt if ask_usdt is not None and ask_usdt > 0 else (fmv_usd if fmv_usd is not None else buyback_usd)
+        image_url = str(
+            collectible.get("frontImageUrl")
+            or collectible.get("imageUrl")
+            or collectible.get("collectibleImageUrl")
+            or ""
+        ).strip()
+        if not image_url and serial and re.fullmatch(r"[A-Za-z0-9_-]+", serial):
+            image_url = f"https://8nothtoc5ds7a0x3.public.blob.vercel-storage.com/graded-cards-renders/{quote(serial, safe='')}/nft_image.jpg"
+        raw_owner_address = self._card_profile_owner_address(collectible)
+        chain_owner_address = str(collectible.get("chainOwnerAddress") or "").strip().lower()
+        official_owner_address = str(collectible.get("officialOwnerAddress") or raw_owner_address or "").strip().lower()
+        owner_address = chain_owner_address or (raw_owner_address if ownership_verified else "") or wallet_address
+        acquisition = collectible.get("chainAcquisition") if isinstance(collectible.get("chainAcquisition"), dict) else {}
+        return {
+            "id": f"renaiss:{token_id}" if token_id else f"renaiss:{hashlib.sha1(json.dumps(collectible, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]}",
+            "source": "Renaiss",
+            "token_id": token_id,
+            "name": str(collectible.get("name") or collectible.get("collectibleName") or "Unknown Collectible"),
+            "set_name": str(collectible.get("setName") or ""),
+            "card_number": card_number,
+            "game": str(collectible.get("game") or collectible.get("category") or ""),
+            "language": language,
+            "serial": serial,
+            "grading_company": str(collectible.get("gradingCompany") or ""),
+            "grade": str(collectible.get("grade") or ""),
+            "wallet_address": wallet_address,
+            "owner_address": owner_address,
+            "raw_owner_address": chain_owner_address or raw_owner_address,
+            "official_owner_address": official_owner_address,
+            "ownership_verified": bool(ownership_verified),
+            "wallet_source": wallet_source if ownership_verified else "unverified",
+            "owner_username": str(((collectible.get("owner") or {}) if isinstance(collectible.get("owner"), dict) else {}).get("username") or ""),
+            "acquisition": acquisition,
+            "acquired_at": str(acquisition.get("acquired_at") or ""),
+            "acquired_timestamp": _safe_int(acquisition.get("acquired_timestamp"), 0),
+            "acquisition_tx_hash": str(acquisition.get("tx_hash") or ""),
+            "acquisition_from_address": str(acquisition.get("from_address") or ""),
+            "acquisition_to_address": str(acquisition.get("to_address") or ""),
+            "acquisition_address": str(acquisition.get("acquisition_address") or ""),
+            "acquisition_address_kind": str(acquisition.get("acquisition_address_kind") or ""),
+            "acquisition_source": str(acquisition.get("source") or ""),
+            "ask_usdt": ask_usdt,
+            "fmv_usd": fmv_usd,
+            "buyback_usd": buyback_usd,
+            "price_usd": price_usd,
+            "is_listed": ask_usdt is not None and ask_usdt > 0,
+            "image_url": image_url,
+            "card_code": str(collectible.get("card_code") or collectible.get("cardCode") or card_number or ""),
+            "url": f"https://www.renaiss.xyz/card/{token_id}" if token_id else "",
+        }
+
     def _renaiss_trpc_batch_request(self, procedure: str, row: dict) -> dict:
         params = {
             "batch": "1",
@@ -3573,10 +5065,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_profile_post(self, path: str, payload: dict) -> None:
         if path in {"/api/expo-profile/accounts", "/api/expo-profile/login"}:
             self._send_json(
-                {
-                    "ok": False,
-                    "error": "Legacy username/password profile auth is disabled. Use Privy bearer auth.",
-                },
+                {"ok": False, "error": "Legacy username/password profile auth is disabled. Use Privy bearer auth."},
                 status=HTTPStatus.GONE,
             )
             return
@@ -3604,54 +5093,42 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 self._send_json({"ok": True, **PROFILE_STORE.auth_state(claims.subject), "state": state})
                 return
-
             if path == "/api/expo-profile/account/delete":
-                next_auth = PROFILE_STORE.delete_user(claims.subject)
-                self._send_json({"ok": True, **next_auth})
+                self._send_json({"ok": True, **PROFILE_STORE.delete_user(claims.subject)})
                 return
-
             if path == "/api/expo-profile/wallets":
-                next_auth = PROFILE_STORE.bind_wallet(
-                    claims.subject,
-                    address=str(payload.get("address") or ""),
-                    label=str(payload.get("label") or ""),
+                self._send_json(
+                    {
+                        "ok": True,
+                        **PROFILE_STORE.bind_wallet(
+                            claims.subject,
+                            address=str(payload.get("address") or ""),
+                            label=str(payload.get("label") or ""),
+                        ),
+                    }
                 )
-                self._send_json({"ok": True, **next_auth})
                 return
-
             if path == "/api/expo-profile/wallets/remove":
-                next_auth = PROFILE_STORE.remove_wallet(claims.subject, str(payload.get("walletId") or ""))
-                self._send_json({"ok": True, **next_auth})
+                self._send_json(
+                    {"ok": True, **PROFILE_STORE.remove_wallet(claims.subject, str(payload.get("walletId") or ""))}
+                )
                 return
-
             if path == "/api/expo-profile/wallets/sync":
                 wallet_id = str(payload.get("walletId") or "").strip()
                 wallet = PROFILE_STORE.wallet_for_user(claims.subject, wallet_id)
                 if not wallet:
                     self._send_json({"ok": False, "error": "wallet not found"}, status=HTTPStatus.NOT_FOUND)
                     return
-                limit = _safe_int(payload.get("limit"), 80)
                 try:
-                    cards = sync_wallet_cards(str(wallet.get("address") or ""), max_cards=max(1, min(limit, 120)))
+                    cards = sync_wallet_cards(str(wallet.get("address") or ""), max_cards=max(1, min(_safe_int(payload.get("limit"), 80), 120)))
                 except Exception as exc:
-                    next_auth = PROFILE_STORE.mark_wallet_sync(
-                        claims.subject,
-                        wallet_id,
-                        status="error",
-                        error=str(exc),
-                    )
                     self._send_json(
-                        {"ok": False, **next_auth, "cards": [], "syncedCardCount": 0, "error": str(exc)},
+                        {"ok": False, **PROFILE_STORE.mark_wallet_sync(claims.subject, wallet_id, status="error", error=str(exc)), "cards": [], "syncedCardCount": 0, "error": str(exc)},
                         status=HTTPStatus.BAD_GATEWAY,
                     )
                     return
                 PROFILE_STORE.save_wallet_cards(claims.subject, wallet_id, cards)
-                next_auth = PROFILE_STORE.mark_wallet_sync(
-                    claims.subject,
-                    wallet_id,
-                    status="synced",
-                    card_count=len(cards),
-                )
+                next_auth = PROFILE_STORE.mark_wallet_sync(claims.subject, wallet_id, status="synced", card_count=len(cards))
                 self._send_json(
                     {
                         "ok": True,
@@ -3659,11 +5136,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "cards": cards,
                         "syncedWalletId": wallet_id,
                         "syncedCardCount": len(cards),
-                        "sync": {
-                            "source": "Renaiss public API",
-                            "wallet": wallet.get("address"),
-                            "count": len(cards),
-                        },
+                        "sync": {"source": "Renaiss public API", "wallet": wallet.get("address"), "count": len(cards)},
                     }
                 )
                 return
@@ -3689,12 +5162,6 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/auth/me":
             self._send_json(self._auth_me_payload())
             return
-        if path == "/api/card-scan/snkr-history":
-            self._send_card_scan_snkr_history()
-            return
-        if path == "/api/card-scan/renaiss-market":
-            self._send_card_scan_renaiss_market()
-            return
         if path == "/api/expo-profile/me":
             claims = self._profile_claims()
             auth = self._profile_auth_state(claims)
@@ -3710,6 +5177,18 @@ class Handler(SimpleHTTPRequestHandler):
             claims = self._profile_claims()
             if claims:
                 self._send_profile_collection(claims)
+            return
+        if path == "/api/card-scan/snkr-history":
+            self._send_card_scan_snkr_history()
+            return
+        if path == "/api/card-scan/renaiss-market":
+            self._send_card_scan_renaiss_market()
+            return
+        if path == "/api/card-profile/wallet-collection":
+            self._send_card_profile_wallet_collection()
+            return
+        if path == "/api/card-profile/catalog-search":
+            self._send_card_profile_catalog_search()
             return
         if path == "/api/intel/admin-status":
             if not self._require_admin_access():
@@ -3757,6 +5236,24 @@ class Handler(SimpleHTTPRequestHandler):
             _strip_missing_cover_images(localized_feed)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
+        if path == "/api/wiki/beginner":
+            try:
+                wiki = _read_beginner_wiki_content()
+                self._send_json({"ok": True, "wiki": wiki, "permissions": self._permission_payload(self._current_role())})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if path == "/api/wiki/beginner/history":
+            if not self._require_wiki_editor_access():
+                return
+            try:
+                query = urlparse(self.path).query
+                params = parse_qs(query, keep_blank_values=False)
+                limit = _safe_int((params.get("limit") or ["20"])[0], 20)
+                self._send_json({"ok": True, "history": _beginner_wiki_history(limit=limit)})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path.startswith("/api/"):
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -3768,6 +5265,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path not in {
             "/api/auth/login",
             "/api/auth/logout",
+            "/api/expo-profile/accounts",
+            "/api/expo-profile/login",
+            "/api/expo-profile/logout",
+            "/api/expo-profile/account/delete",
+            "/api/expo-profile/sync-state",
+            "/api/expo-profile/wallets",
+            "/api/expo-profile/wallets/remove",
+            "/api/expo-profile/wallets/sync",
             "/api/intel/sync",
             "/api/intel/analyze-url",
             "/api/intel/pick",
@@ -3785,16 +5290,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/agent",
             "/api/intel/translate-texts",
             "/api/intel/public-feedback",
+            "/api/wiki/beginner",
+            "/api/wiki/directus/translate",
             "/api/card-scan/recognize",
             "/api/card-scan/recognize-cards",
-            "/api/expo-profile/accounts",
-            "/api/expo-profile/login",
-            "/api/expo-profile/logout",
-            "/api/expo-profile/account/delete",
-            "/api/expo-profile/sync-state",
-            "/api/expo-profile/wallets",
-            "/api/expo-profile/wallets/remove",
-            "/api/expo-profile/wallets/sync",
         }:
             self._send_json({"ok": False, "error": "Not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -3848,8 +5347,11 @@ class Handler(SimpleHTTPRequestHandler):
                     {
                         "ok": True,
                         "auth_required": False,
+                        "auth_configured": AUTH_CONFIGURED,
                         "authenticated": True,
                         "user": "admin",
+                        "role": "admin",
+                        "permissions": self._permission_payload("admin"),
                         "mode": "open",
                     }
                 )
@@ -3858,15 +5360,17 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(
                     {
                         "ok": False,
-                        "error": "管理帳號尚未設定。請設定 INTEL_ADMIN_USER 與 INTEL_ADMIN_PASS_HASH。",
+                        "error": "尚未設定 admin 或 creator 帳號。",
                     },
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
-            if username != AUTH_USERNAME or not _verify_password(password):
+            account = _authenticate_account(username, password)
+            if not account:
                 self._send_json({"ok": False, "error": "帳號或密碼錯誤"}, status=HTTPStatus.UNAUTHORIZED)
                 return
-            sid = _create_session(username)
+            role = str(account.get("role") or "creator").strip().lower() or "creator"
+            sid = _create_session(username, role=role)
             self._send_json(
                 {
                     "ok": True,
@@ -3874,6 +5378,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "auth_configured": True,
                     "authenticated": True,
                     "user": username,
+                    "role": role,
+                    "permissions": self._permission_payload(role),
                     "mode": "protected",
                     "token": sid,
                 },
@@ -3891,6 +5397,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "auth_configured": AUTH_CONFIGURED,
                     "authenticated": False,
                     "user": "",
+                    "role": "",
+                    "permissions": self._permission_payload(""),
                     "mode": "protected" if AUTH_REQUIRED else "open",
                 },
                 extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
@@ -3965,6 +5473,74 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to save feedback: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        if path == "/api/wiki/beginner":
+            if not self._require_wiki_editor():
+                return
+            try:
+                data = payload.get("data")
+                auto_raw = payload.get("auto_translate")
+                auto_translate = True if auto_raw is None else str(auto_raw).strip().lower() not in {"0", "false", "no", "off"}
+                saved = _write_beginner_wiki_content(
+                    data,
+                    user=self._current_user() or "creator",
+                    role=self._current_role() or "creator",
+                    source_lang=str(payload.get("source_lang") or payload.get("lang") or "").strip(),
+                    base_hash=str(payload.get("base_hash") or payload.get("content_hash") or "").strip(),
+                    auto_translate=auto_translate,
+                )
+                if saved.get("meta") is not None:
+                    self._send_json({"ok": True, "wiki": saved})
+                else:
+                    self._send_json({"ok": True, "wiki": {"exists": True, "data": saved["data"], "meta": {key: saved[key] for key in ["version", "revision", "updated_at", "updated_by", "updated_role", "content_hash"] if key in saved}}})
+            except WikiEditConflictError as exc:
+                self._send_json({"ok": False, "error": str(exc), "code": "wiki_conflict"}, status=HTTPStatus.CONFLICT)
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to save beginner wiki: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        if path == "/api/wiki/directus/translate":
+            expected = str(os.getenv("DIRECTUS_WIKI_FLOW_SECRET") or "").strip()
+            provided = str(self.headers.get("X-Renaiss-Wiki-Secret") or payload.get("secret") or "").strip()
+            if not expected:
+                self._send_json({"ok": False, "error": "DIRECTUS_WIKI_FLOW_SECRET is not configured"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            if not provided or not hmac.compare_digest(provided, expected):
+                self._send_json({"ok": False, "error": "Unauthorized Directus flow"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            source_lang = _normalize_lang_tag(payload.get("source_lang") or payload.get("lang") or "zh-Hant")
+            raw_targets = payload.get("target_langs")
+            if isinstance(raw_targets, str):
+                target_langs = [part.strip() for part in raw_targets.split(",") if part.strip()]
+            elif isinstance(raw_targets, list):
+                target_langs = [str(part or "").strip() for part in raw_targets if str(part or "").strip()]
+            else:
+                target_langs = ["zh-Hans", "en", "ko"]
+            slug = str(payload.get("slug") or os.getenv("DIRECTUS_WIKI_SLUG") or "beginner").strip() or "beginner"
+            if any(_normalize_lang_tag(lang) not in {"zh-Hant", "zh-Hans"} for lang in target_langs):
+                load_environment()
+                if not resolve_minimax_key():
+                    self._send_json({"ok": False, "error": "missing_minimax_api_key"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+
+            def _wiki_translator(rows: list[str], lang: str) -> tuple[list[str], str]:
+                return translate_texts(rows, lang=_normalize_lang_tag(lang))
+
+            try:
+                result = translate_directus_beginner_wiki(
+                    source_lang=source_lang,
+                    target_langs=target_langs,
+                    translator=_wiki_translator,
+                    slug=slug,
+                )
+                self._send_json({"ok": True, "directus_wiki_translate": result})
+            except DirectusWikiError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to translate Directus wiki: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if not self._require_admin(path):
@@ -4274,9 +5850,10 @@ def main() -> int:
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
-        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/card-scan/recognize, "
+        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/wiki/directus/translate, POST /api/card-scan/recognize, "
         "POST /api/card-scan/recognize-cards, "
-        "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market"
+        "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market, "
+        "GET /api/card-profile/wallet-collection, GET /api/card-profile/catalog-search"
     )
     print(
         "[ai-intel] auth mode: "

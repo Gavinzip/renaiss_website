@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss Profile tracks card prices, wallet holdings, and scanned cards across desktop and mobile." />
+  <title>Renaiss Profile | Card Price Tracker</title>
+  <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <link rel="manifest" href="./profile.webmanifest" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260606-profile1"></script>
+  <script defer src="./assets/profile-pwa.js?v=20260606-profile17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/profile.css?v=20260606-profile17" />
+</head>
+<body class="profile-body">
+  <main class="shell profile-shell">
+    <header class="nav">
+      <div class="nav-main-row">
+        <a class="brand" href="./index.html#hero">
+          <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" loading="lazy" />
+          <span class="brand-text">Renaiss Aggregator</span>
+        </a>
+        <nav class="nav-links">
+          <a href="./game.html">Game</a>
+          <a href="./index.html#cat-events">聚合器</a>
+          <a href="./community_map.html">聲量地圖</a>
+          <a href="./card_scan.html">Card Scan</a>
+          <a class="is-active" href="./profile.html" aria-current="page">Profile</a>
+          <a href="./agent.html">Renaiss Agent</a>
+          <a href="./beginner.html">新手教學</a>
+          <a href="./feedback.html">回饋</a>
+        </nav>
+        <div class="nav-actions">
+          <button id="profile-nav-login" class="profile-login-btn" type="button">
+            <iconify-icon icon="lucide:user-round"></iconify-icon>
+            <span id="profile-nav-login-text">登入追蹤</span>
+          </button>
+          <a class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">Open Renaiss</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="profile-app-head">
+      <article class="profile-app-title">
+        <div>
+          <h1>我的卡牌</h1>
+          <p id="profile-app-subtitle">同步錢包後直接追蹤卡牌、取得時間與市場價格。</p>
+        </div>
+        <div class="profile-app-actions">
+          <button id="profile-hero-sync" class="profile-btn" type="button" data-tool-panel="wallet">
+            <iconify-icon icon="lucide:wallet-cards"></iconify-icon>
+            <span>連結錢包</span>
+          </button>
+          <button id="profile-open-search" class="profile-ghost-btn" type="button" data-tool-panel="search">
+            <iconify-icon icon="lucide:search"></iconify-icon>
+            <span>查卡加入</span>
+          </button>
+          <button id="profile-open-scan" class="profile-ghost-btn" type="button" data-tool-panel="scan">
+            <iconify-icon icon="lucide:scan-line"></iconify-icon>
+            <span>Scan Queue</span>
+          </button>
+          <button id="profile-open-settings" class="profile-icon-btn" type="button" data-tool-panel="settings" aria-label="Open settings">
+            <iconify-icon icon="lucide:settings-2"></iconify-icon>
+          </button>
+        </div>
+      </article>
+
+      <aside class="profile-summary-panel" aria-label="Portfolio summary">
+        <div class="profile-value-row">
+          <span class="profile-kicker">Total tracked value</span>
+          <strong id="profile-total-value" class="profile-total-value">US$0</strong>
+          <span id="profile-value-change" class="profile-change">No change yet</span>
+        </div>
+        <div class="profile-stat-grid">
+          <div class="profile-stat"><span>Cards</span><strong id="profile-card-count">0</strong></div>
+          <div class="profile-stat"><span>Wallets</span><strong id="profile-wallet-count">0</strong></div>
+          <div class="profile-stat"><span>Listed</span><strong id="profile-listed-count">0</strong></div>
+          <div class="profile-stat"><span>Sources</span><strong id="profile-source-count">0</strong></div>
+        </div>
+          <div>
+            <div class="profile-chart-wrap">
+              <svg id="profile-value-chart" class="profile-chart" viewBox="0 0 720 232" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Portfolio value chart"></svg>
+              <div id="profile-chart-note" class="profile-chart-note">同步錢包或加入卡片後會開始建立價值曲線。</div>
+            </div>
+            <div id="profile-range-row" class="profile-range-row" role="group" aria-label="Portfolio range">
+              <button type="button" data-range="1d">1D</button>
+              <button type="button" data-range="1w">1W</button>
+              <button type="button" data-range="1m">1M</button>
+              <button class="is-active" type="button" data-range="1y">1Y</button>
+            </div>
+          </div>
+      </aside>
+    </section>
+
+    <section class="profile-workspace">
+      <div class="profile-side-stack">
+        <div class="profile-tool-drawer-head">
+          <div>
+            <span class="profile-kicker">Tools</span>
+            <h2 id="profile-tool-title">Profile tools</h2>
+          </div>
+          <button id="profile-tool-close" class="profile-icon-btn" type="button" aria-label="Close tools">
+            <iconify-icon icon="lucide:x"></iconify-icon>
+          </button>
+        </div>
+        <article class="profile-panel" data-tool-section="wallet">
+          <div class="profile-panel-head">
+            <div>
+              <span class="profile-kicker">Wallet sync</span>
+              <h2>錢包追蹤</h2>
+            </div>
+            <button id="profile-sync-current" class="profile-icon-btn" type="button" aria-label="Refresh wallets">
+              <iconify-icon icon="lucide:refresh-cw"></iconify-icon>
+            </button>
+          </div>
+          <form id="profile-wallet-form" class="profile-form">
+            <div class="profile-field">
+              <label for="profile-wallet-input">錢包地址</label>
+              <input id="profile-wallet-input" name="wallet" inputmode="text" autocomplete="off" placeholder="0x..." />
+            </div>
+            <div class="profile-form-actions">
+              <button class="profile-btn" type="submit">
+                <iconify-icon icon="lucide:download-cloud"></iconify-icon>
+                <span>同步持倉</span>
+              </button>
+              <button id="profile-clear-wallet" class="profile-ghost-btn" type="button">清除輸入</button>
+            </div>
+            <p id="profile-wallet-status" class="profile-status" role="status" aria-live="polite"></p>
+          </form>
+          <div id="profile-wallet-list" class="profile-wallet-list"></div>
+        </article>
+
+        <article class="profile-panel" data-tool-section="search">
+          <div class="profile-panel-head">
+            <div>
+              <span class="profile-kicker">Catalog search</span>
+              <h2>文字查卡加入追蹤</h2>
+            </div>
+          </div>
+          <form id="profile-catalog-form" class="profile-search-form">
+            <div class="profile-field">
+              <label for="profile-catalog-query">卡號 / 名稱 / SNKR ID</label>
+              <input id="profile-catalog-query" name="q" autocomplete="off" placeholder="OP16-001 或 828060" />
+            </div>
+            <div class="profile-field">
+              <label for="profile-catalog-game">Game</label>
+              <select id="profile-catalog-game" name="game">
+                <option value="onepiece">One Piece</option>
+                <option value="pokemon">Pokemon</option>
+              </select>
+            </div>
+            <div class="profile-field">
+              <label for="profile-catalog-language">Language</label>
+              <select id="profile-catalog-language" name="language">
+                <option value="ja">Japanese</option>
+                <option value="en">English</option>
+                <option value="zh">Chinese</option>
+              </select>
+            </div>
+            <div class="profile-form-actions">
+              <button class="profile-btn" type="submit">
+                <iconify-icon icon="lucide:search"></iconify-icon>
+                <span>搜尋</span>
+              </button>
+              <button id="profile-add-op16" class="profile-ghost-btn" type="button">OP16-001</button>
+            </div>
+            <p id="profile-catalog-status" class="profile-status" role="status" aria-live="polite"></p>
+          </form>
+          <div id="profile-catalog-results" class="profile-catalog-results"></div>
+        </article>
+
+        <article class="profile-panel" data-tool-section="scan">
+          <div class="profile-panel-head">
+            <div>
+              <span class="profile-kicker">Scan bridge</span>
+              <h2>Card Scan 匯入</h2>
+            </div>
+            <a class="profile-icon-btn" href="./card_scan.html" aria-label="Open Card Scan">
+              <iconify-icon icon="lucide:scan-line"></iconify-icon>
+            </a>
+          </div>
+          <div id="profile-scan-queue" class="profile-scan-queue"></div>
+          <p id="profile-scan-status" class="profile-status">掃描頁加入追蹤後，會在這裡出現可匯入的卡片。</p>
+        </article>
+        <article class="profile-panel" data-tool-section="settings">
+          <div class="profile-panel-head">
+            <div>
+              <span class="profile-kicker">Settings</span>
+              <h2>顯示設定</h2>
+            </div>
+          </div>
+          <div class="profile-settings-list">
+            <div class="profile-snapshot-row">
+              <span>Market preference</span>
+              <strong id="profile-settings-market">Renaiss first</strong>
+            </div>
+            <div class="profile-snapshot-row">
+              <span>Card detail</span>
+              <strong>桌面側欄，手機點卡開啟</strong>
+            </div>
+            <div class="profile-snapshot-row">
+              <span>Account</span>
+              <strong id="profile-settings-account">未登入</strong>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="profile-main-stack">
+        <article class="profile-card-list-panel">
+          <div class="profile-card-list-head">
+            <div>
+              <span class="profile-kicker">Tracked cards</span>
+              <h2>卡牌價格追蹤</h2>
+            </div>
+            <div id="profile-collection-row" class="profile-collection-row" role="group" aria-label="Profile collection">
+              <button class="is-active" type="button" data-collection="profile">Own Profile</button>
+              <button type="button" data-collection="wallet">Renaiss Wallet</button>
+              <button id="profile-import-wallet" type="button" data-import-wallet-all>全部匯入</button>
+            </div>
+            <div class="profile-view-row" role="group" aria-label="Card view">
+              <button class="is-active" type="button" data-view="list"><iconify-icon icon="lucide:list"></iconify-icon>List</button>
+              <button type="button" data-view="grid"><iconify-icon icon="lucide:grid-2x2"></iconify-icon>Grid</button>
+            </div>
+          </div>
+          <div class="profile-card-toolbar">
+            <div class="profile-toolbar-group">
+              <span class="profile-toolbar-label">Type</span>
+              <div id="profile-game-filter-row" class="profile-filter-row" role="group" aria-label="Card type filter">
+                <button class="is-active" type="button" data-game-filter="all">All</button>
+                <button type="button" data-game-filter="pokemon">Pokemon</button>
+                <button type="button" data-game-filter="one-piece">One Piece</button>
+              </div>
+            </div>
+            <div class="profile-toolbar-group">
+              <span class="profile-toolbar-label">Source</span>
+              <div id="profile-filter-row" class="profile-filter-row" role="group" aria-label="Card source filter">
+                <button class="is-active" type="button" data-filter="all">All</button>
+                <button type="button" data-filter="wallet">Wallet</button>
+                <button type="button" data-filter="scan">Scan</button>
+                <button type="button" data-filter="catalog">Catalog</button>
+              </div>
+            </div>
+            <div class="profile-field">
+              <label for="profile-sort-select">排序</label>
+              <select id="profile-sort-select">
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="price-high">Price high</option>
+                <option value="price-low">Price low</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
+            <div class="profile-field">
+              <label for="profile-market-select">市場</label>
+              <select id="profile-market-select">
+                <option value="renaiss-first">Renaiss first</option>
+                <option value="snkr-first">SNKR first</option>
+              </select>
+            </div>
+          </div>
+          <div id="profile-card-grid" class="profile-card-grid"></div>
+          <div id="profile-empty-state" class="profile-empty-state">
+            <div>
+              <iconify-icon icon="lucide:badge-question-mark"></iconify-icon>
+              <p>還沒有追蹤卡片。先同步錢包、用文字查卡，或從 Card Scan 加入結果。</p>
+            </div>
+          </div>
+        </article>
+
+        <article id="profile-detail-panel" class="profile-detail-panel" hidden>
+          <div class="profile-detail-head">
+            <div>
+              <span class="profile-kicker">Card detail</span>
+              <h2 id="profile-detail-title">Card detail</h2>
+            </div>
+            <button id="profile-detail-remove" class="profile-ghost-btn" type="button">
+              <iconify-icon icon="lucide:trash-2"></iconify-icon>
+              <span>移除</span>
+            </button>
+            <button id="profile-detail-close" class="profile-icon-btn profile-detail-close" type="button" aria-label="Close detail">
+              <iconify-icon icon="lucide:x"></iconify-icon>
+            </button>
+          </div>
+          <div class="profile-detail-card">
+            <img id="profile-detail-image" alt="" />
+            <div>
+              <h3 id="profile-detail-name">--</h3>
+              <p id="profile-detail-meta">--</p>
+            </div>
+          </div>
+          <div id="profile-detail-metrics" class="profile-detail-metrics"></div>
+          <div class="profile-chart-wrap">
+            <svg id="profile-card-chart" class="profile-chart" viewBox="0 0 720 232" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Card price chart"></svg>
+            <div id="profile-card-chart-note" class="profile-chart-note">選擇卡片後顯示價格資料。</div>
+          </div>
+          <div id="profile-card-range-row" class="profile-range-row profile-card-range-row" role="group" aria-label="Card price range">
+            <button type="button" data-range="1d">1D</button>
+            <button type="button" data-range="1w">1W</button>
+            <button type="button" data-range="1m">1M</button>
+            <button class="is-active" type="button" data-range="1y">1Y</button>
+          </div>
+          <div id="profile-source-tabs" class="profile-source-tabs"></div>
+          <div id="profile-market-snapshot" class="profile-market-snapshot"></div>
+          <section class="profile-listings-panel" aria-label="Listings">
+            <div class="profile-listings-head">
+              <span class="profile-kicker">Listings</span>
+              <strong id="profile-listings-title">Linked listings</strong>
+            </div>
+            <div id="profile-detail-listings" class="profile-detail-listings"></div>
+          </section>
+          <div id="profile-detail-actions" class="profile-detail-actions"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <div id="profile-login-modal" class="profile-modal" hidden aria-hidden="true">
+    <article class="profile-modal-card" role="dialog" aria-modal="true" aria-labelledby="profile-login-title">
+      <button id="profile-login-close" class="profile-icon-btn profile-modal-close" type="button" aria-label="Close">
+        <iconify-icon icon="lucide:x"></iconify-icon>
+      </button>
+      <span class="profile-kicker">Profile login</span>
+      <h2 id="profile-login-title">登入追蹤面板</h2>
+      <form id="profile-login-form" class="profile-form">
+        <div class="profile-field">
+          <label for="profile-login-name">帳號</label>
+          <input id="profile-login-name" autocomplete="username" placeholder="gavin" required />
+        </div>
+        <div class="profile-field">
+          <label for="profile-login-password">密碼</label>
+          <input id="profile-login-password" type="password" autocomplete="current-password" placeholder="至少 6 個字元" required minlength="6" />
+        </div>
+        <div class="profile-field">
+          <label for="profile-login-wallet">綁定錢包</label>
+          <input id="profile-login-wallet" inputmode="text" autocomplete="off" placeholder="0x..." />
+        </div>
+        <div class="profile-form-actions">
+          <button class="profile-btn" type="submit">
+            <iconify-icon icon="lucide:log-in"></iconify-icon>
+            <span>登入</span>
+          </button>
+          <button id="profile-logout-btn" class="profile-ghost-btn" type="button">登出</button>
+        </div>
+        <p id="profile-login-status" class="profile-status" role="status" aria-live="polite"></p>
+      </form>
+    </article>
+  </div>
+
+  <script src="./assets/profile.js?v=20260606-profile17"></script>
+</body>
+</html>

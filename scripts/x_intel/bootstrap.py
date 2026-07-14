@@ -1138,7 +1138,7 @@ def parse_status_page(
         reply_to_id=reply_to_id,
         topic_labels=["other"],
         classified_by="ai",
-        ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M2.7").strip(),
+        ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M3").strip(),
         ai_version=AI_CLASSIFICATION_VERSION,
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,

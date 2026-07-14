@@ -11,10 +11,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
   <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="./assets/index-base.css?v=20260506-events-admin1" />
-  <link rel="stylesheet" href="./assets/index-intel.css?v=20260509-beginner-cardsearch5" />
+  <link rel="stylesheet" href="./assets/index-intel.css?v=20260531-directus-wiki1" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260509-beginner-cardsearch5" />
 </head>
-<body>
+<body class="beginner-page">
   <div class="shell">
     <header class="nav">
       <div class="nav-main-row" data-lang-morph="1">
@@ -27,8 +27,27 @@
           <a id="beginner-nav-aggregator" href="./index.html#cat-events" data-no-i18n="1">聚合器</a>
           <a href="./community_map.html" data-no-i18n="1">聲量地圖</a>
           <a href="./card_scan.html" data-no-i18n="1">Card Scan</a>
+          <a href="./profile.html" data-no-i18n="1">Profile</a>
           <a href="./agent.html" data-no-i18n="1">Renaiss Agent</a>
-          <a id="beginner-nav-beginner" href="./beginner.html" class="is-active" data-no-i18n="1">新手教學</a>
+          <div class="wiki-nav-menu" data-no-i18n="1">
+            <button id="beginner-wiki-menu-toggle" class="wiki-nav-trigger is-active" type="button" aria-expanded="false" aria-controls="beginner-wiki-menu">
+              <span id="beginner-wiki-menu-label">Wiki</span>
+              <iconify-icon icon="lucide:chevron-down"></iconify-icon>
+            </button>
+            <div id="beginner-wiki-menu" class="wiki-mega-menu" hidden>
+              <div class="wiki-mega-head">
+                <div>
+                  <span class="wiki-mega-kicker">Renaiss Wiki</span>
+                  <strong id="beginner-wiki-menu-title">新手教學</strong>
+                </div>
+                <a class="wiki-mega-open" href="./beginner.html" data-topic-id="">
+                  <iconify-icon icon="lucide:book-open"></iconify-icon>
+                  <span id="beginner-wiki-menu-overview">總覽</span>
+                </a>
+              </div>
+              <div id="beginner-wiki-mega-grid" class="wiki-mega-grid" aria-label="Wiki menu"></div>
+            </div>
+          </div>
           <a href="./feedback.html" data-no-i18n="1">回饋</a>
         </nav>
         <div class="nav-actions">
@@ -41,10 +60,28 @@
               <option value="ko">한국어</option>
             </select>
           </div>
+          <a class="nav-action" href="./profile.html" data-no-i18n="1">Login</a>
           <a id="beginner-open-link" class="nav-action" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer" data-no-i18n="1">Open Renaiss</a>
+          <button id="beginner-wiki-login-btn" class="wiki-creator-btn" type="button" data-no-i18n="1">Creator Login</button>
+          <button id="beginner-wiki-editor-btn" class="wiki-creator-btn is-primary" type="button" data-no-i18n="1" hidden>編輯 Wiki</button>
+          <button id="beginner-wiki-logout-btn" class="wiki-creator-btn" type="button" data-no-i18n="1" hidden>登出</button>
         </div>
       </div>
     </header>
+
+    <div id="beginner-wiki-inline-toolbar" class="wiki-inline-toolbar" hidden data-no-i18n="1">
+      <div>
+        <strong>Wiki 編輯模式</strong>
+        <span>直接在頁面上改字、調整段落順序與圖片位置。</span>
+      </div>
+      <div class="wiki-inline-toolbar-actions">
+        <button id="beginner-wiki-inline-add-section" type="button" class="wiki-creator-btn">新增段落</button>
+        <button id="beginner-wiki-inline-save" type="button" class="wiki-creator-btn is-primary">儲存並自動翻譯</button>
+        <button id="beginner-wiki-inline-translate-save" type="button" class="wiki-creator-btn is-primary" hidden>翻譯並儲存</button>
+        <button id="beginner-wiki-inline-exit" type="button" class="wiki-creator-btn">退出編輯</button>
+      </div>
+      <p id="beginner-wiki-inline-message" class="beginner-wiki-message" aria-live="polite" hidden></p>
+    </div>
 
     <aside id="beginner-scroll-timeline" class="beginner-scroll-timeline" aria-label="Beginner Timeline" data-no-i18n="1">
       <div class="beginner-scroll-timeline-title">快速導覽</div>
@@ -56,66 +93,199 @@
       <button type="button" class="beginner-scroll-timeline-item" data-beginner-anchor="faq">FAQ</button>
     </aside>
 
-    <section id="beginner-anchor-start" class="panel observe" style="--delay: 34ms;">
-      <article id="beginner-cover" class="beginner-media beginner-cover-hero observe" style="--delay: 42ms; margin-top: 0.12rem;">
-        <img id="beginner-cover-img" loading="lazy" src="" alt="Renaiss Guide Cover" />
-      </article>
+    <main class="beginner-docs-layout">
+      <aside id="beginner-docs-sidebar" class="beginner-docs-sidebar observe" style="--delay: 24ms;" data-no-i18n="1">
+        <button id="beginner-sidebar-toggle" class="beginner-sidebar-toggle" type="button" aria-expanded="true">
+          <iconify-icon icon="lucide:panel-left-close"></iconify-icon>
+          <span>收合</span>
+        </button>
+        <a class="beginner-sidebar-home" href="./beginner.html" data-topic-id="">
+          <span class="beginner-sidebar-home-mark"><iconify-icon icon="lucide:sparkles"></iconify-icon></span>
+          <span>
+            <strong>Renaiss Wiki</strong>
+            <em>Beginner docs</em>
+          </span>
+        </a>
+        <div class="beginner-sidebar-label">Guide</div>
+        <nav id="beginner-docs-nav" class="beginner-docs-nav" aria-label="Beginner wiki navigation"></nav>
+      </aside>
 
-      <div class="section-head observe beginner-hero-head" style="--delay: 56ms; margin-top: 0.82rem;">
-        <div>
-          <h1 id="beginner-page-title" class="section-title sbt-beginner-title"><iconify-icon icon="lucide:flag"></iconify-icon>新手教學</h1>
-          <p id="beginner-page-subtitle" class="section-sub beginner-hero-sub">用最短路線理解 Renaiss：註冊、充值、抽卡、交易、SBT 與卡牌判斷。</p>
+      <div id="beginner-docs-main" class="beginner-docs-main">
+        <section id="beginner-anchor-start" class="panel observe" style="--delay: 34ms;">
+          <div class="beginner-help-hero observe" style="--delay: 42ms;">
+            <article id="beginner-cover" class="beginner-media beginner-cover-hero">
+              <img id="beginner-cover-img" loading="lazy" src="" alt="Renaiss Guide Cover" />
+            </article>
+
+            <div class="section-head beginner-hero-head">
+              <div>
+                <h1 id="beginner-page-title" class="section-title sbt-beginner-title"><iconify-icon icon="lucide:flag"></iconify-icon>新手教學</h1>
+                <p id="beginner-page-subtitle" class="section-sub beginner-hero-sub">用最短路線理解 Renaiss：註冊、充值、抽卡、交易、SBT 與卡牌判斷。</p>
+              </div>
+              <span id="beginner-page-chip" class="chip"><iconify-icon icon="lucide:route"></iconify-icon>Beginner Route</span>
+            </div>
+
+            <label class="beginner-wiki-search" for="beginner-wiki-search-input">
+              <iconify-icon icon="lucide:search"></iconify-icon>
+              <input id="beginner-wiki-search-input" type="search" autocomplete="off" placeholder="搜尋錢包、充值、SBT、Marketplace..." />
+            </label>
+          </div>
+
+          <div class="beginner-wiki-entry observe" style="--delay: 74ms;" data-no-i18n="1">
+            <div id="beginner-wiki-topic-grid" class="beginner-wiki-topic-grid" aria-label="Wiki topics"></div>
+            <div id="beginner-wiki-search-empty" class="beginner-wiki-search-empty">沒有符合的教學段落，換一個關鍵字試試。</div>
+          </div>
+
+          <div id="beginner-md-content" class="beginner-static-guide observe" style="--delay: 92ms;"></div>
+        </section>
+
+        <section id="beginner-anchor-tools" class="panel observe" style="--delay: 56ms;">
+          <div class="section-head" style="margin-bottom: 0.8rem;">
+            <div>
+              <h2 id="beginner-tools-title" class="section-title">工具與作者</h2>
+              <p id="beginner-tools-subtitle" class="section-sub">工具有連結就附連結；有標註作者就完整列出。</p>
+            </div>
+            <span class="chip"><iconify-icon icon="lucide:wrench"></iconify-icon>Tools</span>
+          </div>
+          <div id="beginner-tools-list" class="beginner-tools-stack">
+            <article class="beginner-tool-card"><div class="beginner-tool-meta">載入中...</div></article>
+          </div>
+        </section>
+
+        <section id="beginner-anchor-faq" class="panel observe" style="--delay: 68ms;">
+          <div class="section-head" style="margin-bottom: 0.8rem;">
+            <div>
+              <h2 id="beginner-faq-title" class="section-title">新手常見問題（FAQ）</h2>
+              <p id="beginner-faq-subtitle" class="section-sub">把最容易誤會的問題先整理好。</p>
+            </div>
+            <span class="chip"><iconify-icon icon="lucide:help-circle"></iconify-icon>FAQ</span>
+          </div>
+          <div id="beginner-faq-list" class="beginner-faq-grid">
+            <article class="beginner-faq-item"><div class="beginner-faq-a">載入中...</div></article>
+          </div>
+        </section>
+
+        <section class="panel observe" style="--delay: 72ms;">
+          <div class="section-head" style="margin-bottom: 0.6rem;">
+            <div>
+              <h2 class="section-title">資料來源</h2>
+              <p class="section-sub">內容整理來源：老豆子 @genekmkz 與其 Notion。</p>
+            </div>
+            <span class="chip"><iconify-icon icon="lucide:book-marked"></iconify-icon>Source</span>
+          </div>
+          <div class="beginner-source-links">
+            <a class="beginner-source-link" href="https://x.com/genekmkz" target="_blank" rel="noreferrer">X：老豆子 @genekmkz</a>
+            <a class="beginner-source-link" href="https://www.notion.so/Renaiss-bfbbc705aae04129aee2b619f8cb2b0e#88a5410feeef4dd8b7a2f7e2efd3fe20" target="_blank" rel="noreferrer">Notion：Renaiss 指南</a>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div id="beginner-wiki-auth-modal" class="beginner-wiki-modal" aria-hidden="true" data-no-i18n="1">
+      <div class="beginner-wiki-modal-panel" role="dialog" aria-modal="true" aria-labelledby="beginner-wiki-auth-title">
+        <button type="button" class="beginner-wiki-modal-close" data-beginner-wiki-auth-close>關閉</button>
+        <div id="beginner-wiki-auth-title" class="beginner-wiki-modal-title">Creator Login</div>
+        <p class="beginner-wiki-modal-sub">Creator 可以編輯 Wiki 內容；admin 仍保留完整管理權限。</p>
+        <form id="beginner-wiki-auth-form" class="beginner-wiki-form">
+          <label>
+            <span>帳號</span>
+            <input id="beginner-wiki-auth-username" type="text" autocomplete="username" placeholder="creator" required />
+          </label>
+          <label>
+            <span>密碼</span>
+            <input id="beginner-wiki-auth-password" type="password" autocomplete="current-password" required />
+          </label>
+          <div class="beginner-wiki-form-actions">
+            <button type="button" class="wiki-creator-btn" data-beginner-wiki-auth-close>取消</button>
+            <button type="submit" class="wiki-creator-btn is-primary">登入</button>
+          </div>
+        </form>
+        <p id="beginner-wiki-auth-message" class="beginner-wiki-message" aria-live="polite" hidden></p>
+      </div>
+    </div>
+
+    <div id="beginner-wiki-editor-modal" class="beginner-wiki-modal is-editor" aria-hidden="true" data-no-i18n="1">
+      <div class="beginner-wiki-modal-panel" role="dialog" aria-modal="true" aria-labelledby="beginner-wiki-editor-title">
+        <button type="button" class="beginner-wiki-modal-close" data-beginner-wiki-editor-close>關閉</button>
+        <div id="beginner-wiki-editor-title" class="beginner-wiki-modal-title">Wiki Creator Studio</div>
+        <p id="beginner-wiki-editor-meta" class="beginner-wiki-modal-sub">載入 Wiki 資料中...</p>
+        <div class="beginner-wiki-editor-toolbar">
+          <label>
+            <span>目前編輯語言</span>
+            <select id="beginner-wiki-editor-lang">
+              <option value="zh-Hant">繁體中文</option>
+              <option value="zh-Hans">简体中文</option>
+              <option value="en">English</option>
+              <option value="ko">한국어</option>
+            </select>
+          </label>
+          <div class="beginner-wiki-editor-toolbar-actions">
+            <button id="beginner-wiki-translate-save" type="button" class="wiki-creator-btn is-primary" hidden>翻譯並儲存</button>
+            <button id="beginner-wiki-editor-refresh" type="button" class="wiki-creator-btn">重新載入</button>
+          </div>
         </div>
-        <span id="beginner-page-chip" class="chip"><iconify-icon icon="lucide:route"></iconify-icon>Beginner Route</span>
+        <form id="beginner-wiki-editor-form" class="beginner-wiki-editor-form">
+          <section class="beginner-wiki-editor-section">
+            <div class="beginner-wiki-editor-section-head">
+              <h3>頁面內容</h3>
+              <span>直接改字，系統會自動整理資料格式。</span>
+            </div>
+            <div class="beginner-wiki-editor-grid">
+              <label>
+                <span>頁面標題</span>
+                <input id="beginner-wiki-edit-title" type="text" />
+              </label>
+              <label>
+                <span>頁面副標</span>
+                <input id="beginner-wiki-edit-subtitle" type="text" />
+              </label>
+              <label>
+                <span>頁面標籤</span>
+                <input id="beginner-wiki-edit-eyebrow" type="text" />
+              </label>
+            </div>
+          </section>
+          <section class="beginner-wiki-editor-section">
+            <div class="beginner-wiki-editor-section-head">
+              <h3>首頁重點</h3>
+              <button id="beginner-wiki-add-stat" type="button" class="wiki-creator-btn">新增重點</button>
+            </div>
+            <div id="beginner-wiki-edit-stats" class="beginner-wiki-repeat-list"></div>
+          </section>
+          <section class="beginner-wiki-editor-section">
+            <div class="beginner-wiki-editor-section-head">
+              <h3>教學段落</h3>
+              <span>依照目前頁面段落直接修改文字。</span>
+            </div>
+            <div id="beginner-wiki-edit-sections-ui" class="beginner-wiki-section-list"></div>
+          </section>
+          <section class="beginner-wiki-editor-section">
+            <div class="beginner-wiki-editor-section-head">
+              <h3>工具</h3>
+              <button id="beginner-wiki-add-tool" type="button" class="wiki-creator-btn">新增工具</button>
+            </div>
+            <div id="beginner-wiki-edit-tools-ui" class="beginner-wiki-section-list"></div>
+          </section>
+          <section class="beginner-wiki-editor-section">
+            <div class="beginner-wiki-editor-section-head">
+              <h3>FAQ</h3>
+              <button id="beginner-wiki-add-faq" type="button" class="wiki-creator-btn">新增 FAQ</button>
+            </div>
+            <div id="beginner-wiki-edit-faq-ui" class="beginner-wiki-repeat-list"></div>
+          </section>
+          <div class="beginner-wiki-form-actions is-wide">
+            <button type="button" class="wiki-creator-btn" data-beginner-wiki-editor-close>取消</button>
+            <button id="beginner-wiki-editor-save" type="submit" class="wiki-creator-btn is-primary">儲存並自動翻譯</button>
+          </div>
+        </form>
+        <p id="beginner-wiki-editor-message" class="beginner-wiki-message" aria-live="polite" hidden></p>
       </div>
-
-      <div id="beginner-md-content" class="beginner-static-guide observe" style="--delay: 92ms;"></div>
-    </section>
-
-    <section id="beginner-anchor-tools" class="panel observe" style="--delay: 56ms;">
-      <div class="section-head" style="margin-bottom: 0.8rem;">
-        <div>
-          <h2 id="beginner-tools-title" class="section-title">工具與作者</h2>
-          <p id="beginner-tools-subtitle" class="section-sub">工具有連結就附連結；有標註作者就完整列出。</p>
-        </div>
-        <span class="chip"><iconify-icon icon="lucide:wrench"></iconify-icon>Tools</span>
-      </div>
-      <div id="beginner-tools-list" class="beginner-tools-stack">
-        <article class="beginner-tool-card"><div class="beginner-tool-meta">載入中...</div></article>
-      </div>
-    </section>
-
-    <section id="beginner-anchor-faq" class="panel observe" style="--delay: 68ms;">
-      <div class="section-head" style="margin-bottom: 0.8rem;">
-        <div>
-          <h2 id="beginner-faq-title" class="section-title">新手常見問題（FAQ）</h2>
-          <p id="beginner-faq-subtitle" class="section-sub">把最容易誤會的問題先整理好。</p>
-        </div>
-        <span class="chip"><iconify-icon icon="lucide:help-circle"></iconify-icon>FAQ</span>
-      </div>
-      <div id="beginner-faq-list" class="beginner-faq-grid">
-        <article class="beginner-faq-item"><div class="beginner-faq-a">載入中...</div></article>
-      </div>
-    </section>
-
-    <section class="panel observe" style="--delay: 72ms;">
-      <div class="section-head" style="margin-bottom: 0.6rem;">
-        <div>
-          <h2 class="section-title">資料來源</h2>
-          <p class="section-sub">內容整理來源：老豆子 @genekmkz 與其 Notion。</p>
-        </div>
-        <span class="chip"><iconify-icon icon="lucide:book-marked"></iconify-icon>Source</span>
-      </div>
-      <div class="beginner-source-links">
-        <a class="beginner-source-link" href="https://x.com/genekmkz" target="_blank" rel="noreferrer">X：老豆子 @genekmkz</a>
-        <a class="beginner-source-link" href="https://www.notion.so/Renaiss-bfbbc705aae04129aee2b619f8cb2b0e#88a5410feeef4dd8b7a2f7e2efd3fe20" target="_blank" rel="noreferrer">Notion：Renaiss 指南</a>
-      </div>
-    </section>
+    </div>
 
   </div>
 
   <script src="./assets/index-data.js?v=20260508-card-refresh2"></script>
   <script src="./assets/beginner-guide-data.js?v=20260509-beginner-cardsearch5"></script>
-  <script src="./assets/beginner-guide.js?v=20260509-beginner-cardsearch5"></script>
+  <script src="./assets/beginner-guide.js?v=20260601-auto-translate1"></script>
 </body>
 </html>

@@ -4,6 +4,10 @@ website/.env
 *.local.env
 .env.*
 !.env.example
+.DS_Store
+
+# Frontend dependencies
+node_modules/
 
 # Python cache
 __pycache__/
@@ -18,7 +22,6 @@ debug_sniping_mode/
 # Runtime state
 scripts/seen_ids.txt
 logs/
-.run_logs/
 minimax-output/
 website/data/
 renaiss_sync_data/
@@ -29,7 +32,6 @@ data
 
 # External restored data repo
 data/
-data
 !frontend_chain/data/
 !frontend_chain/data/i18n_text_cache.json
 

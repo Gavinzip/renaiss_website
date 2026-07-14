@@ -1,0 +1,27 @@
+@import "../../../website/assets/index-base.css";
+@import "../../../website/assets/community-hub.css";
+
+.community-hub-react-root {
+  min-height: 100vh;
+}
+
+.community-hub-react-root button,
+.community-hub-react-root input,
+.community-hub-react-root select {
+  font: inherit;
+}
+
+.community-hub-sbt-source-link {
+  align-items: center;
+  color: var(--accent-blue, #2285f2);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.88rem;
+  font-weight: 800;
+  gap: 0.35rem;
+  text-decoration: none;
+}
+
+.community-hub-sbt-source-link:hover {
+  color: var(--text-strong, #17375d);
+}

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Renaiss Community Hub unifies live X intelligence, events, SBT activity, media, records, and the existing Renaiss knowledge tools." />
+  <title>Renaiss Community Hub</title>
+  <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
+  <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
+  <script defer src="./assets/page-prefetch.js?v=20260601-priority-proxy1"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <script defer src="https://code.iconify.design/iconify-icon/2.1.0/iconify-icon.min.js"></script>
+  <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
+  <link rel="stylesheet" href="./assets/community-hub.css?v=20260714-hub-guide-complete4" />
+</head>
+<body class="community-hub-page">
+  <main class="shell community-hub-shell">
+    <header class="nav community-hub-topbar">
+      <a class="brand" href="./community-hub.html" aria-label="Renaiss Community Hub">
+        <img class="brand-logo" src="./assets/renaiss-logo-alpha-cropped.png" alt="Renaiss Logo" />
+        <span class="brand-text">Renaiss Community Hub</span>
+      </a>
+      <div class="community-hub-topbar-actions">
+        <a class="community-hub-legacy-link" href="./index.html#cat-events" data-hub-key="top.legacy">原始聚合器</a>
+        <label class="lang-switcher" for="community-hub-lang-select">
+          <iconify-icon class="lang-icon" icon="lucide:languages"></iconify-icon>
+          <select id="community-hub-lang-select" class="lang-select" aria-label="Language">
+            <option value="zh-Hant">繁體中文</option>
+            <option value="zh-Hans">简体中文</option>
+            <option value="en">English</option>
+            <option value="ko">한국어</option>
+          </select>
+        </label>
+        <a class="nav-action community-hub-open" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer" data-hub-key="top.open">Open Renaiss</a>
+      </div>
+    </header>
+
+    <div class="community-hub-app">
+      <aside class="community-hub-sidebar" aria-label="Community Hub sections">
+        <div class="community-hub-sidebar-head">
+          <p class="community-hub-sidebar-label" data-hub-key="sidebar.label">社群情報</p>
+          <span id="hub-source-dot" class="community-hub-source-dot" aria-hidden="true"></span>
+        </div>
+        <nav id="community-hub-nav" class="community-hub-nav-list">
+          <button type="button" class="community-hub-nav-item is-active" data-hub-view="overview">
+            <iconify-icon icon="lucide:layout-dashboard"></iconify-icon><span data-hub-key="nav.overview">總覽</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="feed">
+            <iconify-icon icon="lucide:messages-square"></iconify-icon><span data-hub-key="nav.feed">社群動態</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="events">
+            <iconify-icon icon="lucide:calendar-range"></iconify-icon><span data-hub-key="nav.events">活動</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="sbt">
+            <iconify-icon icon="lucide:badge-check"></iconify-icon><span data-hub-key="nav.sbt">SBT</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="guide">
+            <iconify-icon icon="lucide:book-open-check"></iconify-icon><span data-hub-key="nav.guide">新手教學</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="records">
+            <iconify-icon icon="lucide:trophy"></iconify-icon><span data-hub-key="nav.records">獎勵與紀錄</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="media">
+            <iconify-icon icon="lucide:newspaper"></iconify-icon><span data-hub-key="nav.media">新聞與媒體</span>
+          </button>
+          <button type="button" class="community-hub-nav-item" data-hub-view="knowledge">
+            <iconify-icon icon="lucide:book-open-check"></iconify-icon><span data-hub-key="nav.knowledge">知識與工具</span>
+          </button>
+        </nav>
+        <div class="community-hub-sidebar-foot">
+          <a href="./beginner.html?topic=start"><iconify-icon icon="lucide:book-marked"></iconify-icon><span data-hub-key="sidebar.wiki">前往新手 Wiki</span></a>
+          <a href="./agent.html"><iconify-icon icon="lucide:bot-message-square"></iconify-icon><span data-hub-key="sidebar.agent">詢問 Renaiss Agent</span></a>
+        </div>
+      </aside>
+
+      <section class="community-hub-main" aria-live="polite">
+        <div id="hub-live-status" class="community-hub-live-status" role="status"></div>
+
+        <section class="community-hub-view is-active" data-hub-panel="overview">
+          <header class="community-hub-intro">
+            <div>
+              <h1>Renaiss <span class="text-gradient">Community Hub</span></h1>
+              <p id="hub-digest-headline" class="community-hub-intro-lead" data-hub-key="overview.loadingLead">正在讀取 Renaiss 社群的即時情報。</p>
+              <div class="community-hub-intro-actions">
+                <button type="button" class="btn btn-main" data-hub-open-view="events"><span class="shine"></span><iconify-icon icon="lucide:radar"></iconify-icon><span data-hub-key="overview.eventsAction">查看活動</span></button>
+                <button type="button" class="btn btn-sub" data-hub-open-view="feed"><iconify-icon icon="lucide:messages-square"></iconify-icon><span data-hub-key="overview.feedAction">看社群動態</span></button>
+              </div>
+            </div>
+            <div class="community-hub-briefing" aria-label="Live source briefing">
+              <span data-hub-key="overview.sourceLabel">資料來源</span>
+              <strong id="hub-source-summary">Renaiss Intel</strong>
+              <small id="hub-source-updated">--</small>
+            </div>
+          </header>
+
+          <section class="community-hub-overview-section">
+            <div class="community-hub-section-head">
+              <div><p class="community-hub-section-index">01</p><h2 data-hub-key="overview.focusTitle">正在發生</h2></div>
+              <button type="button" class="community-hub-text-button" data-hub-open-view="events" data-hub-key="overview.allEvents">全部活動</button>
+            </div>
+            <div id="hub-overview-events" class="community-hub-feature-rail"></div>
+          </section>
+
+          <section class="community-hub-overview-section">
+            <div class="community-hub-section-head">
+              <div><p class="community-hub-section-index">02</p><h2 data-hub-key="overview.sbtTitle">目前可取得的 SBT</h2></div>
+              <button type="button" class="community-hub-text-button" data-hub-open-view="sbt" data-hub-key="overview.allSbt">完整 SBT 清單</button>
+            </div>
+            <div id="hub-overview-sbt" class="community-hub-overview-sbt-list"></div>
+          </section>
+
+          <section class="community-hub-overview-section">
+            <div class="community-hub-section-head">
+              <div><p class="community-hub-section-index">03</p><h2 data-hub-key="overview.signalTitle">值得留意的訊號</h2></div>
+              <button type="button" class="community-hub-text-button" data-hub-open-view="media" data-hub-key="overview.allSignals">全部消息</button>
+            </div>
+            <div id="hub-overview-signals" class="community-hub-signal-list"></div>
+          </section>
+
+          <section class="community-hub-overview-section community-hub-overview-routes">
+            <div class="community-hub-section-head">
+              <div><p class="community-hub-section-index">04</p><h2 data-hub-key="overview.routesTitle">從這裡開始</h2></div>
+            </div>
+            <nav class="community-hub-route-list" aria-label="Community Hub quick index">
+              <button type="button" data-hub-open-view="feed"><span>01</span><strong data-hub-key="overview.routeFeed">社群動態</strong><small data-hub-key="overview.routeFeedSub">追蹤官方與社群的最新訊號</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></button>
+              <button type="button" data-hub-open-view="events"><span>02</span><strong data-hub-key="overview.routeEvents">活動</strong><small data-hub-key="overview.routeEventsSub">只看 Renaiss 官方活動狀態</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></button>
+              <button type="button" data-hub-open-view="sbt"><span>03</span><strong data-hub-key="overview.routeSbt">SBT</strong><small data-hub-key="overview.routeSbtSub">查看目前可取得項目與條件</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></button>
+              <button type="button" data-hub-open-view="records"><span>04</span><strong data-hub-key="overview.routeRecords">獎勵與紀錄</strong><small data-hub-key="overview.routeRecordsSub">只顯示可驗證的結果與排行</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></button>
+              <a href="./beginner.html?topic=start"><span>05</span><strong data-hub-key="overview.routeWiki">新手 Wiki</strong><small data-hub-key="overview.routeWikiSub">學習規則、SBT 與工具使用方式</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+            </nav>
+          </section>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="feed" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">LIVE</p><h2 data-hub-key="feed.title">社群動態</h2><p data-hub-key="feed.lead">從目前追蹤來源中，整理實際標記 Renaiss 或被分類為社群內容的貼文；每一筆都可回到原始來源。</p></div>
+            <button type="button" class="community-hub-refresh" data-hub-refresh><iconify-icon icon="lucide:refresh-cw"></iconify-icon><span data-hub-key="action.refresh">重新整理</span></button>
+          </header>
+          <div class="community-hub-toolbar">
+            <div class="community-hub-filter-row" data-hub-filter-group="feed">
+              <button type="button" class="is-active" data-hub-filter="all" data-hub-key="filter.all">全部</button>
+              <button type="button" data-hub-filter="official" data-hub-key="filter.official">官方</button>
+              <button type="button" data-hub-filter="community" data-hub-key="filter.community">社群</button>
+              <button type="button" data-hub-filter="tagged" data-hub-key="filter.tagged">標記 Renaiss</button>
+            </div>
+            <label class="community-hub-search"><iconify-icon icon="lucide:search"></iconify-icon><input id="hub-feed-search" type="search" autocomplete="off" data-hub-placeholder="search.placeholder" placeholder="搜尋目前資料" /></label>
+          </div>
+          <div id="hub-feed-list" class="community-hub-content-list"></div>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="events" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">TIME</p><h2 data-hub-key="events.title">活動</h2><p data-hub-key="events.lead">只顯示 Renaiss 官方活動牆中的近期、已公告與過去活動；第三方卡牌通路活動不會混入。</p></div>
+            <button type="button" class="community-hub-refresh" data-hub-refresh><iconify-icon icon="lucide:refresh-cw"></iconify-icon><span data-hub-key="action.refresh">重新整理</span></button>
+          </header>
+          <div class="community-hub-filter-row community-hub-filter-row-wide" data-hub-filter-group="events">
+            <button type="button" class="is-active" data-hub-filter="active" data-hub-key="filter.active">近期官方</button>
+            <button type="button" data-hub-filter="upcoming" data-hub-key="filter.upcoming">已公告</button>
+            <button type="button" data-hub-filter="past" data-hub-key="filter.past">過去活動</button>
+          </div>
+          <div id="hub-event-list" class="community-hub-content-list community-hub-event-list"></div>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="sbt" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">SBT</p><h2 data-hub-key="sbt.title">SBT</h2><p data-hub-key="sbt.lead">先理解 SBT 的用途與取得原則，再查找目前可完成的任務。</p></div>
+          </header>
+          <section id="hub-sbt-primer" class="community-hub-sbt-guide" aria-label="SBT guide"></section>
+          <section class="community-hub-sbt-catalog" aria-labelledby="hub-sbt-acquisition-title">
+            <div class="community-hub-sbt-catalog-head">
+              <p class="community-hub-section-index">CURRENT</p>
+              <h3 id="hub-sbt-acquisition-title" data-hub-key="sbt.acquisitionTitle">取得中的 SBT</h3>
+              <p data-hub-key="sbt.acquisitionLead">由目前的 SBT 相關公告整理出的名稱與取得資訊；會保留各自的原文出處。</p>
+            </div>
+            <div id="hub-sbt-acquisition-list" class="community-hub-sbt-acquisition-list"></div>
+          </section>
+          <section class="community-hub-sbt-catalog" aria-labelledby="hub-sbt-article-title">
+            <div class="community-hub-sbt-catalog-head community-hub-sbt-article-head">
+              <p class="community-hub-section-index">ARTICLES</p>
+              <h3 id="hub-sbt-article-title" data-hub-key="sbt.articleTitle">SBT 相關文章</h3>
+              <p data-hub-key="sbt.articleLead">從原本 SBT 分類保留的即時文章。點進去在 Hub 內閱讀，再回到原始貼文核對。</p>
+            </div>
+            <div id="hub-sbt-article-list" class="community-hub-content-list"></div>
+          </section>
+          <button type="button" class="community-hub-guide-launch" data-hub-open-guide="sbt">
+            <span><iconify-icon icon="lucide:book-open-check"></iconify-icon><strong data-hub-key="sbt.guideActionTitle">完整 SBT 新手教學</strong><small data-hub-key="sbt.guideActionLead">查看基礎說明與目前可完成的任務清單</small></span>
+            <iconify-icon icon="lucide:arrow-right"></iconify-icon>
+          </button>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="guide" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">GUIDE</p><h2 data-hub-key="guide.title">新手教學</h2><p data-hub-key="guide.lead">保留完整的獨立教學內容；一次只閱讀一個章節，並可從左側切換。</p></div>
+          </header>
+          <div id="hub-guide-root"></div>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="article" hidden>
+          <div id="hub-article-root"></div>
+        </section>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="records" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">RECORDS</p><h2 data-hub-key="records.title">獎勵、得獎者與排行榜</h2><p data-hub-key="records.lead">這裡只呈現可驗證的紀錄。現有 Intel Feed 尚未提供得獎者名單或排行榜快照，因此不顯示任何虛構名次。</p></div>
+          </header>
+          <div class="community-hub-records-layout">
+            <section class="community-hub-record-block">
+              <div class="community-hub-record-heading"><iconify-icon icon="lucide:trophy"></iconify-icon><h3 data-hub-key="records.winnersTitle">得獎者與禮品</h3></div>
+              <div id="hub-winners-state" class="community-hub-source-state"></div>
+            </section>
+            <section class="community-hub-record-block">
+              <div class="community-hub-record-heading"><iconify-icon icon="lucide:chart-no-axes-combined"></iconify-icon><h3 data-hub-key="records.rankTitle">社群排行榜</h3></div>
+              <div id="hub-ranking-state" class="community-hub-source-state"></div>
+            </section>
+          </div>
+          <section class="community-hub-data-contract">
+            <p class="community-hub-section-index" data-hub-key="records.requirementsLabel">需要的正式資料</p>
+            <ol>
+              <li data-hub-key="records.requirementOne">活動或獎勵 ID、名稱與狀態</li>
+              <li data-hub-key="records.requirementTwo">得獎者／錢包或公開帳號、獎項與可驗證來源 URL</li>
+              <li data-hub-key="records.requirementThree">排行榜 API 的時間戳、範圍與計分規則</li>
+            </ol>
+          </section>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="media" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">MEDIA</p><h2 data-hub-key="media.title">新聞與媒體</h2><p data-hub-key="media.lead">官方公告、收藏與 TCG 市場情報都回到原始貼文或來源，避免把摘要當成唯一事實。</p></div>
+            <button type="button" class="community-hub-refresh" data-hub-refresh><iconify-icon icon="lucide:refresh-cw"></iconify-icon><span data-hub-key="action.refresh">重新整理</span></button>
+          </header>
+          <div class="community-hub-filter-row community-hub-filter-row-wide" data-hub-filter-group="media">
+            <button type="button" class="is-active" data-hub-filter="official" data-hub-key="filter.official">官方</button>
+            <button type="button" data-hub-filter="market" data-hub-key="filter.market">市場與收藏</button>
+            <button type="button" data-hub-filter="all" data-hub-key="filter.all">全部消息</button>
+          </div>
+          <div id="hub-media-list" class="community-hub-content-list"></div>
+        </section>
+
+        <section class="community-hub-view" data-hub-panel="knowledge" hidden>
+          <header class="community-hub-page-head">
+            <div><p class="community-hub-section-index">KNOW</p><h2 data-hub-key="knowledge.title">知識與工具</h2><p data-hub-key="knowledge.lead">保留原本已經存在的頁面與工具，各自負責最適合的工作，不把所有內容塞進這個 Hub。</p></div>
+          </header>
+          <section class="community-hub-knowledge-group" aria-labelledby="hub-knowledge-guide-title">
+            <div class="community-hub-knowledge-group-head">
+              <p class="community-hub-section-index">WIKI</p>
+              <h3 id="hub-knowledge-guide-title" data-hub-key="knowledge.guideTitle">完整新手教學</h3>
+              <p data-hub-key="knowledge.guideLead">以獨立章節閱讀開始使用、抽卡、SBT、卡牌與 FAQ，不需要在資訊流中翻找。</p>
+            </div>
+            <button type="button" class="community-hub-guide-launch community-hub-guide-launch--knowledge" data-hub-open-guide="start">
+              <span><iconify-icon icon="lucide:book-open-check"></iconify-icon><strong data-hub-key="knowledge.guideActionTitle">開啟新手教學</strong><small data-hub-key="knowledge.guideActionLead">從開始使用一路看到 SBT、工具與 FAQ</small></span>
+              <iconify-icon icon="lucide:arrow-right"></iconify-icon>
+            </button>
+          </section>
+          <nav class="community-hub-destination-list" aria-label="Renaiss destinations">
+            <a href="./agent.html"><span><iconify-icon icon="lucide:bot-message-square"></iconify-icon><strong data-hub-key="knowledge.agent">Renaiss Agent</strong></span><small data-hub-key="knowledge.agentSub">直接問問題、追溯知識與來源</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+            <a href="./community_map.html"><span><iconify-icon icon="lucide:map"></iconify-icon><strong data-hub-key="knowledge.map">聲量地圖</strong></span><small data-hub-key="knowledge.mapSub">社群討論與地區分布</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+            <a href="./card_scan.html"><span><iconify-icon icon="lucide:scan-line"></iconify-icon><strong>Card Scan</strong></span><small data-hub-key="knowledge.scanSub">辨識與整理卡牌資料</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+            <a href="./profile.html"><span><iconify-icon icon="lucide:contact-round"></iconify-icon><strong>Profile</strong></span><small data-hub-key="knowledge.profileSub">查看自己的收藏與紀錄</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+            <a href="./game.html"><span><iconify-icon icon="lucide:gamepad-2"></iconify-icon><strong>Game</strong></span><small data-hub-key="knowledge.gameSub">進入 Renaiss 的互動世界</small><iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a>
+          </nav>
+        </section>
+      </section>
+    </div>
+  </main>
+  <script src="./assets/sbt-catalog.js?v=20260713-community-hub"></script>
+  <script src="./assets/beginner-guide-data.js?v=20260509-beginner-cardsearch5"></script>
+  <script src="./assets/community-hub-guide.js?v=20260714-hub-guide-complete4"></script>
+  <script src="./assets/community-hub.js?v=20260714-hub-limited-sbt6"></script>
+</body>
+</html>

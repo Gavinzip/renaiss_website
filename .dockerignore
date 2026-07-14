@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+node_modules/
 logs/
 .run_logs/
 debug/

@@ -164,6 +164,14 @@
       background: #fff;
     }
 
+    .nav-game-actions {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.44rem;
+      flex: none;
+    }
+
     .lang-switcher {
       display: inline-flex;
       align-items: center;

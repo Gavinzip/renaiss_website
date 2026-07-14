@@ -99,7 +99,7 @@ I18N_FEED_PARALLEL_LANGS = str(os.getenv("I18N_FEED_PARALLEL_LANGS", "0") or "0"
     "yes",
     "on",
 }
-I18N_FEED_FALLBACK_MODE = str(os.getenv("I18N_FEED_FALLBACK_MODE", "base") or "base").strip().lower()
+I18N_FEED_FALLBACK_MODE = str(os.getenv("I18N_FEED_FALLBACK_MODE", "hide") or "hide").strip().lower()
 I18N_SKIP_KEYS = {
     "id",
     "url",
@@ -1115,7 +1115,15 @@ def _best_effort_localized_feed(feed: dict[str, object], lang: str) -> tuple[dic
     mapping, qa = _build_best_effort_mapping(feed, tag)
     localized = _apply_feed_translation(copy.deepcopy(feed), mapping)
     if isinstance(localized, dict):
+        localized, card_state = _apply_card_level_fallback(
+            base_feed=feed,
+            localized_feed=localized,
+            lang=tag,
+            mode=_resolve_card_fallback_mode(tag),
+        )
         localized["lang"] = tag
+        qa = dict(qa)
+        qa["card_state"] = card_state
         return localized, qa
     out = copy.deepcopy(feed)
     out["lang"] = tag
@@ -1204,7 +1212,7 @@ def _resolve_card_fallback_mode(lang: str) -> str:
     # Card-level publishing mode:
     # - hide: only show cards already translated for target language
     # - base: show translated cards first, fallback to base-language card per item
-    raw_mode = str(I18N_FEED_FALLBACK_MODE or "base").strip().lower()
+    raw_mode = str(I18N_FEED_FALLBACK_MODE or "hide").strip().lower()
     if raw_mode in {"hide", "strict", "translated-only"}:
         return "hide"
     return "base"
@@ -2923,6 +2931,12 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
             out = dict(feed)
         cards = out.get("cards")
         total_cards = len(cards) if isinstance(cards, list) else 0
+        strict_mode = _resolve_card_fallback_mode(tag) == "hide"
+        if strict_mode:
+            out["cards"] = []
+            out["total_cards"] = 0
+            for key in I18N_VISIBLE_FEED_ROOT_KEYS:
+                out.pop(key, None)
         out["lang"] = tag
         out["_i18n"] = {
             "mode": "building",
@@ -2932,7 +2946,7 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
                 "lang": tag,
                 "coverage": 0.0,
                 "reason": reason,
-                "card_state": {"total": total_cards, "ready": 0, "fallback": total_cards, "hidden": 0},
+                "card_state": {"total": total_cards, "ready": 0, "fallback": 0 if strict_mode else total_cards, "hidden": total_cards if strict_mode else 0},
             },
             "state": _i18n_state_snapshot(),
         }

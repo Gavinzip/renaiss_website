@@ -412,8 +412,8 @@ def _minimax_chat(prompt: str, api_key: str, max_tokens: int | None = None) -> s
     model_name = str(
         os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
-        or "MiniMax-M2.7"
-    ).strip() or "MiniMax-M2.7"
+        or "MiniMax-M3"
+    ).strip() or "MiniMax-M3"
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],

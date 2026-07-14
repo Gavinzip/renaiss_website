@@ -17,6 +17,9 @@ required_files=(
   "agent.html"
   "community_map.html"
   "card_scan.html"
+  "profile.html"
+  "profile.webmanifest"
+  "profile-sw.js"
   "beginner.html"
   "feedback.html"
   "game.html"
@@ -33,6 +36,12 @@ if [[ ! -d "${SRC_DIR}/assets" ]]; then
   exit 1
 fi
 
+if [[ ! -d "${SRC_DIR}/community-hub" ]]; then
+  echo "missing React Community Hub build: ${SRC_DIR}/community-hub" >&2
+  echo "run: cd ${ROOT_DIR}/apps/community-hub && pnpm build" >&2
+  exit 1
+fi
+
 for rel in "${required_files[@]}"; do
   if [[ ! -f "${SRC_DIR}/${rel}" ]]; then
     echo "missing source frontend file: ${SRC_DIR}/${rel}" >&2
@@ -45,6 +54,7 @@ echo "source=${SRC_DIR}"
 echo "target=${SITE_DIR}"
 
 rsync -a --delete "${SRC_DIR}/assets/" "${SITE_DIR}/assets/"
+rsync -a --delete "${SRC_DIR}/community-hub/" "${SITE_DIR}/community-hub/"
 
 for rel in "${required_files[@]}"; do
   install -m 0644 "${SRC_DIR}/${rel}" "${SITE_DIR}/${rel}"
@@ -54,12 +64,16 @@ done
 # top-level leftovers such as copied backend folders or old nested website/.
 allowed_top=(
   "assets"
+  "community-hub"
   "data"
   "ws-resources.json"
   "index.html"
   "agent.html"
   "community_map.html"
   "card_scan.html"
+  "profile.html"
+  "profile.webmanifest"
+  "profile-sw.js"
   "beginner.html"
   "feedback.html"
   "game.html"

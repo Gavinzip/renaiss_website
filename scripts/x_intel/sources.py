@@ -74,8 +74,8 @@ def minimax_model_name() -> str:
     return str(
         os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
-        or "MiniMax-M2.7"
-    ).strip() or "MiniMax-M2.7"
+        or "MiniMax-M3"
+    ).strip() or "MiniMax-M3"
 
 
 def ai_min_confidence() -> float:
@@ -722,8 +722,8 @@ def minimax_chat(
         model_override
         or os.getenv("MINIMAX_TEXT_MODEL")
         or os.getenv("MINIMAX_MODEL")
-        or "MiniMax-M2.7"
-    ).strip() or "MiniMax-M2.7"
+        or "MiniMax-M3"
+    ).strip() or "MiniMax-M3"
     temperature = 0.3
     if temperature_override is not None:
         try:
