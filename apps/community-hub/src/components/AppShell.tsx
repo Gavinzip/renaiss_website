@@ -6,8 +6,8 @@ import { Icon } from "./Icon";
 
 const navItems: Array<{ icon: string; view: Exclude<HubView, "article"> }> = [
   { view: "overview", icon: "layout-dashboard" },
-  { view: "feed", icon: "messages-square" },
   { view: "events", icon: "calendar-range" },
+  { view: "feed", icon: "messages-square" },
   { view: "sbt", icon: "badge-check" },
   { view: "guide", icon: "book-open-check" },
   { view: "records", icon: "trophy" },
