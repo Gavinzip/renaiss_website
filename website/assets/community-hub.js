@@ -1,6 +1,7 @@
 (function initCommunityHub() {
   const API_BASE = "";
   const INTEL_ORIGIN = "https://renaiss.zeabur.app";
+  const OPEN_MONITOR_LEADERBOARD_URL = "https://open-monitor-rmrm.pages.dev/leaderboard";
   const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
   const SUPPORTED_LANGUAGES = new Set(["zh-Hant", "zh-Hans", "en", "ko"]);
   const OFFICIAL_X_HANDLES = new Set(["renaissxyz"]);
@@ -14,7 +15,7 @@
       "nav.overview": "總覽", "nav.feed": "社群動態", "nav.events": "活動", "nav.sbt": "SBT", "nav.records": "獎勵與紀錄", "nav.media": "新聞與媒體", "nav.knowledge": "知識與工具",
       "overview.loadingLead": "正在讀取 Renaiss 社群的即時情報。", "overview.eventsAction": "查看活動", "overview.feedAction": "看社群動態", "overview.sourceLabel": "資料來源", "overview.focusTitle": "正在發生", "overview.allEvents": "全部活動", "overview.signalTitle": "值得留意的訊號", "overview.allSignals": "全部消息",
       "feed.title": "社群動態", "feed.lead": "從目前追蹤來源中，整理實際標記 Renaiss 或被分類為社群內容的貼文；每一筆都可回到原始來源。", "events.title": "活動", "events.lead": "只顯示 Renaiss 官方活動牆中的近期、已公告與過去活動；第三方卡牌通路活動不會混入。", "sbt.title": "SBT", "sbt.lead": "先理解 SBT 的用途與取得原則，再查找目前可完成的任務。", "sbt.catalogTitle": "目前可取得的 SBT", "sbt.catalogLead": "保留原站列出的可完成任務與取得條件。",
-      "records.title": "獎勵、得獎者與排行榜", "records.lead": "這裡只呈現可驗證的紀錄。社群活動排行來自目前 Intel Feed 的 Community Metrics；得獎者名單仍須接入正式結果資料才會顯示。", "records.winnersTitle": "得獎者與禮品", "records.rankTitle": "社群活動排行", "records.requirementsLabel": "需要的正式資料", "records.requirementOne": "活動或獎勵 ID、名稱與狀態", "records.requirementTwo": "得獎者／錢包或公開帳號、獎項與可驗證來源 URL", "records.requirementThree": "正式排行榜 API 的時間戳、範圍與計分規則",
+      "records.title": "獎勵、得獎者與排行榜", "records.lead": "這裡只呈現可驗證的紀錄；抽卡排行榜連到 Open Monitor 的 Top 200，得獎者名單仍須接入正式結果資料才會顯示。", "records.winnersTitle": "得獎者與禮品", "records.rankTitle": "抽卡排行榜", "records.rankSource": "Open Monitor · 抽卡排行 Top 200", "records.rankLead": "依累計抽卡數排名，提供全期與月份排行，並保留各卡池分布。", "records.rankMeta": "非官方統計 · 每小時更新", "records.rankAction": "查看抽卡排行榜", "records.requirementsLabel": "需要的正式資料", "records.requirementOne": "活動或獎勵 ID、名稱與狀態", "records.requirementTwo": "得獎者／錢包或公開帳號、獎項與可驗證來源 URL", "records.requirementThree": "正式排行榜 API 的時間戳、範圍與計分規則",
       "media.title": "新聞與媒體", "media.lead": "官方公告、收藏與 TCG 市場情報都回到原始貼文或來源，避免把摘要當成唯一事實。", "knowledge.title": "知識與工具", "knowledge.lead": "保留原本已經存在的頁面與工具，各自負責最適合的工作，不把所有內容塞進這個 Hub。", "knowledge.wiki": "新手 Wiki", "knowledge.wikiSub": "開始使用、抽卡、SBT、卡牌與 FAQ", "knowledge.agent": "Renaiss Agent", "knowledge.agentSub": "直接問問題、追溯知識與來源", "knowledge.map": "聲量地圖", "knowledge.mapSub": "社群討論與地區分布", "knowledge.scanSub": "辨識與整理卡牌資料", "knowledge.profileSub": "查看自己的收藏與紀錄", "knowledge.gameSub": "進入 Renaiss 的互動世界",
       "filter.all": "全部", "filter.official": "官方", "filter.community": "社群", "filter.tagged": "標記 Renaiss", "filter.active": "近期官方", "filter.current": "目前", "filter.upcoming": "已公告", "filter.past": "過去活動", "filter.market": "市場與收藏", "sbt.filter.current": "目前可取得", "sbt.filter.upcoming": "已公告", "sbt.filter.past": "已結束 SBT", "action.refresh": "重新整理", "search.placeholder": "搜尋目前資料",
       "source.live": "Live Intel Feed", "source.updated": "更新於", "source.cards": "筆整理", "source.loading": "正在讀取即時資料...", "source.translating": "翻譯同步中", "source.translatingTitle": "正在完成這個語言的翻譯", "source.translatingBody": "內容會在翻譯完成後出現；不會混用原始語言。", "source.error": "即時資料讀取失敗。", "source.retry": "重試", "source.unavailable": "目前尚無符合這個條件的已驗證資料。", "source.winnerMissingTitle": "尚未接入得獎者資料來源", "source.winnerMissingBody": "目前的 Intel Feed 有活動與獎勵訊息，但沒有可驗證的得獎名單。接入活動結果資料或 Directus 紀錄後，這裡才會顯示。", "source.rankMissingTitle": "尚未接入社群活動排行", "source.rankMissingBody": "目前的 Intel Feed 尚未回傳 Community Metrics 帳號分數；Stephen 的正式排行榜 API 也尚未串接，因此這裡不會顯示假排名。", "source.metricsTitle": "Community Metrics · 社群活動快照", "source.metricsBody": "依目前追蹤社群帳號的貼文互動計算，並非 Stephen 的正式總排行榜。", "source.metricsWindow": "統計範圍", "source.metricsScore": "互動分數", "source.metricsPosts": "貼文", "source.metricsLikes": "喜歡", "source.metricsReplies": "回覆", "source.metricsBasis": "計分依據", "card.original": "查看原文", "card.official": "官方", "card.community": "社群", "card.active": "進行中", "card.upcoming": "已公告", "card.past": "已結束", "card.reference": "資料整理",
@@ -24,7 +25,7 @@
       "nav.overview": "总览", "nav.feed": "社群动态", "nav.events": "活动", "nav.sbt": "SBT", "nav.records": "奖励与记录", "nav.media": "新闻与媒体", "nav.knowledge": "知识与工具",
       "overview.loadingLead": "正在读取 Renaiss 社群的即时情报。", "overview.eventsAction": "查看活动", "overview.feedAction": "看社群动态", "overview.sourceLabel": "资料来源", "overview.focusTitle": "正在发生", "overview.allEvents": "全部活动", "overview.signalTitle": "值得留意的讯号", "overview.allSignals": "全部消息",
       "feed.title": "社群动态", "feed.lead": "从目前追踪来源中，整理实际标记 Renaiss 或被分类为社群内容的贴文；每一笔都可回到原始来源。", "events.title": "活动", "events.lead": "只显示 Renaiss 官方活动墙中的近期、已公告与过去活动；第三方卡牌渠道活动不会混入。", "sbt.title": "SBT", "sbt.lead": "先理解 SBT 的用途与获取原则，再查找目前可完成的任务。", "sbt.catalogTitle": "目前可获取的 SBT", "sbt.catalogLead": "保留原站列出的可完成任务与获取条件。",
-      "records.title": "奖励、得奖者与排行榜", "records.lead": "这里只呈现可验证的记录。社群活动排行来自目前 Intel Feed 的 Community Metrics；得奖者名单仍须接入正式结果资料才会显示。", "records.winnersTitle": "得奖者与礼品", "records.rankTitle": "社群活动排行", "records.requirementsLabel": "需要的正式资料", "records.requirementOne": "活动或奖励 ID、名称与状态", "records.requirementTwo": "得奖者／钱包或公开帐号、奖项与可验证来源 URL", "records.requirementThree": "正式排行榜 API 的时间戳、范围与计分规则",
+      "records.title": "奖励、得奖者与排行榜", "records.lead": "这里只呈现可验证的记录；抽卡排行榜连接到 Open Monitor 的 Top 200，得奖者名单仍须接入正式结果资料才会显示。", "records.winnersTitle": "得奖者与礼品", "records.rankTitle": "抽卡排行榜", "records.rankSource": "Open Monitor · 抽卡排行 Top 200", "records.rankLead": "按累计抽卡数排名，提供全期与月份排行，并保留各卡池分布。", "records.rankMeta": "非官方统计 · 每小时更新", "records.rankAction": "查看抽卡排行榜", "records.requirementsLabel": "需要的正式资料", "records.requirementOne": "活动或奖励 ID、名称与状态", "records.requirementTwo": "得奖者／钱包或公开帐号、奖项与可验证来源 URL", "records.requirementThree": "正式排行榜 API 的时间戳、范围与计分规则",
       "media.title": "新闻与媒体", "media.lead": "官方公告、收藏与 TCG 市场情报都回到原始贴文或来源，避免把摘要当成唯一事实。", "knowledge.title": "知识与工具", "knowledge.lead": "保留原本已经存在的页面与工具，各自负责最适合的工作，不把所有内容塞进这个 Hub。", "knowledge.wiki": "新手 Wiki", "knowledge.wikiSub": "开始使用、抽卡、SBT、卡牌与 FAQ", "knowledge.agent": "Renaiss Agent", "knowledge.agentSub": "直接问问题、追溯知识与来源", "knowledge.map": "声量地图", "knowledge.mapSub": "社群讨论与地区分布", "knowledge.scanSub": "识别与整理卡牌资料", "knowledge.profileSub": "查看自己的收藏与记录", "knowledge.gameSub": "进入 Renaiss 的互动世界",
       "filter.all": "全部", "filter.official": "官方", "filter.community": "社群", "filter.tagged": "标记 Renaiss", "filter.active": "近期官方", "filter.current": "目前", "filter.upcoming": "已公告", "filter.past": "过去活动", "filter.market": "市场与收藏", "sbt.filter.current": "目前可获取", "sbt.filter.upcoming": "已公布", "sbt.filter.past": "已结束 SBT", "action.refresh": "重新整理", "search.placeholder": "搜寻目前资料",
       "source.live": "Live Intel Feed", "source.updated": "更新于", "source.cards": "笔整理", "source.loading": "正在读取即时资料...", "source.translating": "翻译同步中", "source.translatingTitle": "正在完成这个语言的翻译", "source.translatingBody": "内容会在翻译完成后出现；不会混用原始语言。", "source.error": "即时资料读取失败。", "source.retry": "重试", "source.unavailable": "目前尚无符合这个条件的已验证资料。", "source.winnerMissingTitle": "尚未接入得奖者资料来源", "source.winnerMissingBody": "目前的 Intel Feed 有活动与奖励讯息，但没有可验证的得奖名单。接入活动结果资料或 Directus 记录后，这里才会显示。", "source.rankMissingTitle": "尚未接入社群活动排行", "source.rankMissingBody": "目前的 Intel Feed 尚未回传 Community Metrics 帐号分数；Stephen 的正式排行榜 API 也尚未串接，因此这里不会显示假排名。", "source.metricsTitle": "Community Metrics · 社群活动快照", "source.metricsBody": "依目前追踪社群帐号的贴文互动计算，并非 Stephen 的正式总排行榜。", "source.metricsWindow": "统计范围", "source.metricsScore": "互动分数", "source.metricsPosts": "贴文", "source.metricsLikes": "喜欢", "source.metricsReplies": "回复", "source.metricsBasis": "计分依据", "card.original": "查看原文", "card.official": "官方", "card.community": "社群", "card.active": "进行中", "card.upcoming": "已公告", "card.past": "已结束", "card.reference": "资料整理"
@@ -34,7 +35,7 @@
       "nav.overview": "Overview", "nav.feed": "Community Feed", "nav.events": "Events", "nav.sbt": "SBT", "nav.records": "Rewards & Records", "nav.media": "News & Media", "nav.knowledge": "Knowledge & Tools",
       "overview.loadingLead": "Loading live Renaiss community intelligence.", "overview.eventsAction": "View events", "overview.feedAction": "Open community feed", "overview.sourceLabel": "Source", "overview.focusTitle": "Happening now", "overview.allEvents": "All events", "overview.signalTitle": "Signals worth watching", "overview.allSignals": "All updates",
       "feed.title": "Community feed", "feed.lead": "Posts from the current tracked sources that explicitly tag Renaiss or are classified as community content. Every item links back to its original source.", "events.title": "Events", "events.lead": "Only official Renaiss event-wall items are shown as recent, announced, or past events. Third-party card-channel activity is excluded.", "sbt.title": "SBT", "sbt.lead": "Understand what SBTs represent and how they are earned before looking through tasks available now.", "sbt.catalogTitle": "SBTs available now", "sbt.catalogLead": "The original site’s active tasks and their requirements are preserved here.",
-      "records.title": "Rewards, winners, and rankings", "records.lead": "Only verifiable records belong here. The community activity ranking uses Community Metrics in the current Intel Feed; winner rosters remain hidden until an official results source is connected.", "records.winnersTitle": "Winners and gifts", "records.rankTitle": "Community activity ranking", "records.requirementsLabel": "Required verified data", "records.requirementOne": "Event or reward ID, name, and status", "records.requirementTwo": "Winner, wallet or public handle, prize, and verifiable source URL", "records.requirementThree": "Official ranking API timestamp, scope, and scoring rules",
+      "records.title": "Rewards, winners, and rankings", "records.lead": "Only verifiable records belong here; the pack-opening leaderboard links to Open Monitor Top 200, while winner rosters remain hidden until an official results source is connected.", "records.winnersTitle": "Winners and gifts", "records.rankTitle": "Pack-opening leaderboard", "records.rankSource": "Open Monitor · Top 200 pack openers", "records.rankLead": "Ranked by cumulative pack openings, with all-time and monthly views plus per-pack breakdowns.", "records.rankMeta": "Unofficial statistics · Updated hourly", "records.rankAction": "Open pack leaderboard", "records.requirementsLabel": "Required verified data", "records.requirementOne": "Event or reward ID, name, and status", "records.requirementTwo": "Winner, wallet or public handle, prize, and verifiable source URL", "records.requirementThree": "Official ranking API timestamp, scope, and scoring rules",
       "media.title": "News and media", "media.lead": "Official announcements, collectibles, and TCG market intelligence always lead back to the original post or source. A summary is not the only fact.", "knowledge.title": "Knowledge and tools", "knowledge.lead": "Existing pages and tools remain in their proper roles instead of being crammed into this Hub.", "knowledge.wiki": "Beginner Wiki", "knowledge.wikiSub": "Getting started, packs, SBT, cards, and FAQ", "knowledge.agent": "Renaiss Agent", "knowledge.agentSub": "Ask questions and trace knowledge and sources", "knowledge.map": "Community Map", "knowledge.mapSub": "Community discussions and regional distribution", "knowledge.scanSub": "Recognize and organize card data", "knowledge.profileSub": "View your collection and history", "knowledge.gameSub": "Enter the interactive Renaiss world",
       "filter.all": "All", "filter.official": "Official", "filter.community": "Community", "filter.tagged": "Tagged Renaiss", "filter.active": "Recent official", "filter.current": "Current", "filter.upcoming": "Announced", "filter.past": "Past", "filter.market": "Market & Collectibles", "sbt.filter.current": "Available now", "sbt.filter.upcoming": "Announced", "sbt.filter.past": "Ended SBTs", "action.refresh": "Refresh", "search.placeholder": "Search current data",
       "source.live": "Live Intel Feed", "source.updated": "Updated", "source.cards": "items", "source.loading": "Loading live data...", "source.translating": "Translation sync in progress", "source.translatingTitle": "Completing translation for this language", "source.translatingBody": "Content appears after translation completes; source-language text is not mixed in.", "source.error": "Live data could not be loaded.", "source.retry": "Retry", "source.unavailable": "There is no verified data for this filter yet.", "source.winnerMissingTitle": "No winner source is connected", "source.winnerMissingBody": "The Intel Feed includes event and reward information but not a verifiable winner roster. This view opens after event-result data or Directus records are connected.", "source.rankMissingTitle": "No community activity ranking is connected", "source.rankMissingBody": "The current Intel Feed did not return Community Metrics account scores, and Stephen's official ranking API is not connected, so this view does not show invented positions.", "source.metricsTitle": "Community Metrics · activity snapshot", "source.metricsBody": "Calculated from tracked community-account post interactions. This is not Stephen's official global ranking.", "source.metricsWindow": "Window", "source.metricsScore": "Interaction score", "source.metricsPosts": "Posts", "source.metricsLikes": "Likes", "source.metricsReplies": "Replies", "source.metricsBasis": "Score basis", "card.original": "Original source", "card.official": "Official", "card.community": "Community", "card.active": "Active", "card.upcoming": "Announced", "card.past": "Ended", "card.reference": "Intel record"
@@ -44,7 +45,7 @@
       "nav.overview": "개요", "nav.feed": "커뮤니티 피드", "nav.events": "이벤트", "nav.sbt": "SBT", "nav.records": "보상 및 기록", "nav.media": "뉴스 및 미디어", "nav.knowledge": "지식 및 도구",
       "overview.loadingLead": "Renaiss 커뮤니티 실시간 인텔을 불러오는 중입니다.", "overview.eventsAction": "이벤트 보기", "overview.feedAction": "커뮤니티 피드 보기", "overview.sourceLabel": "출처", "overview.focusTitle": "지금 진행 중", "overview.allEvents": "모든 이벤트", "overview.signalTitle": "주목할 신호", "overview.allSignals": "모든 업데이트",
       "feed.title": "커뮤니티 피드", "feed.lead": "현재 추적 중인 출처에서 Renaiss를 명시적으로 태그했거나 커뮤니티 콘텐츠로 분류된 글을 정리합니다. 모든 항목은 원문으로 연결됩니다.", "events.title": "이벤트", "events.lead": "Renaiss 공식 이벤트 월의 최근, 공지, 과거 이벤트만 표시합니다. 제3자 카드 채널 활동은 제외합니다.", "sbt.title": "SBT", "sbt.lead": "SBT의 의미와 획득 원칙을 먼저 이해한 뒤, 지금 완료할 수 있는 과제를 확인하세요.", "sbt.catalogTitle": "현재 획득 가능한 SBT", "sbt.catalogLead": "원본 사이트의 진행 가능한 과제와 획득 조건을 그대로 유지합니다.",
-      "records.title": "보상, 수상자, 랭킹", "records.lead": "검증 가능한 기록만 표시합니다. 커뮤니티 활동 순위는 현재 Intel Feed의 Community Metrics를 사용하며, 수상자 명단은 공식 결과 출처가 연결된 뒤에만 표시됩니다.", "records.winnersTitle": "수상자와 선물", "records.rankTitle": "커뮤니티 활동 순위", "records.requirementsLabel": "필요한 검증 데이터", "records.requirementOne": "이벤트 또는 보상 ID, 이름, 상태", "records.requirementTwo": "수상자, 지갑 또는 공개 계정, 경품, 검증 URL", "records.requirementThree": "공식 랭킹 API의 시각, 범위, 점수 규칙",
+      "records.title": "보상, 수상자, 랭킹", "records.lead": "검증 가능한 기록만 표시합니다. 팩 오픈 랭킹은 Open Monitor Top 200으로 연결하며, 수상자 명단은 공식 결과 출처가 연결된 뒤에만 표시됩니다.", "records.winnersTitle": "수상자와 선물", "records.rankTitle": "팩 오픈 랭킹", "records.rankSource": "Open Monitor · 팩 오픈 Top 200", "records.rankLead": "누적 팩 오픈 수를 기준으로 순위를 매기며 전체 및 월별 보기와 팩별 분포를 제공합니다.", "records.rankMeta": "비공식 통계 · 매시간 업데이트", "records.rankAction": "팩 오픈 랭킹 열기", "records.requirementsLabel": "필요한 검증 데이터", "records.requirementOne": "이벤트 또는 보상 ID, 이름, 상태", "records.requirementTwo": "수상자, 지갑 또는 공개 계정, 경품, 검증 URL", "records.requirementThree": "공식 랭킹 API의 시각, 범위, 점수 규칙",
       "media.title": "뉴스와 미디어", "media.lead": "공식 발표, 컬렉터블, TCG 시장 인텔은 항상 원문이나 출처로 연결됩니다. 요약만이 유일한 사실은 아닙니다.", "knowledge.title": "지식과 도구", "knowledge.lead": "이미 존재하는 페이지와 도구를 이 Hub에 모두 넣지 않고 각자 적절한 역할로 유지합니다.", "knowledge.wiki": "초보자 Wiki", "knowledge.wikiSub": "시작하기, 팩, SBT, 카드, FAQ", "knowledge.agent": "Renaiss Agent", "knowledge.agentSub": "질문하고 지식과 출처를 추적하세요", "knowledge.map": "커뮤니티 맵", "knowledge.mapSub": "커뮤니티 대화와 지역 분포", "knowledge.scanSub": "카드 데이터를 인식하고 정리", "knowledge.profileSub": "내 컬렉션과 기록 보기", "knowledge.gameSub": "인터랙티브 Renaiss 세계로 이동",
       "filter.all": "전체", "filter.official": "공식", "filter.community": "커뮤니티", "filter.tagged": "Renaiss 태그", "filter.active": "최근 공식", "filter.current": "현재", "filter.upcoming": "공지됨", "filter.past": "과거", "filter.market": "시장 및 컬렉터블", "sbt.filter.current": "현재 획득 가능", "sbt.filter.upcoming": "공지됨", "sbt.filter.past": "종료된 SBT", "action.refresh": "새로고침", "search.placeholder": "현재 데이터 검색",
       "source.live": "Live Intel Feed", "source.updated": "업데이트", "source.cards": "개 항목", "source.loading": "실시간 데이터를 불러오는 중...", "source.translating": "번역 동기화 중", "source.translatingTitle": "이 언어의 번역을 완료하는 중", "source.translatingBody": "번역이 완료된 뒤에 콘텐츠가 표시되며 원문 언어를 섞지 않습니다.", "source.error": "실시간 데이터를 불러오지 못했습니다.", "source.retry": "다시 시도", "source.unavailable": "이 필터에 해당하는 검증된 데이터가 아직 없습니다.", "source.winnerMissingTitle": "수상자 출처가 연결되지 않았습니다", "source.winnerMissingBody": "Intel Feed에는 이벤트와 보상 정보가 있지만 검증 가능한 수상자 명단은 없습니다. 이벤트 결과 데이터 또는 Directus 기록이 연결되면 이 화면이 열립니다.", "source.rankMissingTitle": "커뮤니티 활동 순위가 연결되지 않았습니다", "source.rankMissingBody": "현재 Intel Feed가 Community Metrics 계정 점수를 반환하지 않았고 Stephen의 공식 랭킹 API도 연결되지 않아 임의의 순위를 표시하지 않습니다.", "source.metricsTitle": "Community Metrics · 활동 스냅샷", "source.metricsBody": "추적 중인 커뮤니티 계정의 게시물 상호작용으로 계산됩니다. Stephen의 공식 글로벌 랭킹은 아닙니다.", "source.metricsWindow": "집계 범위", "source.metricsScore": "상호작용 점수", "source.metricsPosts": "게시물", "source.metricsLikes": "좋아요", "source.metricsReplies": "답글", "source.metricsBasis": "점수 기준", "card.original": "원문 보기", "card.official": "공식", "card.community": "커뮤니티", "card.active": "진행 중", "card.upcoming": "공지됨", "card.past": "종료", "card.reference": "인텔 기록"
@@ -94,9 +95,18 @@
     "nav.guide": "초보자 가이드", "nav.article": "글", "guide.title": "초보자 가이드", "guide.lead": "완전한 학습 경로를 분리해 유지합니다. 한 번에 한 챕터를 읽고 왼쪽에서 주제를 전환하세요.", "sbt.lead": "짧은 SBT 안내 후, 원래 분류에서 보존한 실시간 글과 획득 정보를 읽어보세요.", "sbt.acquisitionTitle": "현재 획득 가능한 SBT", "sbt.acquisitionLead": "현재 SBT 공지에서 정리한 이름과 획득 정보이며 각 원문 출처를 유지합니다.", "sbt.articleTitle": "SBT 관련 글", "sbt.articleLead": "원본 SBT 분류에서 보존한 실시간 글입니다. Hub에서 읽은 뒤 원문으로 확인하세요.", "sbt.guideActionTitle": "전체 SBT 초보자 가이드", "sbt.guideActionLead": "기초 설명과 현재 가능한 과제 목록 보기", "knowledge.guideTitle": "전체 초보자 가이드", "knowledge.guideLead": "시작하기, 팩, SBT, 카드, 도구, FAQ를 피드에서 찾지 않고 독립 챕터로 읽습니다.", "knowledge.guideActionTitle": "초보자 가이드 열기", "knowledge.guideActionLead": "시작하기부터 SBT, 도구, FAQ까지 보기", "article.back": "SBT 글 목록으로", "article.original": "원문 보기", "article.unavailable": "이 글은 현재 실시간 데이터셋에 없습니다. SBT 글 목록으로 돌아가 다른 항목을 선택하세요.", "article.source": "출처와 시간", "article.details": "글 핵심", "article.sbt": "SBT 획득 정보"
   });
 
+  Object.assign(uiText["zh-Hant"], { "records.lead": "這裡只呈現可驗證的紀錄；抽卡排行榜由 Renaiss 後端直接接入 Open Monitor API，得獎者名單仍須接入正式結果資料才會顯示。", "records.rankLead": "排行榜資料由 Renaiss 後端直接接入，不是把使用者導向外部排行榜網站。", "records.rankMeta": "公開統計 · Renaiss 後端快取 5 分鐘", "records.packRankTotal": "總抽卡", "records.packRankPlayers": "玩家數", "records.packRankUpdated": "資料快照", "records.packRankPulls": "抽卡", "records.packRankLoading": "正在載入排行榜資料", "records.packRankError": "排行榜資料暫時無法取得", "records.packRankEmpty": "目前沒有可顯示的排行榜資料", "records.packRankNoPackBreakdown": "沒有卡池分布資料", "records.packRankSourceLink": "查看來源說明" });
+  Object.assign(uiText["zh-Hans"], { "records.lead": "这里只呈现可验证的记录；抽卡排行榜由 Renaiss 后端直接接入 Open Monitor API，得奖者名单仍须接入正式结果资料才会显示。", "records.rankLead": "排行榜资料由 Renaiss 后端直接接入，不是把使用者导向外部排行榜网站。", "records.rankMeta": "公开统计 · Renaiss 后端快取 5 分钟", "records.packRankTotal": "总抽卡", "records.packRankPlayers": "玩家数", "records.packRankUpdated": "资料快照", "records.packRankPulls": "抽卡", "records.packRankLoading": "正在载入排行榜资料", "records.packRankError": "排行榜资料暂时无法取得", "records.packRankEmpty": "目前没有可显示的排行榜资料", "records.packRankNoPackBreakdown": "没有卡池分布资料", "records.packRankSourceLink": "查看来源说明" });
+  Object.assign(uiText.en, { "records.lead": "Only verifiable records belong here; the pack-opening leaderboard is read by the Renaiss backend from the Open Monitor API, while winner rosters remain hidden until an official results source is connected.", "records.rankLead": "The Renaiss backend reads the leaderboard directly, so this is not just a link-out page.", "records.rankMeta": "Public statistics · Cached by the Renaiss backend for 5 minutes", "records.packRankTotal": "Total pulls", "records.packRankPlayers": "Players", "records.packRankUpdated": "Snapshot", "records.packRankPulls": "pulls", "records.packRankLoading": "Loading leaderboard data", "records.packRankError": "Leaderboard data is temporarily unavailable", "records.packRankEmpty": "No leaderboard data is available right now", "records.packRankNoPackBreakdown": "No pack breakdown", "records.packRankSourceLink": "View source details" });
+  Object.assign(uiText.ko, { "records.packRankTotal": "총 오픈", "records.packRankPlayers": "플레이어", "records.packRankUpdated": "스냅샷", "records.packRankPulls": "오픈", "records.packRankLoading": "랭킹 데이터를 불러오는 중", "records.packRankError": "랭킹 데이터를 잠시 불러올 수 없습니다", "records.packRankEmpty": "현재 표시할 랭킹 데이터가 없습니다", "records.packRankNoPackBreakdown": "팩 분포 없음", "records.packRankSourceLink": "출처 상세 보기" });
+
   const state = {
     lang: getSavedLanguage(),
     feed: null,
+    leaderboard: null,
+    leaderboardLoading: false,
+    leaderboardError: "",
+    leaderboardController: null,
     view: readInitialView(),
     guideTopic: readGuideTopic(),
     articleUrl: readArticleUrl(),
@@ -776,7 +786,6 @@
   function renderRecords() {
     const winnersTarget = document.getElementById("hub-winners-state");
     const rankingTarget = document.getElementById("hub-ranking-state");
-    const metrics = state.feed?.community_metrics;
     const resultCards = currentCards().filter(isVerifiedResult);
     const resultsCopy = resultCopy[state.lang] || resultCopy["zh-Hant"];
     if (winnersTarget) {
@@ -785,26 +794,15 @@
         : `<strong>${escapeHtml(t("source.winnerMissingTitle"))}</strong><p>${escapeHtml(t("source.winnerMissingBody"))}</p>`;
     }
     if (!rankingTarget) return;
-    const accountRows = metrics && metrics.accounts && typeof metrics.accounts === "object"
-      ? Object.values(metrics.accounts).filter((account) => account && typeof account === "object" && Number.isFinite(Number(account.score)))
-      : [];
-    if (!accountRows.length) {
-      rankingTarget.innerHTML = `<strong>${escapeHtml(t("source.rankMissingTitle"))}</strong><p>${escapeHtml(t("source.rankMissingBody"))}</p>`;
-      return;
-    }
-    const formatter = new Intl.NumberFormat(state.lang === "zh-Hans" ? "zh-CN" : state.lang === "ko" ? "ko-KR" : state.lang === "en" ? "en-US" : "zh-TW");
-    const sortedRows = accountRows.sort((a, b) => Number(b.score) - Number(a.score) || String(a.account || "").localeCompare(String(b.account || "")));
-    const metricsWindow = Number(metrics.window_days) > 0 ? `${formatter.format(Number(metrics.window_days))} ${state.lang === "en" ? "days" : state.lang === "ko" ? "일" : "天"}` : "--";
-    const scoreBasis = Array.isArray(metrics.score_basis) && metrics.score_basis.length ? metrics.score_basis.join(" + ") : "--";
-    const rowsHtml = sortedRows.map((account, index) => {
-      const name = String(account.account || "unknown").replace(/^@+/, "");
-      return `<li class="community-hub-ranking-row">
-        <span class="community-hub-ranking-position">${String(index + 1).padStart(2, "0")}</span>
-        <div class="community-hub-ranking-account"><strong>@${escapeHtml(name)}</strong><small>${escapeHtml(t("source.metricsPosts"))} ${formatter.format(Number(account.posts) || 0)} · ${escapeHtml(t("source.metricsLikes"))} ${formatter.format(Number(account.likes) || 0)} · ${escapeHtml(t("source.metricsReplies"))} ${formatter.format(Number(account.replies) || 0)}</small></div>
-        <div class="community-hub-ranking-score"><strong>${formatter.format(Number(account.score) || 0)}</strong><small>${escapeHtml(t("source.metricsScore"))}</small></div>
-      </li>`;
-    }).join("");
-    rankingTarget.innerHTML = `<div class="community-hub-ranking-intro"><strong>${escapeHtml(t("source.metricsTitle"))}</strong><p>${escapeHtml(t("source.metricsBody"))}</p><div><span>${escapeHtml(t("source.metricsWindow"))} ${escapeHtml(metricsWindow)}</span><span>${escapeHtml(t("source.metricsBasis"))} ${escapeHtml(scoreBasis)}</span><span>${escapeHtml(t("source.updated"))} ${escapeHtml(formatUpdate(metrics.updated_at))}</span></div></div><ol class="community-hub-ranking-list">${rowsHtml}</ol>`;
+    const leaderboard = state.leaderboard;
+    const entries = Array.isArray(leaderboard?.entries) ? leaderboard.entries : [];
+    const formatCount = (value) => Number(value || 0).toLocaleString(state.lang === "zh-Hans" ? "zh-CN" : state.lang === "ko" ? "ko-KR" : state.lang === "en" ? "en-US" : "zh-TW");
+    const shortAddress = (value) => value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : value;
+    const formatSnapshot = (value) => value ? formatUpdate(new Date(Number(value) * 1000).toISOString()) : "--";
+    const breakdown = (entry) => Object.entries(entry?.by_pack || {}).filter(([, count]) => Number(count) > 0).sort(([, left], [, right]) => Number(right) - Number(left)).slice(0, 3).map(([pack, count]) => `${pack}: ${formatCount(count)}`).join(" · ") || t("records.packRankNoPackBreakdown");
+    const rows = entries.map((entry) => `<li class="community-hub-ranking-row"><span class="community-hub-ranking-position">#${escapeHtml(entry.rank || "-")}</span><span class="community-hub-ranking-account"><strong title="${escapeHtml(entry.user_address || "")}">${escapeHtml(shortAddress(String(entry.user_address || "")))}</strong><small>${escapeHtml(breakdown(entry))}</small></span><span class="community-hub-ranking-score"><strong>${formatCount(entry.pull_count)}</strong><small>${escapeHtml(t("records.packRankPulls"))}</small></span></li>`).join("");
+    const error = state.leaderboardError ? `<div class="community-hub-source-state"><strong>${escapeHtml(t("records.packRankError"))}</strong><p>${escapeHtml(state.leaderboardError)}</p><button type="button" class="community-hub-text-action" data-hub-refresh>${escapeHtml(t("action.refresh"))}</button></div>` : "";
+    rankingTarget.innerHTML = `<div class="community-hub-pack-ranking"><div class="community-hub-ranking-intro"><strong>${escapeHtml(t("records.rankSource"))}</strong><p>${escapeHtml(t("records.rankLead"))}</p><div><span>${escapeHtml(t("records.packRankTotal"))}: ${formatCount(leaderboard?.total_pulls)}</span><span>${escapeHtml(t("records.packRankPlayers"))}: ${formatCount(leaderboard?.unique_users)}</span><span>${escapeHtml(t("records.packRankUpdated"))}: ${escapeHtml(formatSnapshot(leaderboard?.snapshot_taken_at))}</span></div></div>${state.leaderboardLoading ? `<div class="community-hub-source-state"><strong>${escapeHtml(t("records.packRankLoading"))}</strong></div>` : ""}${!state.leaderboardLoading && error ? error : ""}${!state.leaderboardLoading && !state.leaderboardError && rows ? `<ol class="community-hub-ranking-list" aria-label="${escapeHtml(t("records.rankTitle"))}">${rows}</ol>` : ""}${!state.leaderboardLoading && !state.leaderboardError && !entries.length ? `<div class="community-hub-source-state"><strong>${escapeHtml(t("records.packRankEmpty"))}</strong></div>` : ""}<div class="community-hub-pack-ranking-footer"><span>${escapeHtml(t("records.rankMeta"))}</span><a href="${OPEN_MONITOR_LEADERBOARD_URL}" target="_blank" rel="noreferrer">${escapeHtml(t("records.packRankSourceLink"))} <iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a></div></div>`;
   }
 
   function renderAll() {
@@ -853,6 +851,27 @@
     }
   }
 
+  async function loadLeaderboard() {
+    if (state.leaderboardController) state.leaderboardController.abort();
+    state.leaderboardController = new AbortController();
+    state.leaderboardLoading = true;
+    state.leaderboardError = "";
+    renderRecords();
+    try {
+      const response = await fetch(`${API_BASE}/api/open-monitor/leaderboard?season=all`, { cache: "no-store", signal: state.leaderboardController.signal });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.ok || !payload?.leaderboard || !Array.isArray(payload.leaderboard.entries)) throw new Error(payload?.error || `HTTP ${response.status}`);
+      state.leaderboard = payload.leaderboard;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      state.leaderboard = null;
+      state.leaderboardError = String(error?.message || "request_failed");
+    } finally {
+      state.leaderboardLoading = false;
+      renderRecords();
+    }
+  }
+
   function bindEvents() {
     document.querySelectorAll("[data-hub-view]").forEach((button) => {
       button.addEventListener("click", () => setView(String(button.getAttribute("data-hub-view") || "overview")));
@@ -860,12 +879,17 @@
     document.querySelectorAll("[data-hub-open-view]").forEach((button) => {
       button.addEventListener("click", () => setView(String(button.getAttribute("data-hub-open-view") || "overview")));
     });
-    document.querySelectorAll("[data-hub-refresh]").forEach((button) => button.addEventListener("click", loadFeed));
+    document.querySelectorAll("[data-hub-refresh]").forEach((button) => button.addEventListener("click", () => { loadFeed(); loadLeaderboard(); }));
     document.addEventListener("click", (event) => {
       const guideButton = event.target.closest("[data-hub-open-guide], [data-hub-guide-topic]");
       if (guideButton) {
         event.preventDefault();
         openGuide(String(guideButton.getAttribute("data-hub-open-guide") || guideButton.getAttribute("data-hub-guide-topic") || ""));
+        return;
+      }
+      if (event.target.closest("[data-hub-refresh]")) {
+        loadFeed();
+        loadLeaderboard();
         return;
       }
       const articleButton = event.target.closest("[data-hub-open-article]");
@@ -914,4 +938,5 @@
   applyLocationRoute();
   document.documentElement.classList.add("community-hub-ui-ready");
   loadFeed();
+  loadLeaderboard();
 })();

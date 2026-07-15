@@ -238,6 +238,12 @@ CARD_SCAN_SNKR_HISTORY_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_SNKR_HISTORY_LOCK = Lock()
 CARD_SCAN_EXCHANGE_RATE_CACHE: tuple[float, dict] | None = None
 CARD_SCAN_EXCHANGE_RATE_LOCK = Lock()
+OPEN_MONITOR_LEADERBOARD_URL = "https://open-monitor-rmrm.pages.dev/api/leaderboard/full"
+OPEN_MONITOR_LEADERBOARD_SOURCE_URL = "https://open-monitor-rmrm.pages.dev/leaderboard"
+OPEN_MONITOR_LEADERBOARD_TIMEOUT_SECONDS = float(os.getenv("OPEN_MONITOR_LEADERBOARD_TIMEOUT_SECONDS", "12") or 12)
+OPEN_MONITOR_LEADERBOARD_CACHE_SECONDS = float(os.getenv("OPEN_MONITOR_LEADERBOARD_CACHE_SECONDS", "300") or 300)
+OPEN_MONITOR_LEADERBOARD_CACHE: dict[str, tuple[float, dict]] = {}
+OPEN_MONITOR_LEADERBOARD_LOCK = Lock()
 CARD_SCAN_RENAISS_MARKET_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_RENAISS_MARKET_LOCK = Lock()
 CARD_PROFILE_WALLET_CACHE: dict[str, tuple[float, dict]] = {}
@@ -533,7 +539,7 @@ def _is_priority_request_path(path: str) -> bool:
         return True
     if raw.endswith((".js", ".css")) and "/assets/" in raw:
         return True
-    if raw in {"/api/intel/feed", "/api/intel/admin-status"}:
+    if raw in {"/api/intel/feed", "/api/intel/admin-status", "/api/open-monitor/leaderboard"}:
         return True
     return False
 
@@ -3159,6 +3165,79 @@ def _is_client_disconnect_error(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and exc.errno in {errno.EPIPE, errno.ECONNRESET, errno.ETIMEDOUT}
 
 
+def _open_monitor_leaderboard_payload(season: str) -> dict:
+    """Read the public leaderboard through the website backend.
+
+    The browser never calls Open Monitor directly. Keeping this boundary here
+    avoids CORS coupling and gives the Hub one stable response contract.
+    """
+
+    clean_season = str(season or "all").strip() or "all"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", clean_season):
+        raise ValueError("invalid leaderboard season")
+    now = time.time()
+    with OPEN_MONITOR_LEADERBOARD_LOCK:
+        cached = OPEN_MONITOR_LEADERBOARD_CACHE.get(clean_season)
+        if cached and now - cached[0] < OPEN_MONITOR_LEADERBOARD_CACHE_SECONDS:
+            return copy.deepcopy(cached[1])
+
+    target = f"{OPEN_MONITOR_LEADERBOARD_URL}?season={quote(clean_season, safe='')}"
+    request = urllib.request.Request(
+        target,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Renaiss-Community-Hub/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=OPEN_MONITOR_LEADERBOARD_TIMEOUT_SECONDS) as response:
+            raw = response.read(2 * 1024 * 1024)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"open_monitor_http_{exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise RuntimeError("open_monitor_unavailable") from exc
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("open_monitor_invalid_json") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+        raise RuntimeError("open_monitor_invalid_payload")
+
+    entries: list[dict] = []
+    for item in payload.get("entries", []):
+        if not isinstance(item, dict):
+            continue
+        address = str(item.get("user_address") or "").strip()
+        if not address:
+            continue
+        by_pack = item.get("by_pack") if isinstance(item.get("by_pack"), dict) else {}
+        entries.append(
+            {
+                "rank": _safe_int(item.get("rank"), len(entries) + 1),
+                "user_address": address,
+                "pull_count": _safe_int(item.get("pull_count"), 0),
+                "delta": item.get("delta"),
+                "delta_at": item.get("delta_at"),
+                "by_pack": {str(key): _safe_int(value, 0) for key, value in by_pack.items()},
+                "merged_from": [str(value) for value in item.get("merged_from", []) if str(value).strip()],
+            }
+        )
+    result = {
+        "entries": entries,
+        "start_ts": payload.get("start_ts"),
+        "end_ts": payload.get("end_ts"),
+        "total_pulls": _safe_int(payload.get("total_pulls"), 0),
+        "unique_users": _safe_int(payload.get("unique_users"), 0),
+        "snapshot_taken_at": payload.get("snapshot_taken_at"),
+        "packs": [str(value) for value in payload.get("packs", []) if str(value).strip()],
+    }
+    with OPEN_MONITOR_LEADERBOARD_LOCK:
+        OPEN_MONITOR_LEADERBOARD_CACHE[clean_season] = (time.time(), copy.deepcopy(result))
+    return result
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_ROOT), **kwargs)
@@ -5247,6 +5326,29 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to read public feedback: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if path == "/api/open-monitor/leaderboard":
+            try:
+                params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+                season = str((params.get("season") or ["all"])[0] or "all")
+                leaderboard = _open_monitor_leaderboard_payload(season)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "season": season,
+                        "source": {
+                            "name": "Open Monitor",
+                            "url": OPEN_MONITOR_LEADERBOARD_SOURCE_URL,
+                        },
+                        "leaderboard": leaderboard,
+                    }
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except RuntimeError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed to read leaderboard: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
@@ -5880,7 +5982,7 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, "
+        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/open-monitor/leaderboard, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "

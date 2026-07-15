@@ -58,6 +58,34 @@ export interface FeedResponse {
   feed?: IntelFeed;
 }
 
+export interface PackLeaderboardEntry {
+  rank?: number;
+  user_address?: string;
+  pull_count?: number;
+  delta?: number | null;
+  delta_at?: number | null;
+  by_pack?: Record<string, number>;
+  merged_from?: string[];
+}
+
+export interface PackLeaderboard {
+  entries?: PackLeaderboardEntry[];
+  start_ts?: number | null;
+  end_ts?: number | null;
+  total_pulls?: number;
+  unique_users?: number;
+  snapshot_taken_at?: number | null;
+  packs?: string[];
+}
+
+export interface PackLeaderboardResponse {
+  ok?: boolean;
+  error?: string;
+  season?: string;
+  source?: { name?: string; url?: string };
+  leaderboard?: PackLeaderboard;
+}
+
 export interface LegacySbtRow {
   badge?: string;
   difficulty?: number;

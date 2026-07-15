@@ -3,7 +3,7 @@ import { AppShell } from "@/components/AppShell";
 import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
 import { useHubRoute } from "@/lib/routes";
-import type { FeedResponse, HubView, IntelFeed, Language } from "@/types";
+import type { FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
 import { FeedView, EventsView, MediaView } from "@/views/FeedViews";
 import { OverviewView } from "@/views/OverviewView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
@@ -35,6 +35,9 @@ export function CommunityHubApp() {
   const [sourceError, setSourceError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [translationRetries, setTranslationRetries] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<PackLeaderboard | null>(null);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  const [leaderboardError, setLeaderboardError] = useState("");
   const { route, navigate } = useHubRoute();
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
   const hasPendingTranslation = translationPending(feed, lang);
@@ -84,6 +87,34 @@ export function CommunityHubApp() {
   }, [lang, refreshKey]);
 
   useEffect(() => {
+    if (route.view !== "records") return;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    let mounted = true;
+    setLeaderboardLoading(true);
+    setLeaderboardError("");
+    void fetch("/api/open-monitor/leaderboard?season=all", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as PackLeaderboardResponse;
+        if (!response.ok || !payload.ok || !payload.leaderboard || !Array.isArray(payload.leaderboard.entries)) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (mounted) setLeaderboard(payload.leaderboard);
+      })
+      .catch((error: unknown) => {
+        if (!mounted || (error instanceof DOMException && error.name === "AbortError")) return;
+        setLeaderboard(null);
+        setLeaderboardError(error instanceof Error ? error.message : "request_failed");
+      })
+      .finally(() => {
+        if (mounted) setLeaderboardLoading(false);
+      });
+    return () => {
+      mounted = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [route.view, refreshKey]);
+
+  useEffect(() => {
     if (!hasPendingTranslation || translationRetries >= 10) return;
     const timer = window.setTimeout(() => {
       setTranslationRetries((value) => value + 1);
@@ -108,7 +139,7 @@ export function CommunityHubApp() {
   else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onGuide={() => openGuide("sbt")} onOpenArticle={openArticle} />;
   else if (route.view === "guide") view = <GuideView lang={lang} topicId={route.guide} onTopicChange={openGuide} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go("sbt")} />;
-  else if (route.view === "records") view = <RecordsView cards={cards} feed={feed} lang={lang} onOpenArticle={openArticle} />;
+  else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;
   else if (route.view === "media") view = <MediaView {...shared} />;
   else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={() => openGuide("overview")} />;
   else view = <OverviewView cards={cards} lang={lang} onNavigate={go} />;
