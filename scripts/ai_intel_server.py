@@ -3345,6 +3345,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = self._request_path()
         if path.startswith("/api/") or path.startswith("/data/generated_covers/"):
             return ""
+        if path.endswith("/client-release.json"):
+            return "no-store"
         if path == "/" or path.endswith("/") or path.endswith(".html"):
             return "no-store"
         if path.endswith("/page-prefetch.js"):

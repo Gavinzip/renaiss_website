@@ -68,10 +68,52 @@ def has_sbt_signal(text: str) -> bool:
     )
 
 
+def normalize_sbt_name(value: str) -> str:
+    name = clean_text(value)
+    return re.sub(
+        r"^(?:(?:an?|the|and|let|earn|claim|get|receive|unlock)\s+)+",
+        "",
+        name,
+        flags=re.I,
+    )
+
+
+def infer_single_sbt_name(source: str) -> str:
+    """Return an explicit SBT name only when the source names exactly one SBT."""
+    src = clean_text(source)
+    if not src:
+        return ""
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\b((?:[A-Za-z0-9][A-Za-z0-9+&-]*\s+){0,4}SBT)\b", src, re.I):
+        name = normalize_sbt_name(match.group(1))
+        if name.lower() in {"sbt", "a sbt", "an sbt", "the sbt"}:
+            continue
+        key = dedupe_key(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+
+    return names[0] if len(names) == 1 else ""
+
+
 def infer_sbt_acquisition_line(source: str, facts: dict[str, str] | None = None) -> str:
     src = clean_text(source)
     if not has_sbt_signal(src):
         return ""
+
+    follow_sbt = re.search(
+        r"\bfollow\s+(@[a-z0-9_]+).{0,120}?\b((?:[A-Za-z0-9][A-Za-z0-9+&-]*\s+){0,4}SBT)\b",
+        src,
+        re.I,
+    )
+    if follow_sbt:
+        handle = follow_sbt.group(1)
+        name = normalize_sbt_name(follow_sbt.group(2))
+        if name.lower() not in {"sbt", "a sbt", "an sbt", "the sbt"}:
+            return f"SBT 取得方式：追蹤 {handle}，依官方公告領取「{name}」。"
 
     threshold = extract_sbt_threshold_facts(src)
     tiers = [clean_text(str(x)) for x in threshold.get("tiers", []) if clean_text(str(x))]
@@ -1597,6 +1639,25 @@ def _sbt_acquisition_missing(card: StoryCard) -> bool:
     return True
 
 
+def populate_structured_sbt_fields(card: StoryCard, source: str) -> None:
+    """Fill empty SBT fields from an explicit singular source fact without overwriting edits."""
+    existing_names = [clean_text(str(value)) for value in (card.sbt_names or []) if clean_text(str(value))]
+    if not existing_names and clean_text(card.sbt_name):
+        existing_names = [clean_text(card.sbt_name)]
+
+    if not existing_names:
+        inferred_name = infer_single_sbt_name(source)
+        if inferred_name:
+            existing_names = [inferred_name]
+            card.sbt_name = inferred_name
+            card.sbt_names = existing_names
+
+    if len(existing_names) == 1 and not clean_text(card.sbt_acquisition):
+        acquisition = infer_sbt_acquisition_line(source, facts=normalize_event_facts(card.event_facts))
+        if acquisition:
+            card.sbt_acquisition = acquisition
+
+
 def apply_quality_guard(card: StoryCard) -> None:
     source = clean_text(card.raw_text or card.summary or card.title)
     if not source:
@@ -1663,6 +1724,7 @@ def apply_quality_guard(card: StoryCard) -> None:
             card.detail_lines = rd_lines[:6]
 
     if _sbt_acquisition_missing(card):
+        populate_structured_sbt_fields(card, source)
         rebuilt = build_editorial_copy(source, card.card_type, card.account)
         rebuilt_summary = clean_text(str(rebuilt.get("summary") or ""))
         rebuilt_bullets = [clean_text(str(x))[:120] for x in (rebuilt.get("bullets") or []) if str(x).strip()][:3]

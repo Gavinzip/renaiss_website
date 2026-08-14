@@ -863,7 +863,7 @@
   }
 
   function staticSbtItems() {
-    const rows = typeof sbtRows !== "undefined" && Array.isArray(sbtRows) ? sbtRows : [];
+    const rows = Array.isArray(window.RENAISS_SBT_CATALOG) ? window.RENAISS_SBT_CATALOG : [];
     const reqs = data.sbtRequirements || staticWikiSeed.sbtRequirements || {};
     return rows.map((row) => {
       const name = {};
@@ -1564,7 +1564,7 @@
     const availableCount = document.getElementById("sbt-available-count");
     if (!availableList || !availableCount) return;
     const labels = labelsFor(lang);
-    const rows = typeof sbtRows !== "undefined" && Array.isArray(sbtRows) ? sbtRows.filter((row) => row && row.status === "available") : [];
+    const rows = Array.isArray(window.RENAISS_SBT_CATALOG) ? window.RENAISS_SBT_CATALOG.filter((row) => row && row.status === "available") : [];
     availableCount.innerHTML = `<iconify-icon icon="lucide:clock-3"></iconify-icon>${rows.length} ${labels.items || "items"}`;
   }
 

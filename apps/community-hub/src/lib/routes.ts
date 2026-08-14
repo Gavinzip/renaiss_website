@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { HubView } from "@/types";
 
-const VIEWS = new Set<HubView>(["overview", "feed", "events", "sbt", "guide", "article", "records", "media", "knowledge"]);
+const VIEWS = new Set<HubView>(["overview", "official", "feed", "events", "future", "sbt", "guide", "article", "records", "media", "knowledge"]);
 
 export interface HubRoute {
   article: string;

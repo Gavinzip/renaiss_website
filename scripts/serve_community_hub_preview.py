@@ -20,6 +20,13 @@ ALLOWED_PROXY_PATHS = {"/api/intel/feed"}
 
 
 class CommunityHubPreviewHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self) -> None:
+        """Keep navigational HTML fresh while leaving hashed assets cacheable."""
+        request_path = urllib.parse.urlsplit(self.path).path
+        if request_path.endswith(".html") or request_path.endswith("/"):
+            self.send_header("Cache-Control", "no-cache, max-age=0")
+        super().end_headers()
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlsplit(self.path)
         if parsed.path in ALLOWED_PROXY_PATHS:

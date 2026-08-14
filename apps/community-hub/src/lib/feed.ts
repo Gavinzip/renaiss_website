@@ -68,6 +68,10 @@ export function isCommunity(card: FeedCard): boolean {
   return topics(card).includes("community") || (!isOfficial(card) && isTaggedRenaiss(card));
 }
 
+export function isFuturePlan(card: FeedCard): boolean {
+  return topics(card).includes("alpha");
+}
+
 export function isEvent(card: FeedCard): boolean {
   return isOfficial(card) && card.event_wall === true;
 }
@@ -121,6 +125,48 @@ export interface LimitedSbtCampaign {
   names: string[];
   source: string;
   status: "active" | "upcoming";
+}
+
+export interface CurrentSbtAcquisition {
+  acquisition: string;
+  name: string;
+  publishedAt: string;
+  source: string;
+  title: string;
+}
+
+export function currentSbtAcquisitions(cards: FeedCard[]): CurrentSbtAcquisition[] {
+  const rows = new Map<string, CurrentSbtAcquisition>();
+  const recentAfter = new Date();
+  recentAfter.setDate(recentAfter.getDate() - 30);
+
+  cards.filter(isSbt).forEach((card) => {
+    const names = [...new Set([...(card.sbt_names ?? []), card.sbt_name]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean))];
+    const acquisition = String(card.sbt_acquisition ?? "").trim();
+    const source = safeUrl(card.url);
+    const publishedAt = toDate(card.published_at);
+    if (!names.length || !acquisition || !source || !publishedAt || publishedAt < recentAfter) return;
+
+    names.forEach((name) => {
+      const key = `${name}\u0000${acquisition}`.toLowerCase();
+      const next: CurrentSbtAcquisition = {
+        acquisition,
+        name,
+        publishedAt: publishedAt.toISOString(),
+        source,
+        title: String(card.title ?? "Renaiss"),
+      };
+      const previous = rows.get(key);
+      if (!previous || Number(toDate(next.publishedAt) ?? 0) > Number(toDate(previous.publishedAt) ?? 0)) {
+        rows.set(key, next);
+      }
+    });
+  });
+
+  return [...rows.values()]
+    .sort((left, right) => Number(toDate(right.publishedAt) ?? 0) - Number(toDate(left.publishedAt) ?? 0));
 }
 
 export function limitedSbtCampaigns(cards: FeedCard[]): LimitedSbtCampaign[] {

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${ROOT_DIR}/website"
 SITE_DIR="${ROOT_DIR}/frontend_chain"
+RELEASE_STAMP_SCRIPT="${ROOT_DIR}/scripts/stamp_client_release.py"
 
 if [[ ! -d "${SRC_DIR}" ]]; then
   echo "missing source frontend directory: ${SRC_DIR}" >&2
@@ -11,6 +12,8 @@ if [[ ! -d "${SRC_DIR}" ]]; then
 fi
 
 mkdir -p "${SITE_DIR}"
+
+python3 "${RELEASE_STAMP_SCRIPT}"
 
 required_files=(
   "index.html"
@@ -20,8 +23,10 @@ required_files=(
   "profile.html"
   "profile.webmanifest"
   "profile-sw.js"
+  "client-release.json"
   "beginner.html"
   "feedback.html"
+  "community-hub.html"
   "game.html"
   "intel_pipeline.html"
   "sbt_icons.json"
@@ -74,8 +79,10 @@ allowed_top=(
   "profile.html"
   "profile.webmanifest"
   "profile-sw.js"
+  "client-release.json"
   "beginner.html"
   "feedback.html"
+  "community-hub.html"
   "game.html"
   "intel_pipeline.html"
   "sbt_icons.json"

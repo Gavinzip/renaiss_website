@@ -3,7 +3,7 @@ import { ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
 import { Icon } from "@/components/Icon";
 import { ViewHeader } from "@/components/AppShell";
-import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isTaggedRenaiss } from "@/lib/feed";
+import { eventStatus, isCommunity, isEvent, isFuturePlan, isMedia, isOfficial } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import type { FeedCard, Language } from "@/types";
 
@@ -24,23 +24,49 @@ function DataEmpty({ lang, translating }: { lang: Language; translating: boolean
   return <EmptyState title={text(lang, translating ? "empty.translating" : "empty.unavailable")} />;
 }
 
-export function FeedView({ cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
-  const [filter, setFilter] = useState("all");
+interface DynamicStreamProps extends SharedViewProps {
+  eyebrow: string;
+  leadKey: string;
+  selectRows: (cards: FeedCard[]) => FeedCard[];
+  titleKey: string;
+}
+
+function DynamicStream({ cards, lang, loading, onOpenArticle, onRefresh, translationPending, eyebrow, leadKey, selectRows, titleKey }: DynamicStreamProps) {
   const [query, setQuery] = useState("");
-  const rows = useMemo(() => cards.filter((card) => {
-    if (filter === "official" && !isOfficial(card)) return false;
-    if (filter === "community" && !isCommunity(card)) return false;
-    if (filter === "tagged" && !isTaggedRenaiss(card)) return false;
+  const rows = useMemo(() => selectRows(cards).filter((card) => {
     const haystack = [card.title, card.summary, card.raw_text, card.account].join(" ").toLowerCase();
     return !query || haystack.includes(query.toLowerCase());
-  }).slice(0, 24), [cards, filter, query]);
+  }).slice(0, 24), [cards, query, selectRows]);
 
-  const filters = [["all", "filter.all"], ["official", "filter.official"], ["community", "filter.community"], ["tagged", "filter.tagged"]] as const;
   return <section className="community-hub-view is-active is-entering">
-    <ViewHeader eyebrow="LIVE" title={text(lang, "feed.title")} lead={text(lang, "feed.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
-    <div className="community-hub-toolbar"><div className="community-hub-filter-row">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div><label className="community-hub-search"><Icon name="search" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" placeholder={text(lang, "search.placeholder")} /></label></div>
+    <ViewHeader eyebrow={eyebrow} title={text(lang, titleKey)} lead={text(lang, leadKey)} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
+    <div className="community-hub-toolbar"><label className="community-hub-search"><Icon name="search" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" placeholder={text(lang, "search.placeholder")} /></label></div>
     <div className="community-hub-content-list">{rows.length ? rows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
   </section>;
+}
+
+function selectCommunityCards(cards: FeedCard[]): FeedCard[] {
+  return cards.filter(isCommunity).filter((card) => !isOfficial(card));
+}
+
+function selectOfficialCards(cards: FeedCard[]): FeedCard[] {
+  return cards.filter(isOfficial).filter((card) => !isEvent(card));
+}
+
+function selectFutureCards(cards: FeedCard[]): FeedCard[] {
+  return cards.filter(isFuturePlan);
+}
+
+export function CommunityView(props: SharedViewProps) {
+  return <DynamicStream {...props} eyebrow="COMMUNITY" titleKey="feed.title" leadKey="feed.lead" selectRows={selectCommunityCards} />;
+}
+
+export function OfficialView(props: SharedViewProps) {
+  return <DynamicStream {...props} eyebrow="OFFICIAL" titleKey="official.title" leadKey="official.lead" selectRows={selectOfficialCards} />;
+}
+
+export function FutureView(props: SharedViewProps) {
+  return <DynamicStream {...props} eyebrow="FUTURE" titleKey="future.title" leadKey="future.lead" selectRows={selectFutureCards} />;
 }
 
 export function EventsView({ cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {

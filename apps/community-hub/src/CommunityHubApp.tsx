@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { intelApiUrl } from "@/lib/api";
 import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
 import { useHubRoute } from "@/lib/routes";
 import type { FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
-import { FeedView, EventsView, MediaView } from "@/views/FeedViews";
+import { CommunityView, EventsView, FutureView, MediaView, OfficialView } from "@/views/FeedViews";
 import { OverviewView } from "@/views/OverviewView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
 import { ArticleView, GuideView, SbtView } from "@/views/SbtGuideViews";
@@ -65,7 +66,7 @@ export function CommunityHubApp() {
     let mounted = true;
     setLoading(true);
     setSourceError("");
-    void fetch(`/api/intel/feed?lang=${encodeURIComponent(lang)}`, { cache: "no-store", signal: controller.signal })
+    void fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(lang)}`), { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json().catch(() => ({})) as FeedResponse;
         if (!response.ok || !payload.ok || !payload.feed || !Array.isArray(payload.feed.cards)) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -93,7 +94,7 @@ export function CommunityHubApp() {
     let mounted = true;
     setLeaderboardLoading(true);
     setLeaderboardError("");
-    void fetch("/api/open-monitor/leaderboard?season=all", { cache: "no-store", signal: controller.signal })
+    void fetch(intelApiUrl("/api/open-monitor/leaderboard?season=all"), { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json().catch(() => ({})) as PackLeaderboardResponse;
         if (!response.ok || !payload.ok || !payload.leaderboard || !Array.isArray(payload.leaderboard.entries)) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -134,9 +135,11 @@ export function CommunityHubApp() {
 
   let view = null;
   const shared = { cards, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
-  if (route.view === "feed") view = <FeedView {...shared} />;
+  if (route.view === "official") view = <OfficialView {...shared} />;
+  else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
-  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onGuide={() => openGuide("sbt")} onOpenArticle={openArticle} />;
+  else if (route.view === "future") view = <FutureView {...shared} />;
+  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} />;
   else if (route.view === "guide") view = <GuideView lang={lang} topicId={route.guide} onTopicChange={openGuide} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go("sbt")} />;
   else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;

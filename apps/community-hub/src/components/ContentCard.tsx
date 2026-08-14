@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent, type MouseEvent } from "react";
 import { assets } from "@/data/legacy";
 import { coverUrl, formatDate, isCommunity, isOfficial, safeUrl } from "@/lib/feed";
 import { text } from "@/lib/copy";
@@ -36,19 +36,33 @@ export function ContentCard({ card, lang, onOpenArticle, status = "reference", s
   const source = safeUrl(card.url);
   const type = isOfficial(card) ? text(lang, "card.official") : isCommunity(card) ? text(lang, "card.community") : card.card_type || text(lang, "card.reference");
   const excerpt = card.bullets?.find((item) => item.trim()) ?? "";
+  const canOpenInHub = Boolean(onOpenArticle && source);
+  const openInHub = () => {
+    if (source && onOpenArticle) onOpenArticle(source);
+  };
+  const isNestedAction = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("a, button"));
+  const onCardClick = (event: MouseEvent<HTMLElement>) => {
+    if (!canOpenInHub || isNestedAction(event.target)) return;
+    openInHub();
+  };
+  const onCardKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!canOpenInHub || isNestedAction(event.target) || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    openInHub();
+  };
 
-  return <article className="community-hub-content-item">
+  return <article className={`community-hub-content-item${canOpenInHub ? " is-openable" : ""}`} onClick={onCardClick} onKeyDown={onCardKeyDown} role={canOpenInHub ? "link" : undefined} tabIndex={canOpenInHub ? 0 : undefined}>
     <CardMedia card={card} className="community-hub-card-media" label={text(lang, "card.defaultCover")} />
     <div className="community-hub-card-body">
       <div className="community-hub-card-meta">
         <span>@{String(card.account || "source").replace(/^@+/, "")} · {type}</span>
         <span className={`community-hub-card-status is-${status}`}>{statusLabel ?? statusText(lang, status)} · {formatDate(card.timeline_date || card.published_at, lang)}</span>
       </div>
-      <h3>{source ? <a href={source} target="_blank" rel="noreferrer">{card.title || "Renaiss"}</a> : card.title || "Renaiss"}</h3>
+      <h3>{canOpenInHub ? <button type="button" className="community-hub-card-title-button" onClick={openInHub}>{card.title || "Renaiss"}</button> : card.title || "Renaiss"}</h3>
       <p className="community-hub-card-summary">{card.summary || card.glance || ""}</p>
       <div className="community-hub-card-foot">
         {excerpt ? <p>{excerpt}</p> : null}
-        {onOpenArticle && source ? <button type="button" onClick={() => onOpenArticle(source)}>{text(lang, "action.hub")}<Icon name="arrow-right" /></button> : null}
+        {canOpenInHub ? <button type="button" onClick={openInHub}>{text(lang, "action.hub")}<Icon name="arrow-right" /></button> : null}
         {source ? <a href={source} target="_blank" rel="noreferrer">{text(lang, "action.original")}<Icon name="arrow-up-right" /></a> : null}
       </div>
     </div>

@@ -16,6 +16,9 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
 
 COPY . .
 
+# Keep the static site release marker aligned with the exact image contents.
+RUN python3 scripts/stamp_client_release.py
+
 ENV HOST=0.0.0.0
 ENV PORT=8787
 ENV PYTHONUNBUFFERED=1

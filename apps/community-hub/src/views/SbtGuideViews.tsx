@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Icon } from "@/components/Icon";
 import { assets, beginnerGuideData, sbtCatalog, sbtIconUrl } from "@/data/legacy";
 import { text } from "@/lib/copy";
-import { coverUrl, formatDate, isSbt, limitedSbtCampaigns, safeUrl } from "@/lib/feed";
+import { coverUrl, currentSbtAcquisitions, formatDate, isSbt, limitedSbtCampaigns, safeUrl } from "@/lib/feed";
 import type { FeedCard, GuideSection, Language, LocalizedText } from "@/types";
 
 const guideTopics = [
@@ -81,29 +81,31 @@ function GuideFaq({ lang }: { lang: Language }) {
 
 function EvergreenSbtCatalog({ lang }: { lang: Language }) {
   const rows = sbtCatalog().filter((row) => row.status === "available");
-  return <section className="community-hub-guide-sbt-catalog"><header><p className="community-hub-section-index">SBT</p><h3>{text(lang, "sbt.available")}</h3><p>{text(lang, "sbt.availableLead")}</p></header><div className="community-hub-sbt-catalog-list">{rows.map((row) => <article className="community-hub-sbt-item" key={row.name}><div className="community-hub-sbt-icons">{(row.icons ?? []).map((icon) => { const source = sbtIconUrl(icon); return source ? <img src={source} alt="" key={icon} loading="lazy" /> : null; })}</div><div className="community-hub-sbt-main"><p>{row.badge || "Available"}{row.difficulty ? ` · ${"★".repeat(row.difficulty)}` : ""}</p><h3>{row.name}</h3></div><div className="community-hub-sbt-acquisition"><span>{text(lang, "sbt.principle")}</span>{row.requirement}</div></article>)}</div></section>;
+  return <section className="community-hub-guide-sbt-catalog"><header><p className="community-hub-section-index">SBT</p><h3>{text(lang, "sbt.legacyAvailable")}</h3><p>{text(lang, "sbt.legacyAvailableLead")}</p></header><div className="community-hub-sbt-catalog-list">{rows.map((row) => <article className="community-hub-sbt-item" key={row.name}><div className="community-hub-sbt-icons">{(row.icons ?? []).map((icon) => { const source = sbtIconUrl(icon); return source ? <img src={source} alt="" key={icon} loading="lazy" /> : null; })}</div><div className="community-hub-sbt-main"><p>{row.badge || "Available"}{row.difficulty ? ` · ${"★".repeat(row.difficulty)}` : ""}</p><h3>{row.name}</h3></div><div className="community-hub-sbt-acquisition"><span>{text(lang, "sbt.principle")}</span>{row.requirement}</div></article>)}</div></section>;
+}
+
+function CurrentSbtCatalog({ lang }: { lang: Language }) {
+  const rows = sbtCatalog().filter((row) => row.status === "available");
+  return <section className="community-hub-sbt-catalog community-hub-sbt-current-catalog"><div className="community-hub-sbt-catalog-head"><p className="community-hub-section-index">AVAILABLE NOW</p><h3>{text(lang, "sbt.currentCatalog")}</h3><p>{text(lang, "sbt.currentCatalogLead")}</p></div><ol className="community-hub-sbt-current-list">{rows.map((row, index) => <li key={row.name}><span className="community-hub-sbt-current-index">{String(index + 1).padStart(2, "0")}</span><span className="community-hub-sbt-current-icons" aria-hidden="true">{(row.icons ?? []).slice(0, 2).map((icon) => { const source = sbtIconUrl(icon); return source ? <img src={source} alt="" key={icon} loading="lazy" /> : null; })}</span><div className="community-hub-sbt-current-copy"><p>{row.badge || text(lang, "sbt.availableStatus")}</p><h4>{row.name}</h4><span>{row.requirement}</span></div>{row.difficulty ? <span className="community-hub-sbt-current-difficulty" aria-label={`${text(lang, "sbt.difficulty")} ${row.difficulty}/5`}>{"●".repeat(row.difficulty)}{"○".repeat(5 - row.difficulty)}</span> : null}</li>)}</ol></section>;
 }
 
 interface SbtViewProps {
   cards: FeedCard[];
   lang: Language;
-  onGuide: () => void;
   onOpenArticle: (source: string) => void;
 }
 
-export function SbtView({ cards, lang, onGuide, onOpenArticle }: SbtViewProps) {
+export function SbtView({ cards, lang, onOpenArticle }: SbtViewProps) {
+  const acquisitions = currentSbtAcquisitions(cards);
   const campaigns = limitedSbtCampaigns(cards);
   const articles = cards.filter(isSbt).slice(0, 24);
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="SBT" title={text(lang, "sbt.title")} lead={text(lang, "sbt.lead")} />
-    <details className="community-hub-sbt-primer-details" open>
-      <summary><span><p className="community-hub-section-index">SBT</p><strong>{text(lang, "sbt.about")}</strong><small>{text(lang, "sbt.aboutBody")}</small></span><Icon name="chevron-down" /></summary>
-      <div className="community-hub-sbt-primer-body"><p>{text(lang, "sbt.principleBody")}</p><dl className="community-hub-sbt-primer"><div><dt>{text(lang, "sbt.about")}</dt><dd>{text(lang, "sbt.aboutBody")}</dd></div><div><dt>{text(lang, "sbt.principle")}</dt><dd>{text(lang, "sbt.principleBody")}</dd></div><div><dt>{text(lang, "action.guide")}</dt><dd>{text(lang, "sbt.availableLead")}</dd></div></dl></div>
-    </details>
+    <a className="community-hub-sbt-wiki-link" href="../beginner.html?topic=sbt"><Icon name="book-marked" /><span>{text(lang, "sbt.wikiLink")}</span><Icon name="arrow-up-right" /></a>
+    <CurrentSbtCatalog lang={lang} />
+    <section className="community-hub-sbt-catalog"><div className="community-hub-sbt-catalog-head"><p className="community-hub-section-index">AUTO ANALYSIS</p><h3>{text(lang, "sbt.available")}</h3><p>{text(lang, "sbt.availableLead")}</p></div><div className="community-hub-sbt-acquisition-list">{acquisitions.length ? acquisitions.map((acquisition) => <article className="community-hub-sbt-acquisition-row" key={`${acquisition.name}-${acquisition.acquisition}`}><div><span>{text(lang, "sbt.analysis")} · {formatDate(acquisition.publishedAt, lang)}</span><h4>{acquisition.name}</h4></div><p>{acquisition.acquisition}</p><button type="button" onClick={() => onOpenArticle(acquisition.source)}>{acquisition.title}<Icon name="arrow-right" /></button></article>) : <EmptyState title={text(lang, "sbt.availableEmpty")} />}</div></section>
     <section className="community-hub-sbt-catalog"><div className="community-hub-sbt-catalog-head"><p className="community-hub-section-index">CURRENT</p><h3>{text(lang, "sbt.acquisition")}</h3><p>{text(lang, "sbt.acquisitionLead")}</p></div><div className="community-hub-sbt-acquisition-list">{campaigns.length ? campaigns.map((campaign) => <article className="community-hub-sbt-acquisition-row" key={campaign.source}><div><span>{text(lang, `card.${campaign.status}`)} · {formatDate(campaign.end, lang)}</span><h4>{campaign.names.join(" · ")}</h4></div><p>{campaign.acquisition}</p><a className="community-hub-sbt-source-link" href={campaign.source} target="_blank" rel="noreferrer">{text(lang, "action.original")} <Icon name="arrow-up-right" /></a></article>) : <EmptyState title={text(lang, "sbt.none")} />}</div></section>
     <section className="community-hub-sbt-catalog"><div className="community-hub-sbt-catalog-head"><p className="community-hub-section-index">ARTICLES</p><h3>{text(lang, "sbt.article")}</h3><p>{text(lang, "sbt.articleLead")}</p></div><div className="community-hub-content-list">{articles.length ? articles.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <EmptyState title={text(lang, "sbt.articleEmpty")} />}</div></section>
-    <button type="button" className="community-hub-guide-launch" onClick={onGuide}><span><Icon name="book-open-check" /><strong>{text(lang, "action.guide")}</strong><small>{text(lang, "sbt.availableLead")}</small></span><Icon name="arrow-right" /></button>
-    <EvergreenSbtCatalog lang={lang} />
   </section>;
 }
 

@@ -147,6 +147,12 @@ Frontend package location generated for chain publishing:
 
 `frontend_chain/` is synced from `website/` by whitelist before every chain update. Backend folders and `website/scripts` are not copied.
 
+The sync also stamps a deterministic release ID into every static page,
+`profile-sw.js`, and `client-release.json`. That marker lets an already-open
+browser detect a newer deployment and recover once from an old code-split
+asset, without an endless refresh loop. Do not edit those generated values by
+hand; run the sync command after changing frontend files.
+
 Manual sync only:
 
 ```bash

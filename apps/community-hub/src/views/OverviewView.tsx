@@ -2,21 +2,23 @@ import { Icon } from "@/components/Icon";
 import { FeatureCard } from "@/components/ContentCard";
 import { formatDate, isEvent, isMedia, limitedSbtCampaigns, eventStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
-import type { FeedCard, Language } from "@/types";
+import type { FeedCard, HubView, Language } from "@/types";
 
 interface OverviewViewProps {
   cards: FeedCard[];
   lang: Language;
-  onNavigate: (view: "feed" | "events" | "sbt" | "guide" | "records" | "media") => void;
+  onNavigate: (view: Exclude<HubView, "article">) => void;
 }
 
 export function OverviewView({ cards, lang, onNavigate }: OverviewViewProps) {
   const events = cards.filter(isEvent).filter((card) => ["active", "upcoming"].includes(eventStatus(card))).slice(0, 3);
   const signals = cards.filter(isMedia).slice(0, 4);
   const limitedSbt = limitedSbtCampaigns(cards).slice(0, 4);
-  const routes: Array<{ icon: string; label: string; sub: string; view: "feed" | "events" | "sbt" | "records" | "guide" }> = [
+  const routes: Array<{ icon: string; label: string; sub: string; view: Exclude<HubView, "article"> }> = [
+    { icon: "radio", view: "official", label: text(lang, "overview.route.official"), sub: text(lang, "overview.route.officialSub") },
     { icon: "messages-square", view: "feed", label: text(lang, "overview.route.feed"), sub: text(lang, "overview.route.feedSub") },
     { icon: "calendar-range", view: "events", label: text(lang, "overview.route.events"), sub: text(lang, "overview.route.eventsSub") },
+    { icon: "rocket", view: "future", label: text(lang, "overview.route.future"), sub: text(lang, "overview.route.futureSub") },
     { icon: "badge-check", view: "sbt", label: text(lang, "overview.route.sbt"), sub: text(lang, "overview.route.sbtSub") },
     { icon: "trophy", view: "records", label: text(lang, "overview.route.records"), sub: text(lang, "overview.route.recordsSub") },
     { icon: "book-open-check", view: "guide", label: text(lang, "overview.route.guide"), sub: text(lang, "overview.route.guideSub") },

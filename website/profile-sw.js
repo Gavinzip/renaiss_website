@@ -1,4 +1,5 @@
-const PROFILE_CACHE = "renaiss-profile-shell-v17";
+const PROFILE_CACHE = "renaiss-profile-shell-a6f264d3af7ec72b6f90";
+const PROFILE_CACHE_PREFIX = "renaiss-profile-shell-";
 const PROFILE_ASSETS = [
   "./profile.html",
   "./profile.webmanifest",
@@ -10,6 +11,8 @@ const PROFILE_ASSETS = [
   "./assets/renaiss-logo-alpha-cropped.png",
   "./assets/renaiss-favicon.png",
 ];
+const PROFILE_PAGE_URL = new URL("./profile.html", self.location.href).href;
+const PROFILE_ASSET_URLS = new Set(PROFILE_ASSETS.map((asset) => new URL(asset, self.location.href).href));
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -22,7 +25,9 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== PROFILE_CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys
+        .filter((key) => key.startsWith(PROFILE_CACHE_PREFIX) && key !== PROFILE_CACHE)
+        .map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });
@@ -30,8 +35,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || event.request.method !== "GET") return;
-  if (url.pathname.startsWith("/api/")) return;
-  if (event.request.mode === "navigate" || url.pathname.endsWith(".html")) {
+  const isProfileNavigation = event.request.mode === "navigate" && url.href === PROFILE_PAGE_URL;
+  const isProfileAsset = PROFILE_ASSET_URLS.has(url.href);
+  if (!isProfileNavigation && !isProfileAsset) return;
+
+  if (isProfileNavigation) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
@@ -41,19 +49,20 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./profile.html"))),
+        .catch(() => caches.open(PROFILE_CACHE)
+          .then((cache) => cache.match(event.request).then((cached) => cached || cache.match(PROFILE_PAGE_URL)))),
     );
     return;
   }
   event.respondWith(
-    caches.match(event.request).then((cached) => {
+    caches.open(PROFILE_CACHE).then((cache) => cache.match(event.request).then((cached) => {
       if (cached) return cached;
       return fetch(event.request).then((response) => {
         if (!response || !response.ok) return response;
         const copy = response.clone();
-        caches.open(PROFILE_CACHE).then((cache) => cache.put(event.request, copy));
+        cache.put(event.request, copy);
         return response;
       });
-    }),
+    })),
   );
 });

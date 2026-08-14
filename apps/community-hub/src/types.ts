@@ -1,7 +1,7 @@
 export const LANGUAGES = ["zh-Hant", "zh-Hans", "en", "ko"] as const;
 
 export type Language = (typeof LANGUAGES)[number];
-export type HubView = "overview" | "feed" | "events" | "sbt" | "guide" | "article" | "records" | "media" | "knowledge";
+export type HubView = "overview" | "official" | "feed" | "events" | "future" | "sbt" | "guide" | "article" | "records" | "media" | "knowledge";
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
 
 export interface FeedCard {
