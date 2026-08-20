@@ -1,4 +1,4 @@
-const PROFILE_CACHE = "renaiss-profile-shell-a6f264d3af7ec72b6f90";
+const PROFILE_CACHE = "renaiss-profile-shell-aa1c66b610cf80e27e68";
 const PROFILE_CACHE_PREFIX = "renaiss-profile-shell-";
 const PROFILE_ASSETS = [
   "./profile.html",

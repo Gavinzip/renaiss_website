@@ -219,6 +219,9 @@ CARD_SCAN_RENAISS_TIMEOUT_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_TIMEOUT_S
 CARD_SCAN_RENAISS_CACHE_SECONDS = float(os.getenv("CARD_SCAN_RENAISS_CACHE_SECONDS", str(10 * 60)) or (10 * 60))
 CARD_SCAN_RENAISS_ACTIVITY_PAGE_LIMIT = max(1, min(50, int(os.getenv("CARD_SCAN_RENAISS_ACTIVITY_PAGE_LIMIT", "50") or 50)))
 CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES = max(1, min(10, int(os.getenv("CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES", "4") or 4)))
+TCG_PROFILE_API_BASE = str(os.getenv("TCG_PROFILE_API_BASE") or "http://127.0.0.1:8091").rstrip("/")
+TCG_PROFILE_API_TOKEN = str(os.getenv("TCG_PROFILE_API_TOKEN") or "").strip()
+TCG_PROFILE_API_TIMEOUT_SECONDS = max(5.0, float(os.getenv("TCG_PROFILE_API_TIMEOUT_SECONDS", "120") or 120))
 CARD_PROFILE_CHAIN_PAGE_SIZE = max(100, min(10000, int(os.getenv("CARD_PROFILE_CHAIN_PAGE_SIZE", os.getenv("ONCHAIN_PAGE_SIZE", "10000")) or 10000)))
 CARD_PROFILE_CHAIN_TOKEN_SYMBOL = str(os.getenv("CARD_PROFILE_CHAIN_TOKEN_SYMBOL") or os.getenv("PROFILE_CHAIN_CARD_TOKEN_SYMBOL") or "RENAISS").strip().lower()
 CARD_PROFILE_CHAIN_API_URL_DEFAULT = "https://api.etherscan.io/v2/api"
@@ -4344,6 +4347,78 @@ class Handler(SimpleHTTPRequestHandler):
             CARD_PROFILE_CATALOG_CACHE[cache_key] = (now, payload)
         self._send_json(payload)
 
+    def _send_tcg_profile(self) -> None:
+        try:
+            incoming = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+        except Exception:
+            incoming = {}
+        wallet = str((incoming.get("wallet") or incoming.get("address") or [""])[0]).strip().lower()
+        if not re.fullmatch(r"0x[a-fA-F0-9]{40}", wallet):
+            self._send_json({"ok": False, "error": "valid wallet address is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        requested_language = str((incoming.get("lang") or ["zh-Hant"])[0] or "zh-Hant").strip()
+        language = {"zh": "zh-Hant", "zhs": "zh-Hans"}.get(requested_language, requested_language)
+        if language not in {"zh-Hant", "zh-Hans", "en", "ko"}:
+            self._send_json({"ok": False, "error": "unsupported language"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        poster = str((incoming.get("poster") or ["collection"])[0] or "collection").strip().lower()
+        if poster not in {"collection", "history", "extremes"}:
+            self._send_json({"ok": False, "error": "unsupported poster"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        include_extremes = str((incoming.get("include_extremes") or ["1"])[0] or "1").strip().lower()
+        include_posters = str((incoming.get("include_posters") or ["0"])[0] or "0").strip().lower()
+        query = self._query_string(
+            {
+                "wallet": wallet,
+                "lang": language,
+                "include_extremes": "0" if include_extremes in {"0", "false", "no", "off"} else "1",
+                "include_posters": "0" if include_posters in {"0", "false", "no", "off"} else "1",
+                "poster": poster,
+            }
+        )
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "renaiss-aggregator-tcg-profile/1.0",
+        }
+        if TCG_PROFILE_API_TOKEN:
+            headers["Authorization"] = f"Bearer {TCG_PROFILE_API_TOKEN}"
+        request = urllib.request.Request(f"{TCG_PROFILE_API_BASE}/v1/profile?{query}", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=TCG_PROFILE_API_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+                status = HTTPStatus(response.status) if response.status in HTTPStatus._value2member_map_ else HTTPStatus.OK
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+            if not isinstance(payload, dict):
+                raise RuntimeError("TCG Profile API returned an invalid response")
+            payload.setdefault("ok", 200 <= int(status) < 300)
+            payload["_proxy"] = {"target": "tcg-profile"}
+            self._send_json(payload, status=status)
+        except urllib.error.HTTPError as exc:
+            try:
+                upstream = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                upstream = {}
+            upstream_error = str(upstream.get("error") or "").strip()
+            allowed_errors = {
+                "profile_lookup_failed",
+                "valid wallet address is required",
+                "unsupported language",
+                "unsupported poster",
+                "profile lookup capacity reached; retry shortly",
+                "unauthorized",
+                "not found",
+            }
+            error = upstream_error if upstream_error in allowed_errors else "profile_lookup_failed"
+            status = HTTPStatus(exc.code) if exc.code in {400, 401, 404, 429} else HTTPStatus.BAD_GATEWAY
+            self._send_json({"ok": False, "error": error}, status=status)
+        except (TimeoutError, socket.timeout):
+            self._send_json({"ok": False, "error": "TCG Profile API timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)
+        except Exception as exc:
+            self._send_json(
+                {"ok": False, "error": f"TCG Profile API unavailable: {type(exc).__name__}"},
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+
     def _fetch_card_profile_wallet_collection(self, address: str, limit: int) -> dict:
         collection, resolution = self._fetch_card_profile_chain_collection(address, limit)
         if collection:
@@ -5305,6 +5380,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/card-profile/catalog-search":
             self._send_card_profile_catalog_search()
             return
+        if path == "/api/tcg-profile":
+            self._send_tcg_profile()
+            return
         if path == "/api/intel/admin-status":
             if not self._require_admin_access():
                 return
@@ -5991,7 +6069,7 @@ def main() -> int:
         "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/wiki/directus/translate, POST /api/card-scan/recognize, "
         "POST /api/card-scan/recognize-cards, "
         "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market, "
-        "GET /api/card-profile/wallet-collection, GET /api/card-profile/catalog-search"
+        "GET /api/card-profile/wallet-collection, GET /api/card-profile/catalog-search, GET /api/tcg-profile"
     )
     print(
         "[ai-intel] auth mode: "

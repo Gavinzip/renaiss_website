@@ -11,6 +11,7 @@ const navItems: Array<{ icon: string; view: Exclude<HubView, "article"> }> = [
   { view: "feed", icon: "messages-square" },
   { view: "future", icon: "rocket" },
   { view: "sbt", icon: "badge-check" },
+  { view: "profile", icon: "wallet-cards" },
   { view: "guide", icon: "book-open-check" },
   { view: "records", icon: "trophy" },
   { view: "media", icon: "newspaper" },

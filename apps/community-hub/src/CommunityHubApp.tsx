@@ -9,6 +9,7 @@ import { CommunityView, EventsView, FutureView, MediaView, OfficialView } from "
 import { OverviewView } from "@/views/OverviewView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
 import { ArticleView, GuideView, SbtView } from "@/views/SbtGuideViews";
+import { ProfileView } from "@/views/profile/ProfileView";
 
 const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
 
@@ -61,6 +62,11 @@ export function CommunityHubApp() {
   }, [lang, route.view]);
 
   useEffect(() => {
+    if (route.view === "profile") {
+      setLoading(false);
+      setSourceError("");
+      return;
+    }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 45_000);
     let mounted = true;
@@ -85,7 +91,7 @@ export function CommunityHubApp() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [lang, refreshKey]);
+  }, [lang, refreshKey, route.view]);
 
   useEffect(() => {
     if (route.view !== "records") return;
@@ -131,7 +137,7 @@ export function CommunityHubApp() {
   const openGuide = useCallback((topic: string) => navigate({ view: "guide", guide: topic, article: "" }), [navigate]);
   const openArticle = useCallback((article: string) => navigate({ view: "article", article }), [navigate]);
   const sourceState = sourceError ? "error" : feed ? "live" : "idle";
-  const status = loading ? text(lang, "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
+  const status = route.view === "profile" ? "" : loading ? text(lang, "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
 
   let view = null;
   const shared = { cards, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
@@ -140,6 +146,7 @@ export function CommunityHubApp() {
   else if (route.view === "events") view = <EventsView {...shared} />;
   else if (route.view === "future") view = <FutureView {...shared} />;
   else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} />;
+  else if (route.view === "profile") view = <ProfileView lang={lang} />;
   else if (route.view === "guide") view = <GuideView lang={lang} topicId={route.guide} onTopicChange={openGuide} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go("sbt")} />;
   else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;
