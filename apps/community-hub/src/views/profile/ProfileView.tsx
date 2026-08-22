@@ -1,7 +1,7 @@
 import { type CSSProperties, type FormEvent, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ViewHeader } from "@/components/AppShell";
-import { fetchTcgProfile, normalizeProfileWallet, TCG_PROFILE_POSTER_KINDS, type TcgProfileData } from "@/lib/profile";
+import { fetchTcgProfile, normalizeProfileWallet, TCG_PROFILE_POSTER_KINDS, TCG_PROFILE_REQUEST_TIMEOUT_MS, type TcgProfileData } from "@/lib/profile";
 import type { Language } from "@/types";
 import { ProfilePoster, profilePosterLabel, type ProfilePosterKind } from "./ProfilePosters";
 import "./profile.css";
@@ -39,6 +39,36 @@ function requestErrorText(error: Error, lang: Language): string {
     if (lang === "zh-Hans") return "Profile 资料来源目前无法完成查询，请稍后重试。";
     if (lang === "ko") return "Profile 데이터 조회를 완료할 수 없습니다. 잠시 후 다시 시도하세요.";
     return "The Profile data source could not complete this lookup. Please try again shortly.";
+  }
+  if (error.message === "profile lookup capacity reached; retry shortly" || error.message === "HTTP 429") {
+    if (lang === "zh-Hant") return "Profile 查詢佇列目前已滿，請等待 5 至 10 秒後再試。";
+    if (lang === "zh-Hans") return "Profile 查询队列目前已满，请等待 5 至 10 秒后重试。";
+    if (lang === "ko") return "Profile 조회 대기열이 가득 찼습니다. 5~10초 후 다시 시도하세요.";
+    return "The Profile queue is full. Please try again in 5 to 10 seconds.";
+  }
+  if (error.message === "unauthorized" || error.message === "HTTP 401") {
+    if (lang === "zh-Hant") return "Profile API 驗證設定錯誤，請通知網站管理員。";
+    if (lang === "zh-Hans") return "Profile API 验证设置错误，请通知网站管理员。";
+    if (lang === "ko") return "Profile API 인증 설정에 문제가 있습니다. 사이트 관리자에게 알려 주세요.";
+    return "The Profile API authentication is misconfigured. Please notify the site administrator.";
+  }
+  if (error.message === "TCG Profile API is not configured" || error.message === "HTTP 503") {
+    if (lang === "zh-Hant") return "網站後端尚未設定 Profile API，請通知網站管理員。";
+    if (lang === "zh-Hans") return "网站后端尚未设置 Profile API，请通知网站管理员。";
+    if (lang === "ko") return "웹사이트 백엔드에 Profile API가 아직 설정되지 않았습니다. 사이트 관리자에게 알려 주세요.";
+    return "The website backend has not been configured for the Profile API. Please notify the site administrator.";
+  }
+  if (error.message === "TCG Profile API timeout" || error.message === "HTTP 504" || error.message === "Profile lookup timeout") {
+    if (lang === "zh-Hant") return "Profile 查詢等待逾時，請稍後再試。";
+    if (lang === "zh-Hans") return "Profile 查询等待超时，请稍后重试。";
+    if (lang === "ko") return "Profile 조회 대기 시간이 초과되었습니다. 잠시 후 다시 시도하세요.";
+    return "The Profile lookup timed out. Please try again shortly.";
+  }
+  if (error.message === "ranking_snapshot_unavailable") {
+    if (lang === "zh-Hant") return "TCG Pro 排行快照尚未載入，無法顯示盈虧與排名海報。";
+    if (lang === "zh-Hans") return "TCG Pro 排行快照尚未载入，无法显示盈亏与排名海报。";
+    if (lang === "ko") return "TCG Pro 랭킹 스냅샷이 아직 준비되지 않아 손익 및 랭킹 포스터를 표시할 수 없습니다.";
+    return "The TCG Pro ranking snapshot is unavailable, so the PnL and ranking poster cannot be shown.";
   }
   return error.message;
 }
@@ -101,7 +131,7 @@ export function ProfileView({ lang }: ProfileViewProps) {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 125_000);
+    const timeout = window.setTimeout(() => controller.abort(), TCG_PROFILE_REQUEST_TIMEOUT_MS);
     const started = performance.now();
     if (queriedWallet !== normalized) {
       setProfiles({});
@@ -118,9 +148,11 @@ export function ProfileView({ lang }: ProfileViewProps) {
       setStatus(`${profilePosterLabel(lang, kind)} · ${copy.done} · ${seconds.toFixed(1)}s · ${nextProfile.cache === "hit" ? copy.cached : copy.live}`);
     } catch (requestError) {
       if (controller.signal.aborted) {
-        if (controllerRef.current === controller) setError("Profile lookup timeout");
+        if (controllerRef.current === controller) setError(requestErrorText(new Error("Profile lookup timeout"), lang));
       }
-      else setError(requestError instanceof Error ? requestErrorText(requestError, lang) : "Profile lookup failed");
+      else if (controllerRef.current === controller) {
+        setError(requestError instanceof Error ? requestErrorText(requestError, lang) : "Profile lookup failed");
+      }
       if (controllerRef.current === controller) setStatus("");
     } finally {
       window.clearTimeout(timeout);

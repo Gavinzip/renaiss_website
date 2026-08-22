@@ -221,7 +221,7 @@ CARD_SCAN_RENAISS_ACTIVITY_PAGE_LIMIT = max(1, min(50, int(os.getenv("CARD_SCAN_
 CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES = max(1, min(10, int(os.getenv("CARD_SCAN_RENAISS_ACTIVITY_MAX_PAGES", "4") or 4)))
 TCG_PROFILE_API_BASE = str(os.getenv("TCG_PROFILE_API_BASE") or "http://127.0.0.1:8091").rstrip("/")
 TCG_PROFILE_API_TOKEN = str(os.getenv("TCG_PROFILE_API_TOKEN") or "").strip()
-TCG_PROFILE_API_TIMEOUT_SECONDS = max(5.0, float(os.getenv("TCG_PROFILE_API_TIMEOUT_SECONDS", "120") or 120))
+TCG_PROFILE_API_TIMEOUT_SECONDS = max(5.0, float(os.getenv("TCG_PROFILE_API_TIMEOUT_SECONDS", "300") or 300))
 CARD_PROFILE_CHAIN_PAGE_SIZE = max(100, min(10000, int(os.getenv("CARD_PROFILE_CHAIN_PAGE_SIZE", os.getenv("ONCHAIN_PAGE_SIZE", "10000")) or 10000)))
 CARD_PROFILE_CHAIN_TOKEN_SYMBOL = str(os.getenv("CARD_PROFILE_CHAIN_TOKEN_SYMBOL") or os.getenv("PROFILE_CHAIN_CARD_TOKEN_SYMBOL") or "RENAISS").strip().lower()
 CARD_PROFILE_CHAIN_API_URL_DEFAULT = "https://api.etherscan.io/v2/api"
@@ -4361,18 +4361,22 @@ class Handler(SimpleHTTPRequestHandler):
         if language not in {"zh-Hant", "zh-Hans", "en", "ko"}:
             self._send_json({"ok": False, "error": "unsupported language"}, status=HTTPStatus.BAD_REQUEST)
             return
-        poster = str((incoming.get("poster") or ["collection"])[0] or "collection").strip().lower()
+        poster = str((incoming.get("poster") or [""])[0] or "").strip().lower()
+        if not poster:
+            self._send_json({"ok": False, "error": "poster is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
         if poster not in {"collection", "history", "extremes"}:
             self._send_json({"ok": False, "error": "unsupported poster"}, status=HTTPStatus.BAD_REQUEST)
             return
-        include_extremes = str((incoming.get("include_extremes") or ["1"])[0] or "1").strip().lower()
-        include_posters = str((incoming.get("include_posters") or ["0"])[0] or "0").strip().lower()
+        if not TCG_PROFILE_API_TOKEN:
+            self._send_json({"ok": False, "error": "TCG Profile API is not configured"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         query = self._query_string(
             {
                 "wallet": wallet,
                 "lang": language,
-                "include_extremes": "0" if include_extremes in {"0", "false", "no", "off"} else "1",
-                "include_posters": "0" if include_posters in {"0", "false", "no", "off"} else "1",
+                "include_extremes": "1" if poster == "extremes" else "0",
+                "include_posters": "1",
                 "poster": poster,
             }
         )
@@ -4380,8 +4384,7 @@ class Handler(SimpleHTTPRequestHandler):
             "Accept": "application/json",
             "User-Agent": "renaiss-aggregator-tcg-profile/1.0",
         }
-        if TCG_PROFILE_API_TOKEN:
-            headers["Authorization"] = f"Bearer {TCG_PROFILE_API_TOKEN}"
+        headers["Authorization"] = f"Bearer {TCG_PROFILE_API_TOKEN}"
         request = urllib.request.Request(f"{TCG_PROFILE_API_BASE}/v1/profile?{query}", headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=TCG_PROFILE_API_TIMEOUT_SECONDS) as response:

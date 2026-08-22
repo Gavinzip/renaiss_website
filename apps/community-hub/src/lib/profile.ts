@@ -103,6 +103,7 @@ export interface TcgProfileWarning {
 
 export type TcgProfilePosterKind = "collection" | "history" | "extremes";
 export const TCG_PROFILE_POSTER_KINDS: readonly TcgProfilePosterKind[] = ["collection", "history", "extremes"];
+export const TCG_PROFILE_REQUEST_TIMEOUT_MS = 310_000;
 
 export interface TcgProfilePosters {
   documents: Partial<Record<TcgProfilePosterKind, string>>;
@@ -169,10 +170,16 @@ export async function fetchTcgProfile(
     signal,
   });
   const payload = await response.json().catch(() => ({})) as Partial<TcgProfileData> & { error?: string };
+  if (!response.ok || payload.ok !== true) {
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
+  const posterDocuments = payload.posters?.documents;
+  const posterDocumentKeys = posterDocuments ? Object.keys(posterDocuments) : [];
+  const selectedDocument = posterDocuments?.[poster];
+  const validHistorySnapshot = poster !== "history"
+    || (Number(payload.rankings?.holders_total || 0) > 0 && Boolean(payload.rankings?.snapshot_updated_at));
   if (
-    !response.ok
-    || payload.ok !== true
-    || !payload.metrics
+    !payload.metrics
     || !payload.rankings
     || !Array.isArray(payload.collection)
     || !Array.isArray(payload.sbt)
@@ -184,9 +191,14 @@ export async function fetchTcgProfile(
     || !Array.isArray(payload.posters.order)
     || payload.posters.order.length !== 1
     || payload.posters.order[0] !== poster
-    || !payload.posters.documents
+    || posterDocumentKeys.length !== 1
+    || posterDocumentKeys[0] !== poster
+    || typeof selectedDocument !== "string"
+    || !selectedDocument.trim()
+    || !validHistorySnapshot
   ) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    if (!validHistorySnapshot) throw new Error("ranking_snapshot_unavailable");
+    throw new Error("invalid_profile_response");
   }
   return payload as TcgProfileData;
 }

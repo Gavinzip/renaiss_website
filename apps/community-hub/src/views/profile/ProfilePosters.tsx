@@ -59,7 +59,10 @@ function CanonicalPosterFrame({ document, height, kind, label, width }: {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   const [scale, setScale] = useState(1);
-  const sourceDocument = useMemo(() => instrumentPosterDocument(document, kind, assets.renaissLogo), [document, kind]);
+  const sourceDocument = useMemo(
+    () => instrumentPosterDocument(document, kind, new URL(assets.renaissLogo, window.location.href).href),
+    [document, kind],
+  );
 
   useEffect(() => {
     setReady(false);
