@@ -4408,11 +4408,12 @@ class Handler(SimpleHTTPRequestHandler):
                 "unsupported language",
                 "unsupported poster",
                 "profile lookup capacity reached; retry shortly",
+                "profile_lookup_timeout",
                 "unauthorized",
                 "not found",
             }
             error = upstream_error if upstream_error in allowed_errors else "profile_lookup_failed"
-            status = HTTPStatus(exc.code) if exc.code in {400, 401, 404, 429} else HTTPStatus.BAD_GATEWAY
+            status = HTTPStatus(exc.code) if exc.code in {400, 401, 404, 429, 504} else HTTPStatus.BAD_GATEWAY
             self._send_json({"ok": False, "error": error}, status=status)
         except (TimeoutError, socket.timeout):
             self._send_json({"ok": False, "error": "TCG Profile API timeout"}, status=HTTPStatus.GATEWAY_TIMEOUT)

@@ -58,7 +58,7 @@ function requestErrorText(error: Error, lang: Language): string {
     if (lang === "ko") return "웹사이트 백엔드에 Profile API가 아직 설정되지 않았습니다. 사이트 관리자에게 알려 주세요.";
     return "The website backend has not been configured for the Profile API. Please notify the site administrator.";
   }
-  if (error.message === "TCG Profile API timeout" || error.message === "HTTP 504" || error.message === "Profile lookup timeout") {
+  if (error.message === "TCG Profile API timeout" || error.message === "HTTP 504" || error.message === "Profile lookup timeout" || error.message === "profile_lookup_timeout") {
     if (lang === "zh-Hant") return "Profile 查詢等待逾時，請稍後再試。";
     if (lang === "zh-Hans") return "Profile 查询等待超时，请稍后重试。";
     if (lang === "ko") return "Profile 조회 대기 시간이 초과되었습니다. 잠시 후 다시 시도하세요.";
