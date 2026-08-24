@@ -3,6 +3,7 @@ export const LANGUAGES = ["zh-Hant", "zh-Hans", "en", "ko"] as const;
 export type Language = (typeof LANGUAGES)[number];
 export type HubView = "overview" | "official" | "feed" | "events" | "future" | "sbt" | "profile" | "guide" | "article" | "records" | "media" | "knowledge";
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
+export type PlanStatus = "upcoming" | "in_progress" | "completed" | "cancelled" | "not_plan" | "needs_review";
 
 export interface FeedCard {
   account?: string;
@@ -10,10 +11,29 @@ export interface FeedCard {
   card_type?: string;
   cover_image?: string;
   dedupe_status?: string;
+  detail_lines?: string[];
+  detail_summary?: string;
+  event_facts?: {
+    audience?: string;
+    location?: string;
+    participation?: string;
+    reward?: string;
+    schedule?: string;
+  };
+  event_region?: "tw" | "kr" | "my" | "vn" | "th" | "global" | "multi_region" | "unknown" | string;
+  event_region_reason?: string;
+  event_region_model?: string;
+  event_region_version?: string;
   event_wall?: boolean;
   glance?: string;
   published_at?: string;
+  plan_ai_model?: string;
+  plan_ai_version?: string;
+  plan_status?: PlanStatus;
+  plan_status_checked_at?: string;
+  plan_status_reason?: string;
   raw_text?: string;
+  semantic_text?: string;
   sbt_acquisition?: string;
   sbt_name?: string;
   sbt_names?: string[];
@@ -35,6 +55,12 @@ export interface CommunityMetric {
   score?: number;
 }
 
+export interface OfficialOverview {
+  bullets?: string[];
+  summary?: string;
+  title?: string;
+}
+
 export interface IntelFeed {
   cards?: FeedCard[];
   community_metrics?: {
@@ -44,6 +70,7 @@ export interface IntelFeed {
     window_days?: number;
   };
   generated_at?: string;
+  official_overview?: OfficialOverview;
   _i18n?: {
     coverage?: number;
     fallback?: number;

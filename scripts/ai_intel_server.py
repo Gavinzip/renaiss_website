@@ -85,6 +85,15 @@ from directus_wiki import (
 from expo_profile_store import ExpoProfileStore, ProfileIdentity
 from privy_auth import PrivyAuthError, claims_from_authorization_header
 from renaiss_wallet_client import sync_wallet_cards
+from renaiss_sso import (
+    RenaissSsoError,
+    begin_login as begin_renaiss_login,
+    complete_login as complete_renaiss_login,
+    public_identity as public_renaiss_identity,
+    renaiss_sso_admin_configured,
+    renaiss_sso_enabled,
+    role_for_identity as renaiss_role_for_identity,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,7 +141,7 @@ CONTENT_REFRESH_LOCK = Lock()
 COMMUNITY_METRICS_LOCK = Lock()
 BEGINNER_WIKI_LOCK = Lock()
 PRIORITY_ACTIVITY_LOCK = Lock()
-SESSIONS: dict[str, dict[str, str]] = {}
+SESSIONS: dict[str, dict[str, object]] = {}
 PRIORITY_ACTIVITY: dict[str, object] = {
     "last_user_request_at": 0.0,
     "last_card_scan_at": 0.0,
@@ -517,8 +526,8 @@ def _build_auth_accounts() -> dict[str, dict]:
 
 
 AUTH_ACCOUNTS = _build_auth_accounts()
-AUTH_CONFIGURED = bool(AUTH_ACCOUNTS)
-ADMIN_CONFIGURED = any(account.get("role") == "admin" for account in AUTH_ACCOUNTS.values())
+AUTH_CONFIGURED = bool(AUTH_ACCOUNTS) or renaiss_sso_enabled()
+ADMIN_CONFIGURED = any(account.get("role") == "admin" for account in AUTH_ACCOUNTS.values()) or renaiss_sso_admin_configured()
 
 TRANSLATE_MAX_ITEMS = 220
 TRANSLATE_MAX_CHARS = 320
@@ -784,7 +793,13 @@ def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
         SESSIONS.pop(sid, None)
 
 
-def _create_session(username: str, role: str = "admin") -> str:
+def _create_session(
+    username: str,
+    role: str = "admin",
+    *,
+    auth_provider: str = "password",
+    identity: dict | None = None,
+) -> str:
     now = datetime.now(timezone.utc)
     expires = now + timedelta(seconds=SESSION_TTL_SECONDS)
     token = secrets.token_urlsafe(32)
@@ -793,6 +808,8 @@ def _create_session(username: str, role: str = "admin") -> str:
         SESSIONS[token] = {
             "username": username,
             "role": str(role or "creator").strip().lower() or "creator",
+            "auth_provider": str(auth_provider or "password").strip().lower() or "password",
+            "identity": dict(identity) if isinstance(identity, dict) else {},
             "created_at": now.isoformat(),
             "expires_at": expires.isoformat(),
         }
@@ -817,6 +834,16 @@ def _delete_session(session_id: str) -> None:
         return
     with SESSIONS_LOCK:
         SESSIONS.pop(sid, None)
+
+
+def _auth_result_path(return_to: str, status: str) -> str:
+    target = str(return_to or "/community-hub/").strip()
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/community-hub/"
+    base, marker, fragment = target.partition("#")
+    separator = "&" if "?" in base else "?"
+    result = f"{base}{separator}auth={quote(str(status or 'error'), safe='')}"
+    return f"{result}#{fragment}" if marker else result
 
 
 def _read_jobs_unlocked() -> dict:
@@ -3336,12 +3363,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _set_security_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
-            "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+            "base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'",
         )
 
     def _static_cache_control(self) -> str:
@@ -3492,6 +3519,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "user": "admin",
                 "role": "admin",
                 "permissions": self._permission_payload("admin"),
+                "provider": "open",
+                "profile": {},
+                "renaiss_sso_configured": renaiss_sso_enabled(),
                 "mode": "open",
             }
         if not AUTH_CONFIGURED:
@@ -3503,6 +3533,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "user": "",
                 "role": "",
                 "permissions": self._permission_payload(""),
+                "provider": "",
+                "profile": {},
+                "renaiss_sso_configured": renaiss_sso_enabled(),
                 "mode": "misconfigured",
                 "error": "INTEL_ADMIN_USER / INTEL_ADMIN_PASS_HASH 或 WIKI_CREATOR_USER / WIKI_CREATOR_PASS_HASH 未設定，管理功能已鎖定。",
             }
@@ -3517,6 +3550,9 @@ class Handler(SimpleHTTPRequestHandler):
             "user": user,
             "role": role,
             "permissions": self._permission_payload(role),
+            "provider": str(session.get("auth_provider") or "").strip().lower(),
+            "profile": public_renaiss_identity(session.get("identity") if isinstance(session.get("identity"), dict) else {}),
+            "renaiss_sso_configured": renaiss_sso_enabled(),
             "mode": "protected",
         }
 
@@ -3607,6 +3643,14 @@ class Handler(SimpleHTTPRequestHandler):
             if _is_client_disconnect_error(exc):
                 return False
             raise
+
+    def _send_redirect(self, location: str, *, session_id: str = "") -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", str(location or "/"))
+        self.send_header("Cache-Control", "no-store")
+        if session_id:
+            self.send_header("Set-Cookie", self._session_cookie_header(session_id))
+        self.end_headers()
 
     def _require_admin(self, path: str) -> bool:
         if path not in PROTECTED_POST_PATHS:
@@ -5353,6 +5397,41 @@ class Handler(SimpleHTTPRequestHandler):
         _record_priority_request(path)
         if self._send_data_file(path):
             return
+        if path == "/api/auth/renaiss/start":
+            try:
+                params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+                return_to = str((params.get("return_to") or ["/community-hub/"])[0] or "/community-hub/")
+                login = begin_renaiss_login(self._request_host_origin(), return_to=return_to)
+                if str((params.get("format") or [""])[0]).strip().lower() == "json":
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "authorization_url": login["authorization_url"],
+                            "redirect_uri": login["redirect_uri"],
+                            "return_to": login["return_to"],
+                        }
+                    )
+                else:
+                    self._send_redirect(login["authorization_url"])
+            except RenaissSsoError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if path == "/auth/callback":
+            try:
+                params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+                result = complete_renaiss_login(
+                    str((params.get("code") or [""])[0] or ""),
+                    str((params.get("state") or [""])[0] or ""),
+                )
+                identity = result["identity"]
+                role = renaiss_role_for_identity(identity)
+                username = str(identity.get("email") or identity.get("name") or f"renaiss:{identity['sub']}").strip()
+                sid = _create_session(username, role=role, auth_provider="renaiss", identity=identity)
+                self._send_redirect(_auth_result_path(str(result.get("return_to") or ""), "success"), session_id=sid)
+            except RenaissSsoError as exc:
+                print(f"[renaiss-sso] callback failed: {exc}", flush=True)
+                self._send_redirect(_auth_result_path("/community-hub/", "error"))
+            return
         if path == "/api/auth/me":
             self._send_json(self._auth_me_payload())
             return
@@ -5572,6 +5651,9 @@ class Handler(SimpleHTTPRequestHandler):
                         "user": "admin",
                         "role": "admin",
                         "permissions": self._permission_payload("admin"),
+                        "provider": "open",
+                        "profile": {},
+                        "renaiss_sso_configured": renaiss_sso_enabled(),
                         "mode": "open",
                     }
                 )
@@ -5600,6 +5682,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "user": username,
                     "role": role,
                     "permissions": self._permission_payload(role),
+                    "provider": "password",
+                    "profile": {},
+                    "renaiss_sso_configured": renaiss_sso_enabled(),
                     "mode": "protected",
                     "token": sid,
                 },
@@ -5619,6 +5704,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "user": "",
                     "role": "",
                     "permissions": self._permission_payload(""),
+                    "provider": "",
+                    "profile": {},
+                    "renaiss_sso_configured": renaiss_sso_enabled(),
                     "mode": "protected" if AUTH_REQUIRED else "open",
                 },
                 extra_headers={"Set-Cookie": self._clear_session_cookie_header()},
@@ -6066,7 +6154,7 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/open-monitor/leaderboard, "
+        "GET /api/auth/me, GET /api/auth/renaiss/start, GET /auth/callback, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/open-monitor/leaderboard, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "

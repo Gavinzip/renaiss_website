@@ -97,6 +97,84 @@ def _valid_ai_date(value: Any) -> str:
     return "__INVALID_DATE__"
 
 
+def _valid_plan_status(value: Any) -> str:
+    status = str(value or "").strip().lower().replace("-", "_")
+    return status if status in PLAN_STATUSES else ""
+
+
+def _valid_event_region(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "taiwan": "tw",
+        "台灣": "tw",
+        "台湾": "tw",
+        "korea": "kr",
+        "south_korea": "kr",
+        "韓國": "kr",
+        "韩国": "kr",
+        "malaysia": "my",
+        "馬來西亞": "my",
+        "马来西亚": "my",
+        "vietnam": "vn",
+        "越南": "vn",
+        "thailand": "th",
+        "泰國": "th",
+        "泰国": "th",
+        "worldwide": "global",
+        "全球": "global",
+        "multi": "multi_region",
+        "multiple": "multi_region",
+        "跨地區": "multi_region",
+        "跨地区": "multi_region",
+        "待確認": "unknown",
+        "待确认": "unknown",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in EVENT_REGION_IDS else ""
+
+
+def _clear_event_region(card: StoryCard) -> None:
+    card.event_region = ""
+    card.event_region_reason = ""
+    card.event_region_model = ""
+    card.event_region_version = ""
+
+
+def _apply_event_region(card: StoryCard, *, region: Any, reason: Any, model: str) -> bool:
+    if str(card.card_type or "").strip().lower() != "event":
+        _clear_event_region(card)
+        return False
+    normalized = _valid_event_region(region)
+    cleaned_reason = clean_text(str(reason or ""))[:360]
+    if not normalized or not cleaned_reason:
+        return False
+    card.event_region = normalized
+    card.event_region_reason = cleaned_reason
+    card.event_region_model = str(model or minimax_model_name()).strip()
+    card.event_region_version = EVENT_REGION_CLASSIFICATION_VERSION
+    return True
+
+
+def _apply_plan_status(
+    card: StoryCard,
+    *,
+    status: Any,
+    reason: Any,
+    model: str,
+    checked_at: str = "",
+) -> bool:
+    normalized = _valid_plan_status(status)
+    cleaned_reason = clean_text(str(reason or ""))[:360]
+    if not normalized or not cleaned_reason:
+        return False
+    card.plan_status = normalized
+    card.plan_status_reason = cleaned_reason
+    card.plan_status_checked_at = checked_at or datetime.now(timezone.utc).isoformat()
+    card.plan_ai_model = str(model or minimax_model_name()).strip()
+    card.plan_ai_version = PLAN_STATUS_CLASSIFICATION_VERSION
+    return True
+
+
 def _is_official_x_public_source(card: StoryCard) -> bool:
     provider = str(card.provider or "").strip().lower()
     return bool(
@@ -171,6 +249,8 @@ def _publish_official_x_public_fallback(
     detail_summary: str = "",
     detail_lines: list[str] | None = None,
     reason: str = "",
+    plan_status: str = "",
+    plan_status_reason: str = "",
 ) -> None:
     fallback_title, fallback_summary, fallback_bullets, fallback_detail_summary, fallback_detail_lines = _fallback_public_copy(card)
     final_type = AI_CARD_TYPE_ALIASES.get(str(card_type or card.card_type or "").strip().lower(), str(card_type or card.card_type or "").strip().lower())
@@ -207,6 +287,8 @@ def _publish_official_x_public_fallback(
     card.tags = cleaned_tags[:3]
     card.confidence = max(0.55, min(1.0, final_confidence or 0.55))
     card.event_facts = normalize_event_facts(event_facts or card.event_facts) if final_type == "event" else {}
+    if final_type != "event":
+        _clear_event_region(card)
     card.topic_labels = labels or ["official"]
     card.timeline_date = valid_timeline_date
     card.timeline_end_date = valid_timeline_end_date
@@ -224,6 +306,12 @@ def _publish_official_x_public_fallback(
         or "官方 X 來源即使 AI 驗證未完整通過，也先公開；後台仍保留錯誤原因供人工修正。"
     )[:360]
     card.classification_error = clean_text(str(error or "official_x_public_fallback"))[:220]
+    _apply_plan_status(
+        card,
+        status=plan_status or card.plan_status or "needs_review",
+        reason=plan_status_reason or card.plan_status_reason or "AI 規劃狀態需要重新確認。",
+        model=model or card.ai_model or minimax_model_name(),
+    )
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
@@ -241,6 +329,12 @@ def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> Non
     card.ai_status = "needs_review"
     card.review_status = AI_REVIEW_ADMIN_QUEUE
     card.classification_error = clean_text(str(error or "ai_needs_review"))[:220]
+    _apply_plan_status(
+        card,
+        status="needs_review",
+        reason=f"AI 分類失敗：{clean_text(str(error or 'ai_needs_review'))[:240]}",
+        model=model or minimax_model_name(),
+    )
     if not card.classification_reason:
         card.classification_reason = "AI 未產生可安全公開的完整分類，需管理員確認。"
     card.topic_labels = ["other"]
@@ -342,6 +436,8 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
     detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
     reason = clean_text(str(parsed.get("classification_reason") or parsed.get("reasoning_note") or ""))[:360]
+    plan_status = _valid_plan_status(parsed.get("plan_status"))
+    plan_status_reason = clean_text(str(parsed.get("plan_status_reason") or ""))[:360]
     tags_raw = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
     tags = [clean_text(str(x))[:16] for x in tags_raw if clean_text(str(x))][:3]
     confidence_raw = parsed.get("confidence")
@@ -366,6 +462,10 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         errors.append("missing_detail_copy")
     if not reason:
         errors.append("missing_classification_reason")
+    if not plan_status:
+        errors.append("missing_plan_status")
+    if not plan_status_reason:
+        errors.append("missing_plan_status_reason")
     if _raw_needs_number_facts(card.raw_text) and not number_facts:
         errors.append("missing_number_facts")
     copy_for_grounding = " ".join(
@@ -397,6 +497,8 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
                 detail_summary=detail_summary,
                 detail_lines=detail_lines,
                 reason=reason,
+                plan_status=plan_status,
+                plan_status_reason=plan_status_reason,
             )
             return True
         _set_ai_review_queue(card, ",".join(errors), model=model)
@@ -417,6 +519,8 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     card.tags = tags or card.tags
     card.confidence = max(0.0, min(1.0, confidence))
     card.event_facts = event_facts if card_type == "event" else {}
+    if card_type != "event":
+        _clear_event_region(card)
     card.topic_labels = topic_labels
     card.timeline_date = timeline_date
     card.timeline_end_date = timeline_end_date
@@ -431,6 +535,12 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     card.review_status = AI_REVIEW_AUTO_APPROVED
     card.classification_reason = reason
     card.classification_error = ""
+    _apply_plan_status(
+        card,
+        status=plan_status,
+        reason=plan_status_reason,
+        model=model,
+    )
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
@@ -825,6 +935,7 @@ def apply_minimax_story_refine(
     total_cards = len(cards)
     call_index = 0
     regional_cm_accounts = ", ".join(REGIONAL_COMMUNITY_X_HANDLE_LABELS)
+    classification_date = datetime.now(timezone.utc).date().isoformat()
 
     def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
         nonlocal call_index
@@ -898,6 +1009,7 @@ def apply_minimax_story_refine(
             "\"event_facts\":{\"participation\":\"\",\"audience\":\"\",\"location\":\"\",\"schedule\":\"\"},"
             "\"topic_labels\":[\"events|official|sbt|pokemon|collectibles|alpha|guides|community|other\"],"
             "\"timeline_date\":\"YYYY-MM-DD或空字串\",\"timeline_end_date\":\"YYYY-MM-DD或空字串\","
+            "\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\","
             "\"number_facts\":[{\"text\":\"原文數字\",\"meaning\":\"這個數字代表什麼\"}],"
             "\"classification_reason\":\"\",\"detail_summary\":\"\",\"detail_lines\":[\"\",\"\",\"\",\"\"]}。"
             "限制："
@@ -947,7 +1059,12 @@ def apply_minimax_story_refine(
             "37) 原文沒有 Discord、直播、線上、報名連結、獎勵或限制時，不可自行補這些資訊；"
             "38) detail_lines 只列原文有根據的活動名稱、時間、參與方式、獎勵、限制與下一步；缺少的項目直接省略，不要寫未公布/未提供；"
             "39) number_facts 每項都必須有 meaning，說明該數字在原文的對象與意義；"
-            "40) 整份 JSON 請控制在約 1400 字元內。\n\n"
+            f"40) 規劃狀態以 {classification_date} 為判斷日；alpha 只是主題標籤，不等於未來；"
+            "upcoming 只給判斷日之後尚未發生的明確計畫，in_progress 給已開始且仍持續的測試/開放/開發，"
+            "completed 給已上線、售罄、完售、認領完畢、已結束，或原文所述單日發售/啟動日期已過的項目，"
+            "cancelled 給明確取消或終止，not_plan 給教學、回顧、一般資訊與沒有後續行動的公告，證據不足才用 needs_review；"
+            "41) plan_status_reason 必須引用原文中的狀態訊號或日期，不可只說因為有 alpha 標籤；"
+            "42) 整份 JSON 請控制在約 1500 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
             f"來源URL: {card.url}\n"
@@ -962,7 +1079,7 @@ def apply_minimax_story_refine(
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
                     "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
-                    "timeline_date,timeline_end_date,number_facts,classification_reason,detail_summary,detail_lines。"
+                    "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
                     "detail_summary 與 detail_lines 必須重新整理詳情，不可沿用模板句。"
                     "不要捏造年份、人名、物流、轉運、代購或限制條件。"
@@ -972,6 +1089,8 @@ def apply_minimax_story_refine(
                     "official 只給 Renaiss 官方來源；other 只能單獨出現；events 只在 card_type=event 時使用。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
+                    f"規劃狀態以 {classification_date} 為判斷日；alpha 不是未來狀態。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
+                    "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
                     f"URL:{card.url}\n"
@@ -1003,12 +1122,14 @@ def apply_minimax_story_refine(
                     "上一版 JSON 未通過資料驗證，原因："
                     f"{retry_reason}。請重新輸出合法 JSON，不要任何前後文字，不要 ```。"
                     "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
-                    "timeline_date,timeline_end_date,number_facts,classification_reason,detail_summary,detail_lines。"
+                    "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
                     "topic_labels 必須是陣列，event 類活動至少包含 events；官方帳號 @renaissxyz 至少包含 official。"
                     "other 只能單獨出現；events 只在 card_type=event 時使用；official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord。"
                     "Pokemon Center、零售商、媒體或一般情報帳號不算 official。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
+                    f"規劃狀態以 {classification_date} 為判斷日；alpha 不是未來狀態。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
+                    "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
                     "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
                     "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"
                     "layout 只能是 poster/brief/data/timeline，不可輸出 event_poster 等 template 名稱。"
@@ -1052,6 +1173,178 @@ def apply_minimax_story_refine(
                 model=model_name,
             )
             continue
+
+
+def plan_status_review_due(card: StoryCard, *, now: datetime | None = None) -> bool:
+    account = str(card.account or "").strip().lower().lstrip("@")
+    if account != PRODUCT_PROGRESS_X_HANDLE:
+        return False
+    status = _valid_plan_status(card.plan_status)
+    if card.plan_ai_version != PLAN_STATUS_CLASSIFICATION_VERSION or not status or status == "needs_review":
+        return True
+    if status not in {"upcoming", "in_progress"}:
+        return False
+    checked = parse_datetime_guess(card.plan_status_checked_at)
+    current = now or datetime.now(timezone.utc)
+    return checked is None or checked.date() < current.date()
+
+
+def event_region_review_due(card: StoryCard) -> bool:
+    if str(card.card_type or "").strip().lower() != "event":
+        return False
+    return bool(
+        card.event_region_version != EVENT_REGION_CLASSIFICATION_VERSION
+        or not _valid_event_region(card.event_region)
+        or not clean_text(card.event_region_reason)
+        or not str(card.event_region_model or "").strip()
+    )
+
+
+def apply_minimax_event_region_review(
+    cards: list[StoryCard],
+    api_key: str,
+    *,
+    progress_callback: Any | None = None,
+) -> int:
+    """Classify only event geography without rewriting article content."""
+    model_name = minimax_model_name()
+    updated = 0
+    event_cards = [card for card in cards if str(card.card_type or "").strip().lower() == "event"]
+    total = len(event_cards)
+
+    for index, card in enumerate(event_cards):
+        facts = normalize_event_facts(card.event_facts)
+        prompt = (
+            "你是 Renaiss 活動地區分類員。只判斷活動所屬地區，不改寫標題、摘要或任何文章內容。"
+            "請綜合原文、活動地點、受眾、參與限制與發文帳號，輸出單一合法 JSON："
+            "{\"event_region\":\"tw|kr|my|vn|th|global|multi_region|unknown\",\"event_region_reason\":\"\"}。"
+            "規則："
+            "1) 原文明確出現國家、城市、場地、地址、在地受眾或參加資格時，以文章證據優先；"
+            "2) @renaissxyz 是全球主帳號，本身不代表 global；它發布台北實體活動仍應是 tw；"
+            "3) @RenaissTwCM/@RenaissKrCM/@RenaissMyCM/@renaiss_vn/@Renaiss_TH 只作為地區線索，"
+            "不能推翻原文明確地點；"
+            "4) 純線上活動只有在沒有任何地區語言、受眾、資格或帳號限制時才標 global；"
+            "5) 線上活動若明確限定某地區，仍標該地區；"
+            "6) tw=台灣、kr=韓國、my=馬來西亞、vn=越南、th=泰國、global=全球、"
+            "multi_region=原文明確涵蓋兩個以上地區但不等於全球、unknown=證據不足；"
+            "7) event_region_reason 必須指出採用的文章證據與帳號線索，不可只重複分類結果；"
+            "8) 不可從語言、表情、網路用語或一般發文者所在地單獨推定活動地區；私人帳號不是地區線索；"
+            "9) 同時提到兩個以上明確地區時不可任選其中一個當代表，應標 multi_region；不可捏造。\n\n"
+            f"來源帳號：@{card.account}\n"
+            f"發布時間：{card.published_at}\n"
+            f"既有標題：{card.title}\n"
+            f"既有摘要：{card.summary}\n"
+            f"活動欄位：{json.dumps(facts, ensure_ascii=False)}\n"
+            f"原文：{str(card.raw_text or '')[:4200]}"
+        )
+        try:
+            parsed = parse_json_block(minimax_chat(prompt, api_key)) or {}
+            if _apply_event_region(
+                card,
+                region=parsed.get("event_region"),
+                reason=parsed.get("event_region_reason"),
+                model=model_name,
+            ):
+                updated += 1
+            else:
+                card.event_region = "unknown"
+                card.event_region_reason = "MiniMax 未回傳有效的活動地區與判斷理由，保留待重新分類狀態。"
+                card.event_region_model = model_name
+                card.event_region_version = ""
+        except Exception as exc:
+            card.event_region = "unknown"
+            card.event_region_reason = f"MiniMax 活動地區分類失敗：{type(exc).__name__}"
+            card.event_region_model = model_name
+            card.event_region_version = ""
+        if progress_callback:
+            try:
+                progress_callback(
+                    "event_region_review",
+                    {
+                        "done_cards": index + 1,
+                        "total_cards": total,
+                        "card_id": str(card.id or ""),
+                        "event_region": str(card.event_region or ""),
+                        "model": model_name,
+                    },
+                )
+            except Exception:
+                pass
+    return updated
+
+
+def apply_minimax_plan_status_review(
+    cards: list[StoryCard],
+    api_key: str,
+    *,
+    progress_callback: Any | None = None,
+) -> int:
+    """Refresh AI-owned lifecycle metadata without rewriting editorial copy."""
+    model_name = minimax_model_name()
+    checked_at = datetime.now(timezone.utc).isoformat()
+    as_of = checked_at[:10]
+    updated = 0
+    total = len(cards)
+
+    for index, card in enumerate(cards):
+        prompt = (
+            "你是 Renaiss 產品進度分類員。資料只來自 Renaiss 官方主帳號 @renaissxyz。"
+            "只判斷這則原始貼文在指定日期的產品生命週期，不改寫任何文案。"
+            "請輸出單一合法 JSON："
+            "{\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\"}。"
+            f"判斷基準日：{as_of}。"
+            "規則：主帳號貼文與 alpha 都不必然是產品進度；upcoming 只給基準日之後尚未發生的明確產品計畫；"
+            "in_progress 給已開始且原文證明仍持續的測試、開放或開發；"
+            "completed 給已上線、售罄、完售、認領完畢、已結束，或原文所述單日發售/啟動日期已經過去的項目；"
+            "cancelled 只給明確取消或終止；not_plan 給教學、回顧、一般資訊及沒有剩餘行動的公告；"
+            "只有原文與日期仍不足以判斷時才用 needs_review。理由必須引用原文狀態訊號或日期，不可只說有 alpha 標籤。\n\n"
+            f"發布時間：{card.published_at}\n"
+            f"時間欄位：開始={card.timeline_date or '空'}；結束={card.timeline_end_date or '空'}\n"
+            f"標題：{card.title}\n"
+            f"摘要：{card.summary}\n"
+            f"原文：{card.raw_text[:3600]}"
+        )
+        try:
+            parsed = parse_json_block(minimax_chat(prompt, api_key)) or {}
+            if not _apply_plan_status(
+                card,
+                status=parsed.get("plan_status"),
+                reason=parsed.get("plan_status_reason"),
+                model=model_name,
+                checked_at=checked_at,
+            ):
+                _apply_plan_status(
+                    card,
+                    status="needs_review",
+                    reason="MiniMax 未回傳有效的規劃狀態與判斷理由。",
+                    model=model_name,
+                    checked_at=checked_at,
+                )
+            else:
+                updated += 1
+        except Exception as exc:
+            _apply_plan_status(
+                card,
+                status="needs_review",
+                reason=f"MiniMax 規劃狀態分類失敗：{type(exc).__name__}",
+                model=model_name,
+                checked_at=checked_at,
+            )
+        if progress_callback:
+            try:
+                progress_callback(
+                    "plan_status_review",
+                    {
+                        "done_cards": index + 1,
+                        "total_cards": total,
+                        "card_id": str(card.id or ""),
+                        "plan_status": str(card.plan_status or ""),
+                        "model": model_name,
+                    },
+                )
+            except Exception:
+                pass
+    return updated
 
 
 def parse_json_block(text: str) -> dict[str, Any] | None:
@@ -1650,6 +1943,10 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
                         manual_pin=bool(item.get("manual_pin") or False),
                         manual_bottom=bool(item.get("manual_bottom") or False),
                         event_facts=normalize_event_facts(item.get("event_facts")),
+                        event_region=str(item.get("event_region") or ""),
+                        event_region_reason=str(item.get("event_region_reason") or ""),
+                        event_region_model=str(item.get("event_region_model") or ""),
+                        event_region_version=str(item.get("event_region_version") or ""),
                         topic_labels=normalize_topic_labels(item.get("topic_labels")),
                         detail_summary=str(item.get("detail_summary") or ""),
                         detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),

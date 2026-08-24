@@ -382,6 +382,10 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         manual_pin=bool(item.get("manual_pin") or False),
         manual_bottom=bool(item.get("manual_bottom") or False),
         event_facts=normalize_event_facts(item.get("event_facts")),
+        event_region=str(item.get("event_region") or ""),
+        event_region_reason=str(item.get("event_region_reason") or ""),
+        event_region_model=str(item.get("event_region_model") or ""),
+        event_region_version=str(item.get("event_region_version") or ""),
         topic_labels=normalize_topic_labels(item.get("topic_labels")),
         detail_summary=str(item.get("detail_summary") or ""),
         detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
@@ -409,6 +413,11 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         review_status=str(item.get("review_status") or ""),
         classification_reason=str(item.get("classification_reason") or ""),
         classification_error=str(item.get("classification_error") or ""),
+        plan_status=str(item.get("plan_status") or ""),
+        plan_status_reason=str(item.get("plan_status_reason") or ""),
+        plan_status_checked_at=str(item.get("plan_status_checked_at") or ""),
+        plan_ai_model=str(item.get("plan_ai_model") or ""),
+        plan_ai_version=str(item.get("plan_ai_version") or ""),
         source_channel_id=str(item.get("source_channel_id") or ""),
         source_message_id=str(item.get("source_message_id") or ""),
         source_message_timestamp=str(item.get("source_message_timestamp") or ""),
@@ -446,6 +455,38 @@ def _read_existing_feed_card_payloads() -> dict[str, dict[str, Any]]:
         if card_id:
             out[card_id] = dict(item)
     return out
+
+
+def _read_existing_feed_accounts() -> list[str]:
+    payload = read_json(data_dir() / "x_intel_feed.json", {})
+    rows = payload.get("accounts") if isinstance(payload, dict) else []
+    return normalize_x_accounts(rows)
+
+
+def _remove_cards_from_deleted_x_sources(
+    cards: list[StoryCard],
+    *,
+    previous_accounts: list[str],
+    current_accounts: list[str],
+) -> tuple[list[StoryCard], set[str], set[str]]:
+    current = {normalize_account_handle(account) for account in current_accounts}
+    removed_accounts = {
+        normalize_account_handle(account)
+        for account in previous_accounts
+        if normalize_account_handle(account) not in current
+    }
+    if not removed_accounts:
+        return cards, set(), set()
+
+    removed_ids: set[str] = set()
+    kept: list[StoryCard] = []
+    for card in cards:
+        account = normalize_account_handle(card.account)
+        if account in removed_accounts and is_x_source_url(card.url):
+            removed_ids.add(str(card.id or "").strip())
+            continue
+        kept.append(card)
+    return kept, removed_accounts, {card_id for card_id in removed_ids if card_id}
 
 
 def _feedback_rule_key(label: str, reason: str, account: str = "") -> str:
@@ -894,6 +935,10 @@ CONTENT_REFRESH_FIELDS = {
     "importance",
     "glance",
     "event_facts",
+    "event_region",
+    "event_region_reason",
+    "event_region_model",
+    "event_region_version",
     "timeline_date",
     "timeline_end_date",
     "event_wall",
@@ -913,6 +958,11 @@ CONTENT_REFRESH_FIELDS = {
     "review_status",
     "classification_reason",
     "classification_error",
+    "plan_status",
+    "plan_status_reason",
+    "plan_status_checked_at",
+    "plan_ai_model",
+    "plan_ai_version",
 }
 
 CONTENT_REFRESH_PRESERVED_FIELDS = {
@@ -945,6 +995,10 @@ CONTENT_REFRESH_CLASSIFICATION_FIELDS = {
     "template_id",
     "topic_labels",
     "event_facts",
+    "event_region",
+    "event_region_reason",
+    "event_region_model",
+    "event_region_version",
     "timeline_date",
     "timeline_end_date",
     "event_wall",
@@ -999,6 +1053,8 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
             connect_timeout_override=5.0,
             read_timeout_override=max(60.0, refresh_read_timeout),
         )
+        if event_region_review_due(card):
+            apply_minimax_event_region_review([card], api_key)
         mode = "ai" if str(card.ai_status or "") == "ok" else "admin_queue"
     else:
         _set_ai_review_queue(card, "missing_ai_key")
@@ -1012,6 +1068,14 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
     _enforce_fixed_channel_payload_fields(updated)
 
     cards[target_index] = updated
+    refreshed_cards = [
+        _story_card_from_payload(item)
+        for item in cards
+        if isinstance(item, dict)
+    ]
+    public_cards = _public_cards(refreshed_cards)
+    payload["intel_sections"] = build_intel_sections(public_cards)
+    payload["intel_agenda"] = build_intel_agenda(public_cards)
     payload["generated_at"] = datetime.now(timezone.utc).isoformat()
     write_json(data_dir() / "x_intel_feed.json", payload)
     return {
@@ -2671,6 +2735,13 @@ AI_METADATA_PRESERVED_FIELDS = {
     "review_status",
     "classification_reason",
     "classification_error",
+    "plan_status",
+    "plan_status_reason",
+    "plan_status_checked_at",
+    "plan_ai_model",
+    "plan_ai_version",
+    "event_region_model",
+    "event_region_version",
 }
 
 PRESERVED_CARD_MUTABLE_FIELDS = {
@@ -2688,6 +2759,8 @@ PRESERVED_CARD_MUTABLE_FIELDS = {
     "manual_pin",
     "manual_bottom",
     "event_facts",
+    "event_region",
+    "event_region_reason",
     "topic_labels",
     "sbt_name",
     "sbt_names",
@@ -2833,10 +2906,25 @@ def sync_accounts(
     api_key = resolve_minimax_key()
     twitter_cli_ready = bool(shutil_which("twitter"))
 
+    uses_configured_accounts = accounts is None
     target_accounts = normalize_x_accounts(accounts) if accounts is not None else resolve_tracked_x_accounts()
     since_dt = datetime.now(timezone.utc) - timedelta(days=window_days)
     preserved_raw_by_id = _read_existing_feed_card_payloads()
     existing_cards = _read_existing_feed_cards()
+    removed_source_accounts: set[str] = set()
+    removed_source_card_ids: set[str] = set()
+    if uses_configured_accounts:
+        existing_cards, removed_source_accounts, removed_source_card_ids = _remove_cards_from_deleted_x_sources(
+            existing_cards,
+            previous_accounts=_read_existing_feed_accounts(),
+            current_accounts=target_accounts,
+        )
+        if removed_source_card_ids:
+            preserved_raw_by_id = {
+                card_id: row
+                for card_id, row in preserved_raw_by_id.items()
+                if card_id not in removed_source_card_ids
+            }
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
@@ -3011,7 +3099,25 @@ def sync_accounts(
 
     feedback_result = apply_feedback_overrides(existing_cards)
     _enforce_fixed_channel_topic_labels(existing_cards)
+    plan_review_limit = _env_positive_int("INTEL_PLAN_STATUS_REVIEW_LIMIT", 80)
+    plan_review_cards = [card for card in existing_cards if plan_status_review_due(card)][:plan_review_limit]
+    event_region_review_limit = _env_positive_int("INTEL_EVENT_REGION_REVIEW_LIMIT", 80)
+    event_region_review_cards = [card for card in existing_cards if event_region_review_due(card)][:event_region_review_limit]
     reclassified_existing_count = 0
+    plan_status_reclassified_count = 0
+    event_region_reclassified_count = 0
+    if api_key and plan_review_cards:
+        plan_status_reclassified_count = apply_minimax_plan_status_review(
+            plan_review_cards,
+            api_key,
+            progress_callback=progress_callback,
+        )
+    if api_key and event_region_review_cards:
+        event_region_reclassified_count += apply_minimax_event_region_review(
+            event_region_review_cards,
+            api_key,
+            progress_callback=progress_callback,
+        )
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
     preserved_cards: list[StoryCard] = []
     removed_by_selection = 0
@@ -3059,6 +3165,11 @@ def sync_accounts(
             new_source_cards,
             api_key,
             feedback_context=feedback_context,
+            progress_callback=progress_callback,
+        )
+        event_region_reclassified_count += apply_minimax_event_region_review(
+            [card for card in new_source_cards if event_region_review_due(card)],
+            api_key,
             progress_callback=progress_callback,
         )
         post_refine_feedback_result = apply_feedback_overrides(new_source_cards)
@@ -3389,6 +3500,8 @@ def sync_accounts(
         "preserved_total": int(len(existing_cards)),
         "preserved_visible_total": int(len(preserved_cards)),
         "existing_ai_reclassified": int(reclassified_existing_count),
+        "plan_status_ai_reclassified": int(plan_status_reclassified_count),
+        "event_region_ai_reclassified": int(event_region_reclassified_count),
         "new_candidate_total": int(len(merged_new_cards)),
         "new_source_total": int(len(new_source_cards)),
         "new_curated_total": int(len(curated_cards)),
@@ -3410,7 +3523,9 @@ def sync_accounts(
         "removed_by_local_dedupe": int(local_deduped),
         "removed_by_batch_candidate_dedupe": int(batch_deduped),
         "removed_by_curation": int(removed_count),
+        "removed_by_deleted_source": int(len(removed_source_card_ids)),
     }
+    payload["removed_source_accounts"] = sorted(removed_source_accounts)
     payload["source_stats"] = account_stats
     payload["new_source_stats"] = {
         "x": len(new_account_cards),

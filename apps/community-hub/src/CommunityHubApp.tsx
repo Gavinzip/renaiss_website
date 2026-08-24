@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { EMPTY_AUTH_STATE, logout, readAuthState, renaissLoginUrl, type HubAuthState } from "@/lib/auth";
 import { intelApiUrl } from "@/lib/api";
 import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
@@ -40,9 +41,27 @@ export function CommunityHubApp() {
   const [leaderboard, setLeaderboard] = useState<PackLeaderboard | null>(null);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState("");
+  const [auth, setAuth] = useState<HubAuthState>(EMPTY_AUTH_STATE);
+  const [authLoading, setAuthLoading] = useState(true);
   const { route, navigate } = useHubRoute();
+  const articleBackView = useRef<Exclude<HubView, "article">>("overview");
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
   const hasPendingTranslation = translationPending(feed, lang);
+
+  useEffect(() => {
+    let mounted = true;
+    setAuthLoading(true);
+    void readAuthState()
+      .then((state) => { if (mounted) setAuth(state); })
+      .catch(() => { if (mounted) setAuth(EMPTY_AUTH_STATE); })
+      .finally(() => { if (mounted) setAuthLoading(false); });
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("auth")) {
+      url.searchParams.delete("auth");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    return () => { mounted = false; };
+  }, []);
 
   const refresh = useCallback(() => {
     setTranslationRetries(0);
@@ -135,24 +154,35 @@ export function CommunityHubApp() {
   }, [navigate, route.guide]);
 
   const openGuide = useCallback((topic: string) => navigate({ view: "guide", guide: topic, article: "" }), [navigate]);
-  const openArticle = useCallback((article: string) => navigate({ view: "article", article }), [navigate]);
+  const openArticle = useCallback((article: string) => {
+    if (route.view !== "article") articleBackView.current = route.view;
+    navigate({ view: "article", article });
+  }, [navigate, route.view]);
+  const startLogin = useCallback(() => window.location.assign(renaissLoginUrl()), []);
+  const endSession = useCallback(() => {
+    setAuthLoading(true);
+    void logout()
+      .then(setAuth)
+      .catch(() => setAuth(EMPTY_AUTH_STATE))
+      .finally(() => setAuthLoading(false));
+  }, []);
   const sourceState = sourceError ? "error" : feed ? "live" : "idle";
   const status = route.view === "profile" ? "" : loading ? text(lang, "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
 
   let view = null;
-  const shared = { cards, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
+  const shared = { cards, communityMetrics: feed?.community_metrics, officialOverview: feed?.official_overview, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
   if (route.view === "official") view = <OfficialView {...shared} />;
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
   else if (route.view === "future") view = <FutureView {...shared} />;
-  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} />;
+  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
-  else if (route.view === "guide") view = <GuideView lang={lang} topicId={route.guide} onTopicChange={openGuide} />;
-  else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go("sbt")} />;
+  else if (route.view === "guide") view = <GuideView cards={cards} lang={lang} onOpenArticle={openArticle} topicId={route.guide} onTopicChange={openGuide} />;
+  else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go(articleBackView.current)} />;
   else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;
   else if (route.view === "media") view = <MediaView {...shared} />;
   else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={() => openGuide("overview")} />;
   else view = <OverviewView cards={cards} lang={lang} onNavigate={go} />;
 
-  return <AppShell lang={lang} loading={loading} onLanguageChange={setLang} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell>;
+  return <AppShell auth={auth} authLoading={authLoading} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell>;
 }

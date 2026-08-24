@@ -74,6 +74,7 @@ I18N_FEED_TEXT_KEYS = {
     "participation",
     "sbt_acquisition",
     "tags",
+    "meaning",
 }
 I18N_FEED_LIST_KEYS = {
     "takeaways",
@@ -934,6 +935,14 @@ def _collect_feed_i18n_entries(node: object) -> list[tuple[str, str]]:
                 raw = facts.get(fact_key)
                 if isinstance(raw, str):
                     _push(f"{card_path}.event_facts.{fact_key}", raw, fact_key)
+        number_facts = card.get("number_facts")
+        if isinstance(number_facts, list):
+            for idx, item in enumerate(_iter_limited(number_facts)):
+                if not isinstance(item, dict):
+                    continue
+                meaning = item.get("meaning")
+                if isinstance(meaning, str):
+                    _push(f"{card_path}.number_facts[{idx}].meaning", meaning, "meaning")
 
     if not isinstance(node, dict):
         return out
@@ -994,11 +1003,11 @@ def _mapping_from_localized_feed(
     from its translated text map keeps fresh non-text fields (covers, dates,
     statuses) when the source text itself is unchanged.
     """
-    localized_entries = dict(_collect_feed_i18n_entries(localized_feed))
-    return {
-        entry_key: str(localized_entries.get(entry_key) or source_text)
-        for entry_key, source_text in _collect_feed_i18n_entries(source_feed)
-    }
+    mapping: dict[str, str] = {}
+    for entry_key, source_text in _collect_feed_i18n_entries(source_feed):
+        localized_text = _entry_text_from_feed(localized_feed, entry_key)
+        mapping[entry_key] = localized_text or source_text
+    return mapping
 
 
 def _apply_feed_translation(node: object, mapping: dict[str, str]) -> object:

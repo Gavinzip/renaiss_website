@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { assets } from "@/data/legacy";
+import type { HubAuthState } from "@/lib/auth";
 import { text } from "@/lib/copy";
 import type { HubView, Language } from "@/types";
 import { Icon } from "./Icon";
@@ -19,23 +20,31 @@ const navItems: Array<{ icon: string; view: Exclude<HubView, "article"> }> = [
 ];
 
 interface AppShellProps {
+  auth: HubAuthState;
+  authLoading: boolean;
   children: ReactNode;
   lang: Language;
   loading: boolean;
   onLanguageChange: (lang: Language) => void;
+  onLogin: () => void;
+  onLogout: () => void;
   onNavigate: (view: Exclude<HubView, "article">) => void;
   sourceState: "idle" | "live" | "error";
   status: string;
   view: HubView;
 }
 
-export function AppShell({ children, lang, loading, onLanguageChange, onNavigate, sourceState, status, view }: AppShellProps) {
+export function AppShell({ auth, authLoading, children, lang, loading, onLanguageChange, onLogin, onLogout, onNavigate, sourceState, status, view }: AppShellProps) {
+  const authName = auth.profile.name || auth.user;
   return <div className="community-hub-react-root">
     <main className="shell community-hub-shell">
       <header className="nav community-hub-topbar">
         <a className="brand" href="./" aria-label="Renaiss Community Hub"><img className="brand-logo" src={assets.renaissLogo} alt="Renaiss Logo" /><span className="brand-text">Renaiss Community Hub</span></a>
         <div className="community-hub-topbar-actions">
           <a className="community-hub-legacy-link" href="../index.html#cat-events">{text(lang, "app.legacy")}</a>
+          {auth.authenticated
+            ? <button type="button" className="community-hub-auth-button is-authenticated" onClick={onLogout} title={text(lang, "auth.logout")}><Icon name="circle-user-round" /><span>{authName || text(lang, "auth.account")}</span><Icon name="log-out" /></button>
+            : <button type="button" className="community-hub-auth-button" onClick={onLogin} disabled={authLoading || !auth.renaiss_sso_configured}><Icon name="log-in" /><span>{authLoading ? text(lang, "auth.checking") : text(lang, "auth.login")}</span></button>}
           <label className="lang-switcher" htmlFor="community-hub-lang-select"><Icon className="lang-icon" name="languages" /><select id="community-hub-lang-select" className="lang-select" value={lang} onChange={(event) => onLanguageChange(event.target.value as Language)} aria-label="Language"><option value="zh-Hant">繁體中文</option><option value="zh-Hans">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select></label>
           <a className="nav-action community-hub-open" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">{text(lang, "app.open")}</a>
         </div>

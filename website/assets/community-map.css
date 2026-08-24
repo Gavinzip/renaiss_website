@@ -745,6 +745,23 @@
   }
 }
 
+.community-map-embed .community-map-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0.75rem;
+}
+
+.community-map-embed .community-map-body .nav,
+.community-map-embed .community-map-hero,
+.community-map-embed .pulse-particles {
+  display: none;
+}
+
+.community-map-embed .pulse-board {
+  margin-top: 0;
+}
+
 @media (max-width: 980px) {
   .community-map-hero,
   .pulse-board,

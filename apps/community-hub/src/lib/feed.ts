@@ -1,6 +1,9 @@
-import type { EventStatus, FeedCard, IntelFeed, Language } from "@/types";
+import type { EventStatus, FeedCard, IntelFeed, Language, PlanStatus } from "@/types";
+import { isRegionalCommunitySource } from "@/lib/regions";
 
 const OFFICIAL_X_HANDLES = new Set(["renaissxyz"]);
+const PRODUCT_PROGRESS_X_HANDLE = "renaissxyz";
+const REMOVED_SOURCE_HANDLES = new Set(["pokegetinfomain"]);
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
 
 export function safeUrl(value: unknown): string {
@@ -43,6 +46,7 @@ export function formatUpdate(value: unknown, lang: Language): string {
 export function normalizeCards(feed: IntelFeed | null, lang: Language): FeedCard[] {
   return (feed?.cards ?? [])
     .filter((card) => card && card.dedupe_status !== "dropped")
+    .filter((card) => !REMOVED_SOURCE_HANDLES.has(String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase()))
     .filter((card) => lang === "zh-Hant" || card._i18n_status?.status === "translated")
     .sort((a, b) => Number(toDate(b.published_at) ?? 0) - Number(toDate(a.published_at) ?? 0));
 }
@@ -59,6 +63,11 @@ export function isOfficial(card: FeedCard): boolean {
   return Boolean(guildMatch && OFFICIAL_DISCORD_GUILD_IDS.has(guildMatch[1]));
 }
 
+export function isProductProgressSource(card: FeedCard): boolean {
+  const account = String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase();
+  return account === PRODUCT_PROGRESS_X_HANDLE;
+}
+
 export function isTaggedRenaiss(card: FeedCard): boolean {
   const value = [card.raw_text, card.title, card.summary, ...(card.tags ?? [])].join(" ");
   return /(?:#renaiss\b|@renaissxyz\b)/i.test(value);
@@ -68,12 +77,20 @@ export function isCommunity(card: FeedCard): boolean {
   return topics(card).includes("community") || (!isOfficial(card) && isTaggedRenaiss(card));
 }
 
-export function isFuturePlan(card: FeedCard): boolean {
-  return topics(card).includes("alpha");
+export function planStatus(card: FeedCard): PlanStatus | "" {
+  const value = String(card.plan_status ?? "");
+  return ["upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"].includes(value)
+    ? value as PlanStatus
+    : "";
 }
 
 export function isEvent(card: FeedCard): boolean {
-  return isOfficial(card) && card.event_wall === true;
+  return card.event_wall === true && (isOfficial(card) || isRegionalCommunitySource(card));
+}
+
+export function isGuideArticle(card: FeedCard): boolean {
+  const labels = topics(card);
+  return labels.some((label) => ["guide", "guides", "tool", "tools", "tutorial", "tutorials"].includes(label));
 }
 
 export function isSbt(card: FeedCard): boolean {
@@ -82,7 +99,7 @@ export function isSbt(card: FeedCard): boolean {
 }
 
 export function isMedia(card: FeedCard): boolean {
-  return isOfficial(card) || topics(card).includes("collectibles") || topics(card).includes("pokemon") || ["announcement", "market", "report", "trend"].includes(String(card.card_type ?? "").toLowerCase());
+  return isOfficial(card) || topics(card).includes("collectibles") || ["announcement", "market", "report", "trend"].includes(String(card.card_type ?? "").toLowerCase());
 }
 
 export function isVerifiedResult(card: FeedCard): boolean {
@@ -95,16 +112,23 @@ export function eventStatus(card: FeedCard): EventStatus {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const start = toDate(card.timeline_date) ?? toDate(card.published_at);
-  const explicitEnd = toDate(card.timeline_end_date);
   if (!start) return "reference";
   const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const end = toDate(card.timeline_end_date) ?? start;
+  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
   if (startDay > now) return "upcoming";
-  if (explicitEnd) {
-    const endDay = new Date(explicitEnd.getFullYear(), explicitEnd.getMonth(), explicitEnd.getDate());
-    if (endDay >= now) return "active";
-  }
-  const daysSinceStart = Math.floor((now.valueOf() - startDay.valueOf()) / 86_400_000);
-  return daysSinceStart <= 14 ? "active" : "past";
+  return endDay >= now ? "active" : "past";
+}
+
+export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): FeedCard[] {
+  const dateValue = (card: FeedCard): number => {
+    const date = status === "active"
+      ? toDate(card.timeline_end_date) ?? toDate(card.timeline_date) ?? toDate(card.published_at)
+      : toDate(card.timeline_date) ?? toDate(card.published_at);
+    return Number(date ?? 0);
+  };
+  const direction = status === "upcoming" || status === "active" ? 1 : -1;
+  return [...cards].sort((left, right) => (dateValue(left) - dateValue(right)) * direction);
 }
 
 export function limitedSbtStatus(card: FeedCard): "active" | "upcoming" | "ended" | "" {
@@ -125,48 +149,6 @@ export interface LimitedSbtCampaign {
   names: string[];
   source: string;
   status: "active" | "upcoming";
-}
-
-export interface CurrentSbtAcquisition {
-  acquisition: string;
-  name: string;
-  publishedAt: string;
-  source: string;
-  title: string;
-}
-
-export function currentSbtAcquisitions(cards: FeedCard[]): CurrentSbtAcquisition[] {
-  const rows = new Map<string, CurrentSbtAcquisition>();
-  const recentAfter = new Date();
-  recentAfter.setDate(recentAfter.getDate() - 30);
-
-  cards.filter(isSbt).forEach((card) => {
-    const names = [...new Set([...(card.sbt_names ?? []), card.sbt_name]
-      .map((value) => String(value ?? "").trim())
-      .filter(Boolean))];
-    const acquisition = String(card.sbt_acquisition ?? "").trim();
-    const source = safeUrl(card.url);
-    const publishedAt = toDate(card.published_at);
-    if (!names.length || !acquisition || !source || !publishedAt || publishedAt < recentAfter) return;
-
-    names.forEach((name) => {
-      const key = `${name}\u0000${acquisition}`.toLowerCase();
-      const next: CurrentSbtAcquisition = {
-        acquisition,
-        name,
-        publishedAt: publishedAt.toISOString(),
-        source,
-        title: String(card.title ?? "Renaiss"),
-      };
-      const previous = rows.get(key);
-      if (!previous || Number(toDate(next.publishedAt) ?? 0) > Number(toDate(previous.publishedAt) ?? 0)) {
-        rows.set(key, next);
-      }
-    });
-  });
-
-  return [...rows.values()]
-    .sort((left, right) => Number(toDate(right.publishedAt) ?? 0) - Number(toDate(left.publishedAt) ?? 0));
 }
 
 export function limitedSbtCampaigns(cards: FeedCard[]): LimitedSbtCampaign[] {

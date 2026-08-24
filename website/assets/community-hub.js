@@ -8,7 +8,7 @@
   const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
   const MAX_ROWS = 24;
   const HUB_VIEWS = new Set(["overview", "feed", "events", "sbt", "guide", "article", "records", "media", "knowledge"]);
-  const DEFAULT_COVER_IMAGE = "./assets/renaiss-logo-640.png";
+  const DEFAULT_COVER_IMAGE = "./assets/renaiss-community-default-cover.jpg";
   const uiText = {
     "zh-Hant": {
       "top.legacy": "原始聚合器", "top.open": "Open Renaiss", "sidebar.label": "社群情報", "sidebar.wiki": "前往新手 Wiki", "sidebar.agent": "詢問 Renaiss Agent",
@@ -296,16 +296,12 @@
     const now = new Date();
     now.setHours(0, 0, 0, 0);
     const start = toDate(card.timeline_date) || toDate(card.published_at);
-    const explicitEnd = toDate(card.timeline_end_date);
     if (!start) return "reference";
     const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const end = toDate(card.timeline_end_date) || start;
+    const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
     if (startDay > now) return "upcoming";
-    if (explicitEnd) {
-      const endDay = new Date(explicitEnd.getFullYear(), explicitEnd.getMonth(), explicitEnd.getDate());
-      if (endDay >= now) return "active";
-    }
-    const daysSinceStart = Math.floor((now.valueOf() - startDay.valueOf()) / 86400000);
-    return daysSinceStart <= 14 ? "active" : "past";
+    return endDay >= now ? "active" : "past";
   }
 
   function labelForStatus(status) {
@@ -743,7 +739,7 @@
     const cover = safeCoverUrl(card.cover_image);
     target.innerHTML = `<article class="community-hub-article-detail">
       <header class="community-hub-article-header"><button type="button" class="community-hub-back-button" data-hub-back-to-sbt><iconify-icon icon="lucide:arrow-left"></iconify-icon>${escapeHtml(t("article.back"))}</button><p class="community-hub-section-index">SBT ARTICLE</p><h2>${escapeHtml(card.title || "Renaiss")}</h2><p class="community-hub-article-meta">@${escapeHtml(card.account || "source")} · ${escapeHtml(formatDate(card.timeline_date || card.published_at))}</p></header>
-      ${cover ? `<figure class="community-hub-article-media"><img src="${escapeHtml(cover)}" alt="" referrerpolicy="no-referrer" /></figure>` : ""}
+      ${cover ? `<figure class="community-hub-article-media"><img src="${escapeHtml(cover)}" alt="" referrerpolicy="no-referrer" onerror="this.parentElement.outerHTML='${defaultCoverHtml("community-hub-article-media").replace(/"/g, "&quot;")}'" /></figure>` : defaultCoverHtml("community-hub-article-media")}
       <div class="community-hub-article-body"><p class="community-hub-article-summary">${escapeHtml(card.summary || card.glance || "")}</p>${facts.length ? `<section><p class="community-hub-section-index">${escapeHtml(t("article.details"))}</p><ul>${facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul></section>` : ""}${names.length || acquisition ? `<section><p class="community-hub-section-index">${escapeHtml(t("article.sbt"))}</p>${names.length ? `<h3>${names.map(escapeHtml).join(" · ")}</h3>` : ""}${acquisition ? `<p>${escapeHtml(acquisition)}</p>` : ""}</section>` : ""}<footer><a class="community-hub-article-source" href="${escapeHtml(source)}" target="_blank" rel="noreferrer">${escapeHtml(t("article.original"))}<iconify-icon icon="lucide:arrow-up-right"></iconify-icon></a></footer></div>
     </article>`;
   }

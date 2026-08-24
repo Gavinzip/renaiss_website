@@ -1,11 +1,17 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { CommunityMapDialog } from "@/components/CommunityMapDialog";
 import { ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
+import { EventTimeline } from "@/components/EventTimeline";
 import { Icon } from "@/components/Icon";
+import { OfficialSummaryDialog } from "@/components/OfficialSummaryDialog";
+import { Pagination } from "@/components/Pagination";
 import { ViewHeader } from "@/components/AppShell";
-import { eventStatus, isCommunity, isEvent, isFuturePlan, isMedia, isOfficial } from "@/lib/feed";
+import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isProductProgressSource, planStatus, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
-import type { FeedCard, Language } from "@/types";
+import { usePaginatedRows } from "@/lib/pagination";
+import { regionIdForAccount, regionLabel, regionLabelForAccount, type EventRegionId } from "@/lib/regions";
+import type { FeedCard, IntelFeed, Language } from "@/types";
 
 interface SharedViewProps {
   cards: FeedCard[];
@@ -14,6 +20,8 @@ interface SharedViewProps {
   onOpenArticle: (source: string) => void;
   onRefresh: () => void;
   translationPending: boolean;
+  communityMetrics?: IntelFeed["community_metrics"];
+  officialOverview?: IntelFeed["official_overview"];
 }
 
 function RefreshButton({ disabled, lang, onRefresh }: { disabled: boolean; lang: Language; onRefresh: () => void }) {
@@ -25,23 +33,31 @@ function DataEmpty({ lang, translating }: { lang: Language; translating: boolean
 }
 
 interface DynamicStreamProps extends SharedViewProps {
+  beforeToolbar?: ReactNode;
   eyebrow: string;
+  getSourceLabel?: (card: FeedCard) => string;
+  headerAction?: ReactNode;
   leadKey: string;
+  paginationKey?: string;
   selectRows: (cards: FeedCard[]) => FeedCard[];
+  toolbarLeading?: ReactNode;
   titleKey: string;
 }
 
-function DynamicStream({ cards, lang, loading, onOpenArticle, onRefresh, translationPending, eyebrow, leadKey, selectRows, titleKey }: DynamicStreamProps) {
+function DynamicStream({ cards, lang, loading, onOpenArticle, onRefresh, translationPending, beforeToolbar, eyebrow, getSourceLabel, headerAction, leadKey, paginationKey = "", selectRows, toolbarLeading, titleKey }: DynamicStreamProps) {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => selectRows(cards).filter((card) => {
     const haystack = [card.title, card.summary, card.raw_text, card.account].join(" ").toLowerCase();
     return !query || haystack.includes(query.toLowerCase());
-  }).slice(0, 24), [cards, query, selectRows]);
+  }), [cards, query, selectRows]);
+  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${titleKey}:${paginationKey}:${query}`);
 
   return <section className="community-hub-view is-active is-entering">
-    <ViewHeader eyebrow={eyebrow} title={text(lang, titleKey)} lead={text(lang, leadKey)} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
-    <div className="community-hub-toolbar"><label className="community-hub-search"><Icon name="search" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" placeholder={text(lang, "search.placeholder")} /></label></div>
-    <div className="community-hub-content-list">{rows.length ? rows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
+    <ViewHeader eyebrow={eyebrow} title={text(lang, titleKey)} lead={text(lang, leadKey)} action={headerAction ?? <RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
+    {beforeToolbar}
+    <div className="community-hub-toolbar">{toolbarLeading}<label className="community-hub-search"><Icon name="search" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" placeholder={text(lang, "search.placeholder")} /></label></div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={getSourceLabel?.(card)} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
+    <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
   </section>;
 }
 
@@ -53,30 +69,93 @@ function selectOfficialCards(cards: FeedCard[]): FeedCard[] {
   return cards.filter(isOfficial).filter((card) => !isEvent(card));
 }
 
-function selectFutureCards(cards: FeedCard[]): FeedCard[] {
-  return cards.filter(isFuturePlan);
-}
-
 export function CommunityView(props: SharedViewProps) {
-  return <DynamicStream {...props} eyebrow="COMMUNITY" titleKey="feed.title" leadKey="feed.lead" selectRows={selectCommunityCards} />;
+  const [mapOpen, setMapOpen] = useState(false);
+  const [regionFilter, setRegionFilter] = useState<"all" | EventRegionId>("all");
+  const communityCards = useMemo(() => selectCommunityCards(props.cards), [props.cards]);
+  const regionCounts = useMemo(() => communityCards.reduce((counts, card) => {
+    const regionId = regionIdForAccount(String(card.account ?? ""));
+    counts.set(regionId, (counts.get(regionId) ?? 0) + 1);
+    return counts;
+  }, new Map<EventRegionId, number>()), [communityCards]);
+  const regionOptions = useMemo(() => (["tw", "kr", "my", "vn", "th", "unknown"] as EventRegionId[])
+    .filter((regionId) => (regionCounts.get(regionId) ?? 0) > 0), [regionCounts]);
+  const selectRows = useCallback((cards: FeedCard[]) => selectCommunityCards(cards).filter((card) => (
+    regionFilter === "all" || regionIdForAccount(String(card.account ?? "")) === regionFilter
+  )), [regionFilter]);
+  const hotspot = useMemo(() => Object.entries(props.communityMetrics?.accounts ?? {})
+    .sort(([, left], [, right]) => Number(right.score ?? 0) - Number(left.score ?? 0))[0], [props.communityMetrics]);
+  const hotspotLabel = hotspot ? regionLabelForAccount(hotspot[0], props.lang) : text(props.lang, "community.mapWaiting");
+  const mapEntry = <a className="community-hub-map-entry" href="../community_map.html" aria-haspopup="dialog" onClick={(event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    setMapOpen(true);
+  }}>
+    <span className="community-hub-map-entry-main"><Icon name="map-pinned" /><span><strong>{text(props.lang, "community.mapTitle")}</strong><small>{text(props.lang, "community.mapLead")}</small></span></span>
+    <span className="community-hub-map-entry-rank"><small>{hotspot ? text(props.lang, "community.mapTop") : ""}</small><strong>{hotspotLabel}</strong><Icon name="arrow-right" /></span>
+  </a>;
+  const regionFilters = <div className="community-hub-filter-row community-hub-region-filter" aria-label={text(props.lang, "community.regionFilter")}>
+    <button type="button" className={regionFilter === "all" ? "is-active" : ""} onClick={() => setRegionFilter("all")}>{text(props.lang, "community.regionAll")} <span>{communityCards.length}</span></button>
+    {regionOptions.map((regionId) => <button type="button" key={regionId} className={regionFilter === regionId ? "is-active" : ""} onClick={() => setRegionFilter(regionId)}>{regionLabel(regionId, props.lang)} <span>{regionCounts.get(regionId)}</span></button>)}
+  </div>;
+  const getSourceLabel = (card: FeedCard) => `${regionLabelForAccount(String(card.account ?? ""), props.lang)} · ${text(props.lang, "card.community")}`;
+  return <><DynamicStream {...props} beforeToolbar={mapEntry} eyebrow="COMMUNITY" getSourceLabel={getSourceLabel} paginationKey={regionFilter} titleKey="feed.title" leadKey="feed.lead" selectRows={selectRows} toolbarLeading={regionFilters} /><CommunityMapDialog lang={props.lang} open={mapOpen} onClose={() => setMapOpen(false)} /></>;
 }
 
 export function OfficialView(props: SharedViewProps) {
-  return <DynamicStream {...props} eyebrow="OFFICIAL" titleKey="official.title" leadKey="official.lead" selectRows={selectOfficialCards} />;
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const action = <div className="community-hub-header-actions">
+    <button type="button" className="community-hub-summary-trigger" onClick={() => setSummaryOpen(true)}><Icon name="sparkles" /><span>{text(props.lang, "official.aiSummary")}</span></button>
+    <RefreshButton disabled={props.loading} lang={props.lang} onRefresh={props.onRefresh} />
+  </div>;
+  return <>
+    <DynamicStream {...props} eyebrow="OFFICIAL" headerAction={action} titleKey="official.title" leadKey="official.lead" selectRows={selectOfficialCards} />
+    <OfficialSummaryDialog lang={props.lang} open={summaryOpen} overview={props.officialOverview} onClose={() => setSummaryOpen(false)} />
+  </>;
 }
 
 export function FutureView(props: SharedViewProps) {
-  return <DynamicStream {...props} eyebrow="FUTURE" titleKey="future.title" leadKey="future.lead" selectRows={selectFutureCards} />;
+  const { cards, lang, loading, onOpenArticle, onRefresh, translationPending } = props;
+  const [filter, setFilter] = useState<"upcoming" | "in_progress" | "completed">("in_progress");
+  const productCards = useMemo(() => cards.filter(isProductProgressSource), [cards]);
+  const rows = useMemo(() => productCards
+    .filter((card) => planStatus(card) === filter)
+    .sort((left, right) => {
+      const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
+      const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
+      return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
+    }), [productCards, filter]);
+  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
+  const awaitingClassification = productCards.some((card) => !planStatus(card) || planStatus(card) === "needs_review");
+  const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
+  return <section className="community-hub-view is-active is-entering">
+    <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
+    <div className="community-hub-filter-row community-hub-filter-row-wide">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "empty.unavailable")} />}</div>
+    <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
+  </section>;
 }
 
 export function EventsView({ cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
-  const [filter, setFilter] = useState<"active" | "upcoming" | "past">("active");
-  const rows = useMemo(() => cards.filter(isEvent).filter((card) => eventStatus(card) === filter).slice(0, 24), [cards, filter]);
-  const filters = [["active", "filter.active"], ["upcoming", "filter.upcoming"], ["past", "filter.past"]] as const;
+  const [filter, setFilter] = useState<"announced" | "past">("announced");
+  const rows = useMemo(() => {
+    const events = cards.filter(isEvent);
+    if (filter === "past") {
+      return sortEventsByStatus(events.filter((card) => eventStatus(card) === "past"), "past");
+    }
+
+    const active = sortEventsByStatus(events.filter((card) => eventStatus(card) === "active"), "active");
+    const upcoming = sortEventsByStatus(events.filter((card) => eventStatus(card) === "upcoming"), "upcoming");
+    return [...active, ...upcoming];
+  }, [cards, filter]);
+  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
+  const filters = [["announced", "filter.upcoming"], ["past", "filter.past"]] as const;
+  const emptyKey = filter === "announced" ? "events.empty.upcoming" : "events.empty.past";
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="TIME" title={text(lang, "events.title")} lead={text(lang, "events.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
-    <div className="community-hub-filter-row community-hub-filter-row-wide">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
-    <div className="community-hub-content-list community-hub-event-list">{rows.length ? rows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} status={eventStatus(card)} onOpenArticle={onOpenArticle} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
+    <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-event-filter-row">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
+    <div className="community-hub-event-list">{pageRows.length ? <EventTimeline cards={pageRows} lang={lang} onOpenArticle={onOpenArticle} /> : <EmptyState title={text(lang, translationPending ? "empty.translating" : emptyKey)} />}</div>
+    <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
   </section>;
 }
 
@@ -84,13 +163,15 @@ export function MediaView({ cards, lang, loading, onOpenArticle, onRefresh, tran
   const [filter, setFilter] = useState<"all" | "official" | "market">("all");
   const rows = useMemo(() => cards.filter(isMedia).filter((card) => {
     if (filter === "official") return isOfficial(card);
-    if (filter === "market") return ["market", "trend", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => ["collectibles", "pokemon"].includes(String(topic).toLowerCase()));
+    if (filter === "market") return ["market", "trend", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => String(topic).toLowerCase() === "collectibles");
     return true;
-  }).slice(0, 24), [cards, filter]);
+  }), [cards, filter]);
+  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
   const filters = [["all", "filter.all"], ["official", "filter.official"], ["market", "filter.market"]] as const;
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="MEDIA" title={text(lang, "media.title")} lead={text(lang, "media.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
     <div className="community-hub-filter-row community-hub-filter-row-wide">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
-    <div className="community-hub-content-list">{rows.length ? rows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <DataEmpty lang={lang} translating={translationPending} />}</div>
+    <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
   </section>;
 }

@@ -34,5 +34,7 @@ data
 data/
 !frontend_chain/data/
 !frontend_chain/data/i18n_text_cache.json
+!apps/community-hub/src/data/
+!apps/community-hub/src/data/legacy.ts
 
 website/data

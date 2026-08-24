@@ -103,7 +103,12 @@ REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_
 REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
-AI_CLASSIFICATION_VERSION = "20260513-ai-first1"
+AI_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
+PLAN_STATUS_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
+EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
+PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
+EVENT_REGION_IDS = {"tw", "kr", "my", "vn", "th", "global", "multi_region", "unknown"}
+PRODUCT_PROGRESS_X_HANDLE = "renaissxyz"
 AI_REVIEW_AUTO_APPROVED = "auto_approved"
 AI_REVIEW_ADMIN_QUEUE = "admin_queue"
 AI_REVIEW_ADMIN_OVERRIDDEN = "admin_overridden"
@@ -201,6 +206,10 @@ class StoryCard:
     manual_pin: bool = False
     manual_bottom: bool = False
     event_facts: dict[str, str] | None = None
+    event_region: str = ""
+    event_region_reason: str = ""
+    event_region_model: str = ""
+    event_region_version: str = ""
     topic_labels: list[str] | None = None
     detail_summary: str = ""
     detail_lines: list[str] | None = None
@@ -228,6 +237,11 @@ class StoryCard:
     review_status: str = ""
     classification_reason: str = ""
     classification_error: str = ""
+    plan_status: str = ""
+    plan_status_reason: str = ""
+    plan_status_checked_at: str = ""
+    plan_ai_model: str = ""
+    plan_ai_version: str = ""
     source_channel_id: str = ""
     source_message_id: str = ""
     source_message_timestamp: str = ""
@@ -260,6 +274,10 @@ class StoryCard:
             "manual_pin": self.manual_pin,
             "manual_bottom": self.manual_bottom,
             "event_facts": self.event_facts or {},
+            "event_region": self.event_region,
+            "event_region_reason": self.event_region_reason,
+            "event_region_model": self.event_region_model,
+            "event_region_version": self.event_region_version,
             "topic_labels": self.topic_labels or [],
             "detail_summary": self.detail_summary,
             "detail_lines": self.detail_lines or [],
@@ -287,6 +305,11 @@ class StoryCard:
             "review_status": self.review_status,
             "classification_reason": self.classification_reason,
             "classification_error": self.classification_error,
+            "plan_status": self.plan_status,
+            "plan_status_reason": self.plan_status_reason,
+            "plan_status_checked_at": self.plan_status_checked_at,
+            "plan_ai_model": self.plan_ai_model,
+            "plan_ai_version": self.plan_ai_version,
             "source_channel_id": self.source_channel_id,
             "source_message_id": self.source_message_id,
             "source_message_timestamp": self.source_message_timestamp,
@@ -661,7 +684,7 @@ def fetch_account_status_ids_from_nitter_rss(username: str, limit: int = 80) -> 
     return out
 
 
-def _extract_syndication_cover(data: dict[str, Any]) -> str:
+def _extract_direct_syndication_cover(data: dict[str, Any]) -> str:
     photos = data.get("photos") if isinstance(data.get("photos"), list) else []
     for item in photos:
         if not isinstance(item, dict):
@@ -695,6 +718,21 @@ def _extract_syndication_cover(data: dict[str, Any]) -> str:
         url = str(image_value.get("url") or "").strip()
         if url.startswith("http"):
             return url
+    return ""
+
+
+def _extract_syndication_cover(data: dict[str, Any]) -> str:
+    own_cover = _extract_direct_syndication_cover(data)
+    if own_cover:
+        return own_cover
+
+    for key in ("quoted_tweet", "quoted_status", "retweeted_tweet", "retweeted_status"):
+        nested = data.get(key)
+        if not isinstance(nested, dict):
+            continue
+        nested_cover = _extract_direct_syndication_cover(nested)
+        if nested_cover:
+            return nested_cover
     return ""
 
 

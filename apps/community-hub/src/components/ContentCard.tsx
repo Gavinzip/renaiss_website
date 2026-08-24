@@ -9,13 +9,14 @@ interface CardMediaProps {
   card: FeedCard;
   className: string;
   label: string;
+  source?: string;
 }
 
-export function CardMedia({ card, className, label }: CardMediaProps) {
+export function CardMedia({ card, className, label, source }: CardMediaProps) {
   const [failed, setFailed] = useState(false);
-  const cover = failed ? "" : coverUrl(card.cover_image);
+  const cover = failed ? "" : source ?? coverUrl(card.cover_image);
   if (!cover) {
-    return <div className={`${className} ${className}--default`} role="img" aria-label={label}><img src={assets.defaultCoverLogo} alt="" decoding="async" /><span>{label}</span></div>;
+    return <div className={`${className} ${className}--default`} role="img" aria-label={label}><img src={assets.defaultCoverImage} alt="" decoding="async" /><span>{label}</span></div>;
   }
   return <div className={className}><img src={cover} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} /></div>;
 }
@@ -28,11 +29,12 @@ interface ContentCardProps {
   card: FeedCard;
   lang: Language;
   onOpenArticle?: (url: string) => void;
+  sourceLabel?: string;
   status?: EventStatus;
   statusLabel?: string;
 }
 
-export function ContentCard({ card, lang, onOpenArticle, status = "reference", statusLabel }: ContentCardProps) {
+export function ContentCard({ card, lang, onOpenArticle, sourceLabel, status = "reference", statusLabel }: ContentCardProps) {
   const source = safeUrl(card.url);
   const type = isOfficial(card) ? text(lang, "card.official") : isCommunity(card) ? text(lang, "card.community") : card.card_type || text(lang, "card.reference");
   const excerpt = card.bullets?.find((item) => item.trim()) ?? "";
@@ -50,12 +52,11 @@ export function ContentCard({ card, lang, onOpenArticle, status = "reference", s
     event.preventDefault();
     openInHub();
   };
-
   return <article className={`community-hub-content-item${canOpenInHub ? " is-openable" : ""}`} onClick={onCardClick} onKeyDown={onCardKeyDown} role={canOpenInHub ? "link" : undefined} tabIndex={canOpenInHub ? 0 : undefined}>
     <CardMedia card={card} className="community-hub-card-media" label={text(lang, "card.defaultCover")} />
     <div className="community-hub-card-body">
       <div className="community-hub-card-meta">
-        <span>@{String(card.account || "source").replace(/^@+/, "")} · {type}</span>
+        <span>@{String(card.account || "source").replace(/^@+/, "")} · {sourceLabel ?? type}</span>
         <span className={`community-hub-card-status is-${status}`}>{statusLabel ?? statusText(lang, status)} · {formatDate(card.timeline_date || card.published_at, lang)}</span>
       </div>
       <h3>{canOpenInHub ? <button type="button" className="community-hub-card-title-button" onClick={openInHub}>{card.title || "Renaiss"}</button> : card.title || "Renaiss"}</h3>
