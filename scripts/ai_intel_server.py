@@ -2386,8 +2386,8 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
     try:
         _yield_for_priority_work("x_sync_start")
 
-        def _priority_sync_progress(row: dict) -> None:
-            _record_sync_progress(row)
+        def _priority_sync_progress(event_name: str, row: dict | None = None) -> None:
+            _record_sync_progress(event_name, row)
             _yield_for_priority_work("x_sync_progress")
 
         result = sync_accounts(

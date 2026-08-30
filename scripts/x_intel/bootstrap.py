@@ -58,6 +58,7 @@ JINA_RETRY_BASE_SECONDS = 0.9
 JINA_RATE_LOCK = Lock()
 SYNDICATION_RATE_LOCK = Lock()
 JINA_LAST_REQUEST_AT = 0.0
+JINA_BLOCKED_UNTIL_MONOTONIC = 0.0
 
 STATUS_RE = re.compile(r"https?://x\.com/([A-Za-z0-9_]+)/status/(\d+)", re.I)
 TITLE_RE = re.compile(r"^Title:\s*(.+?)\s*/\s*X\s*$", re.M | re.S)
@@ -600,10 +601,52 @@ def _wait_for_jina_slot() -> None:
     global JINA_LAST_REQUEST_AT
     with JINA_RATE_LOCK:
         now = time.monotonic()
-        wait_seconds = JINA_MIN_INTERVAL_SECONDS - (now - JINA_LAST_REQUEST_AT)
+        rate_wait_seconds = JINA_MIN_INTERVAL_SECONDS - (now - JINA_LAST_REQUEST_AT)
+        block_wait_seconds = JINA_BLOCKED_UNTIL_MONOTONIC - now
+        wait_seconds = max(rate_wait_seconds, block_wait_seconds)
         if wait_seconds > 0:
             time.sleep(wait_seconds)
         JINA_LAST_REQUEST_AT = time.monotonic()
+
+
+def _jina_abuse_block_wait_seconds(resp: requests.Response | None) -> float:
+    if resp is None or resp.status_code != 403:
+        return 0.0
+    try:
+        payload = resp.json()
+    except Exception:
+        return 0.0
+    if not isinstance(payload, dict):
+        return 0.0
+    if str(payload.get("name") or "") != "AbuseAlleviationError" and str(payload.get("status") or "") != "40305":
+        return 0.0
+    message = str(payload.get("message") or payload.get("readableMessage") or "")
+    match = re.search(r"blocked until (.+? GMT[+-]\d{4})", message, re.I)
+    if not match:
+        return 0.0
+    try:
+        blocked_until = parsedate_to_datetime(match.group(1))
+    except Exception:
+        return 0.0
+    if blocked_until.tzinfo is None:
+        blocked_until = blocked_until.replace(tzinfo=timezone.utc)
+    try:
+        max_wait = max(1.0, float(os.getenv("JINA_ABUSE_MAX_WAIT_SECONDS", "900") or "900"))
+    except Exception:
+        max_wait = 900.0
+    remaining = (blocked_until.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+    return min(max_wait, max(1.0, remaining + 1.0))
+
+
+def _remember_jina_abuse_block(wait_seconds: float) -> None:
+    global JINA_BLOCKED_UNTIL_MONOTONIC
+    if wait_seconds <= 0:
+        return
+    with JINA_RATE_LOCK:
+        JINA_BLOCKED_UNTIL_MONOTONIC = max(
+            JINA_BLOCKED_UNTIL_MONOTONIC,
+            time.monotonic() + float(wait_seconds),
+        )
 
 
 def _retry_after_seconds(resp: requests.Response | None) -> float:
@@ -640,6 +683,10 @@ def fetch_text(url: str, timeout: int = 45) -> str:
             last_error = exc
             if not is_jina or attempt >= attempts - 1:
                 raise
+            abuse_wait = _jina_abuse_block_wait_seconds(resp)
+            if abuse_wait > 0:
+                _remember_jina_abuse_block(abuse_wait)
+                continue
             retry_after = _retry_after_seconds(resp)
             backoff = retry_after or (JINA_RETRY_BASE_SECONDS * (2 ** attempt))
             time.sleep(min(backoff, 12.0))
