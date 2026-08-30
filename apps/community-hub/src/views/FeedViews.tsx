@@ -68,7 +68,7 @@ function selectCommunityCards(cards: FeedCard[], accountProjects: AccountProject
 }
 
 function selectOfficialCards(cards: FeedCard[], accountProjects: AccountProjectMap): FeedCard[] {
-  return cards.filter((card) => isOfficial(card, accountProjects)).filter((card) => !isEvent(card, accountProjects));
+  return cards.filter((card) => Boolean(projectIdForCard(card, accountProjects))).filter((card) => !isEvent(card, accountProjects));
 }
 
 export function CommunityView(props: SharedViewProps) {
