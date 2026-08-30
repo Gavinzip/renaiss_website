@@ -10,10 +10,12 @@ import { ViewHeader } from "@/components/AppShell";
 import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isProductProgressSource, planStatus, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
+import { PROJECTS, projectIdForCard, projectLabel, type AccountProjectMap, type ProjectId } from "@/lib/projects";
 import { regionIdForAccount, regionLabel, regionLabelForAccount, type EventRegionId } from "@/lib/regions";
 import type { FeedCard, IntelFeed, Language } from "@/types";
 
 interface SharedViewProps {
+  accountProjects: AccountProjectMap;
   cards: FeedCard[];
   lang: Language;
   loading: boolean;
@@ -61,18 +63,18 @@ function DynamicStream({ cards, lang, loading, onOpenArticle, onRefresh, transla
   </section>;
 }
 
-function selectCommunityCards(cards: FeedCard[]): FeedCard[] {
-  return cards.filter(isCommunity).filter((card) => !isOfficial(card));
+function selectCommunityCards(cards: FeedCard[], accountProjects: AccountProjectMap): FeedCard[] {
+  return cards.filter((card) => isCommunity(card, accountProjects)).filter((card) => !isOfficial(card, accountProjects));
 }
 
-function selectOfficialCards(cards: FeedCard[]): FeedCard[] {
-  return cards.filter(isOfficial).filter((card) => !isEvent(card));
+function selectOfficialCards(cards: FeedCard[], accountProjects: AccountProjectMap): FeedCard[] {
+  return cards.filter((card) => isOfficial(card, accountProjects)).filter((card) => !isEvent(card, accountProjects));
 }
 
 export function CommunityView(props: SharedViewProps) {
   const [mapOpen, setMapOpen] = useState(false);
   const [regionFilter, setRegionFilter] = useState<"all" | EventRegionId>("all");
-  const communityCards = useMemo(() => selectCommunityCards(props.cards), [props.cards]);
+  const communityCards = useMemo(() => selectCommunityCards(props.cards, props.accountProjects), [props.accountProjects, props.cards]);
   const regionCounts = useMemo(() => communityCards.reduce((counts, card) => {
     const regionId = regionIdForAccount(String(card.account ?? ""));
     counts.set(regionId, (counts.get(regionId) ?? 0) + 1);
@@ -80,9 +82,9 @@ export function CommunityView(props: SharedViewProps) {
   }, new Map<EventRegionId, number>()), [communityCards]);
   const regionOptions = useMemo(() => (["tw", "kr", "my", "vn", "th", "unknown"] as EventRegionId[])
     .filter((regionId) => (regionCounts.get(regionId) ?? 0) > 0), [regionCounts]);
-  const selectRows = useCallback((cards: FeedCard[]) => selectCommunityCards(cards).filter((card) => (
+  const selectRows = useCallback((cards: FeedCard[]) => selectCommunityCards(cards, props.accountProjects).filter((card) => (
     regionFilter === "all" || regionIdForAccount(String(card.account ?? "")) === regionFilter
-  )), [regionFilter]);
+  )), [props.accountProjects, regionFilter]);
   const hotspot = useMemo(() => Object.entries(props.communityMetrics?.accounts ?? {})
     .sort(([, left], [, right]) => Number(right.score ?? 0) - Number(left.score ?? 0))[0], [props.communityMetrics]);
   const hotspotLabel = hotspot ? regionLabelForAccount(hotspot[0], props.lang) : text(props.lang, "community.mapWaiting");
@@ -104,42 +106,63 @@ export function CommunityView(props: SharedViewProps) {
 
 export function OfficialView(props: SharedViewProps) {
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
+  const officialCards = useMemo(() => selectOfficialCards(props.cards, props.accountProjects), [props.accountProjects, props.cards]);
+  const projectCounts = useMemo(() => officialCards.reduce((counts, card) => {
+    const projectId = projectIdForCard(card, props.accountProjects);
+    if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+    return counts;
+  }, new Map<ProjectId, number>()), [officialCards, props.accountProjects]);
+  const selectRows = useCallback((cards: FeedCard[]) => selectOfficialCards(cards, props.accountProjects).filter((card) => (
+    projectFilter === "all" || projectIdForCard(card, props.accountProjects) === projectFilter
+  )), [projectFilter, props.accountProjects]);
+  const projectFilters = <div className="community-hub-filter-row community-hub-project-filter" aria-label={text(props.lang, "official.categoryFilter")}>
+    <button type="button" className={projectFilter === "all" ? "is-active" : ""} onClick={() => setProjectFilter("all")}>{text(props.lang, "filter.allOfficialCategories")} <span>{officialCards.length}</span></button>
+    {PROJECTS.map((project) => <button type="button" key={project.id} className={projectFilter === project.id ? "is-active" : ""} onClick={() => setProjectFilter(project.id)}><Icon name={project.icon} />{projectLabel(project.id, props.lang)} <span>{projectCounts.get(project.id) ?? 0}</span></button>)}
+  </div>;
+  const getSourceLabel = (card: FeedCard) => {
+    const projectId = projectIdForCard(card, props.accountProjects);
+    return projectId ? `${projectLabel(projectId, props.lang)} · ${text(props.lang, "card.official")}` : text(props.lang, "card.official");
+  };
   const action = <div className="community-hub-header-actions">
     <button type="button" className="community-hub-summary-trigger" onClick={() => setSummaryOpen(true)}><Icon name="sparkles" /><span>{text(props.lang, "official.aiSummary")}</span></button>
     <RefreshButton disabled={props.loading} lang={props.lang} onRefresh={props.onRefresh} />
   </div>;
   return <>
-    <DynamicStream {...props} eyebrow="OFFICIAL" headerAction={action} titleKey="official.title" leadKey="official.lead" selectRows={selectOfficialCards} />
+    <DynamicStream {...props} eyebrow="OFFICIAL" getSourceLabel={getSourceLabel} headerAction={action} paginationKey={projectFilter} titleKey="official.title" leadKey="official.lead" selectRows={selectRows} toolbarLeading={projectFilters} />
     <OfficialSummaryDialog lang={props.lang} open={summaryOpen} overview={props.officialOverview} onClose={() => setSummaryOpen(false)} />
   </>;
 }
 
 export function FutureView(props: SharedViewProps) {
-  const { cards, lang, loading, onOpenArticle, onRefresh, translationPending } = props;
+  const { accountProjects, cards, lang, loading, onOpenArticle, onRefresh, translationPending } = props;
   const [filter, setFilter] = useState<"upcoming" | "in_progress" | "completed">("in_progress");
-  const productCards = useMemo(() => cards.filter(isProductProgressSource), [cards]);
+  const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
+  const productCards = useMemo(() => cards.filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
   const rows = useMemo(() => productCards
+    .filter((card) => projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter)
     .filter((card) => planStatus(card) === filter)
     .sort((left, right) => {
       const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
       const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
       return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
-    }), [productCards, filter]);
-  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
+    }), [accountProjects, productCards, filter, projectFilter]);
+  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}:${projectFilter}`);
   const awaitingClassification = productCards.some((card) => !planStatus(card) || planStatus(card) === "needs_review");
   const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
+    <div className="community-hub-filter-row community-hub-project-filter" aria-label={text(lang, "official.categoryFilter")}><button type="button" className={projectFilter === "all" ? "is-active" : ""} onClick={() => setProjectFilter("all")}>{text(lang, "filter.allOfficialCategories")}</button>{PROJECTS.map((project) => <button type="button" key={project.id} className={projectFilter === project.id ? "is-active" : ""} onClick={() => setProjectFilter(project.id)}><Icon name={project.icon} />{projectLabel(project.id, lang)}</button>)}</div>
     <div className="community-hub-filter-row community-hub-filter-row-wide">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
-    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} />) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "empty.unavailable")} />}</div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => { const projectId = projectIdForCard(card, accountProjects); return <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={projectId ? `${projectLabel(projectId, lang)} · ${text(lang, "card.official")}` : undefined} />; }) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "empty.unavailable")} />}</div>
     <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
   </section>;
 }
 
-export function EventsView({ cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
+export function EventsView({ accountProjects, cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
   const [filter, setFilter] = useState<"announced" | "past">("announced");
   const rows = useMemo(() => {
-    const events = cards.filter(isEvent);
+    const events = cards.filter((card) => isEvent(card, accountProjects));
     if (filter === "past") {
       return sortEventsByStatus(events.filter((card) => eventStatus(card) === "past"), "past");
     }
@@ -147,7 +170,7 @@ export function EventsView({ cards, lang, loading, onOpenArticle, onRefresh, tra
     const active = sortEventsByStatus(events.filter((card) => eventStatus(card) === "active"), "active");
     const upcoming = sortEventsByStatus(events.filter((card) => eventStatus(card) === "upcoming"), "upcoming");
     return [...active, ...upcoming];
-  }, [cards, filter]);
+  }, [accountProjects, cards, filter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
   const filters = [["announced", "filter.upcoming"], ["past", "filter.past"]] as const;
   const emptyKey = filter === "announced" ? "events.empty.upcoming" : "events.empty.past";
@@ -159,13 +182,13 @@ export function EventsView({ cards, lang, loading, onOpenArticle, onRefresh, tra
   </section>;
 }
 
-export function MediaView({ cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
+export function MediaView({ accountProjects, cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
   const [filter, setFilter] = useState<"all" | "official" | "market">("all");
-  const rows = useMemo(() => cards.filter(isMedia).filter((card) => {
-    if (filter === "official") return isOfficial(card);
+  const rows = useMemo(() => cards.filter((card) => isMedia(card, accountProjects)).filter((card) => {
+    if (filter === "official") return isOfficial(card, accountProjects);
     if (filter === "market") return ["market", "trend", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => String(topic).toLowerCase() === "collectibles");
     return true;
-  }), [cards, filter]);
+  }), [accountProjects, cards, filter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);
   const filters = [["all", "filter.all"], ["official", "filter.official"], ["market", "filter.market"]] as const;
   return <section className="community-hub-view is-active is-entering">

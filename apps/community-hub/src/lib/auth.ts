@@ -6,8 +6,10 @@ export interface HubAuthState {
   permissions: { admin: boolean; wiki_edit: boolean };
   profile: {
     email?: string;
+    legacy_wallet_address?: string | null;
     name?: string;
     picture?: string;
+    safe_wallet_address?: string | null;
     sub?: string;
     twitter_username?: string | null;
   };

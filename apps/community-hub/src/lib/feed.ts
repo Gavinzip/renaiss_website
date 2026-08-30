@@ -1,5 +1,6 @@
 import type { EventStatus, FeedCard, IntelFeed, Language, PlanStatus } from "@/types";
 import { isRegionalCommunitySource } from "@/lib/regions";
+import { projectIdForCard, type AccountProjectMap } from "@/lib/projects";
 
 const OFFICIAL_X_HANDLES = new Set(["renaissxyz"]);
 const PRODUCT_PROGRESS_X_HANDLE = "renaissxyz";
@@ -55,17 +56,17 @@ export function topics(card: FeedCard): string[] {
   return (card.topic_labels ?? []).map((value) => String(value).toLowerCase());
 }
 
-export function isOfficial(card: FeedCard): boolean {
+export function isOfficial(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
   const account = String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase();
   const source = safeUrl(card.url);
-  if (OFFICIAL_X_HANDLES.has(account) || /(?:x|twitter)\.com\/renaissxyz(?:\/|$)/i.test(source)) return true;
+  if (projectIdForCard(card, accountProjects) || OFFICIAL_X_HANDLES.has(account) || /(?:x|twitter)\.com\/renaissxyz(?:\/|$)/i.test(source)) return true;
   const guildMatch = source.match(/^https:\/\/discord\.com\/channels\/(?:@me\/)?(\d+)\//i);
   return Boolean(guildMatch && OFFICIAL_DISCORD_GUILD_IDS.has(guildMatch[1]));
 }
 
-export function isProductProgressSource(card: FeedCard): boolean {
+export function isProductProgressSource(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
   const account = String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase();
-  return account === PRODUCT_PROGRESS_X_HANDLE;
+  return Boolean(projectIdForCard(card, accountProjects)) || account === PRODUCT_PROGRESS_X_HANDLE;
 }
 
 export function isTaggedRenaiss(card: FeedCard): boolean {
@@ -73,8 +74,8 @@ export function isTaggedRenaiss(card: FeedCard): boolean {
   return /(?:#renaiss\b|@renaissxyz\b)/i.test(value);
 }
 
-export function isCommunity(card: FeedCard): boolean {
-  return topics(card).includes("community") || (!isOfficial(card) && isTaggedRenaiss(card));
+export function isCommunity(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
+  return topics(card).includes("community") || (!isOfficial(card, accountProjects) && isTaggedRenaiss(card));
 }
 
 export function planStatus(card: FeedCard): PlanStatus | "" {
@@ -84,8 +85,8 @@ export function planStatus(card: FeedCard): PlanStatus | "" {
     : "";
 }
 
-export function isEvent(card: FeedCard): boolean {
-  return card.event_wall === true && (isOfficial(card) || isRegionalCommunitySource(card));
+export function isEvent(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
+  return card.event_wall === true && (isOfficial(card, accountProjects) || isRegionalCommunitySource(card));
 }
 
 export function isGuideArticle(card: FeedCard): boolean {
@@ -98,8 +99,8 @@ export function isSbt(card: FeedCard): boolean {
   return topics(card).includes("sbt") || /\bSBT\b/i.test(value);
 }
 
-export function isMedia(card: FeedCard): boolean {
-  return isOfficial(card) || topics(card).includes("collectibles") || ["announcement", "market", "report", "trend"].includes(String(card.card_type ?? "").toLowerCase());
+export function isMedia(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
+  return isOfficial(card, accountProjects) || topics(card).includes("collectibles") || ["announcement", "market", "report", "trend"].includes(String(card.card_type ?? "").toLowerCase());
 }
 
 export function isVerifiedResult(card: FeedCard): boolean {
@@ -128,7 +129,10 @@ export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): Feed
     return Number(date ?? 0);
   };
   const direction = status === "upcoming" || status === "active" ? 1 : -1;
-  return [...cards].sort((left, right) => (dateValue(left) - dateValue(right)) * direction);
+  return [...cards].sort((left, right) => {
+    if (Boolean(left.manual_pin) !== Boolean(right.manual_pin)) return left.manual_pin ? -1 : 1;
+    return (dateValue(left) - dateValue(right)) * direction;
+  });
 }
 
 export function limitedSbtStatus(card: FeedCard): "active" | "upcoming" | "ended" | "" {
@@ -151,9 +155,9 @@ export interface LimitedSbtCampaign {
   status: "active" | "upcoming";
 }
 
-export function limitedSbtCampaigns(cards: FeedCard[]): LimitedSbtCampaign[] {
+export function limitedSbtCampaigns(cards: FeedCard[], accountProjects: AccountProjectMap = {}): LimitedSbtCampaign[] {
   return cards
-    .filter(isOfficial)
+    .filter((card) => isOfficial(card, accountProjects))
     .filter(isSbt)
     .flatMap((card) => {
       const status = limitedSbtStatus(card);

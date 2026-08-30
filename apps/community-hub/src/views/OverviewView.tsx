@@ -2,18 +2,20 @@ import { Icon } from "@/components/Icon";
 import { FeatureCard } from "@/components/ContentCard";
 import { formatDate, isEvent, isMedia, limitedSbtCampaigns, eventStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
+import type { AccountProjectMap } from "@/lib/projects";
 import type { FeedCard, HubView, Language } from "@/types";
 
 interface OverviewViewProps {
+  accountProjects: AccountProjectMap;
   cards: FeedCard[];
   lang: Language;
   onNavigate: (view: Exclude<HubView, "article">) => void;
 }
 
-export function OverviewView({ cards, lang, onNavigate }: OverviewViewProps) {
-  const events = cards.filter(isEvent).filter((card) => ["active", "upcoming"].includes(eventStatus(card))).slice(0, 3);
-  const signals = cards.filter(isMedia).slice(0, 4);
-  const limitedSbt = limitedSbtCampaigns(cards).slice(0, 4);
+export function OverviewView({ accountProjects, cards, lang, onNavigate }: OverviewViewProps) {
+  const events = cards.filter((card) => isEvent(card, accountProjects)).filter((card) => ["active", "upcoming"].includes(eventStatus(card))).slice(0, 3);
+  const signals = cards.filter((card) => isMedia(card, accountProjects)).slice(0, 4);
+  const limitedSbt = limitedSbtCampaigns(cards, accountProjects).slice(0, 4);
   const routes: Array<{ icon: string; label: string; sub: string; view: Exclude<HubView, "article"> }> = [
     { icon: "radio", view: "official", label: text(lang, "overview.route.official"), sub: text(lang, "overview.route.officialSub") },
     { icon: "messages-square", view: "feed", label: text(lang, "overview.route.feed"), sub: text(lang, "overview.route.feedSub") },

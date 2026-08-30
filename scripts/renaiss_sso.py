@@ -16,6 +16,8 @@ from urllib.parse import urlencode, urlparse
 import jwt
 import requests
 
+from admin_session_store import AuthStateStore
+
 
 class RenaissSsoError(RuntimeError):
     """A sanitized Renaiss SSO failure safe to show to the application."""
@@ -24,8 +26,12 @@ class RenaissSsoError(RuntimeError):
 _DISCOVERY_LOCK = Lock()
 _DISCOVERY_CACHE: tuple[float, dict[str, Any]] | None = None
 _JWKS_CLIENTS: dict[str, jwt.PyJWKClient] = {}
-_CHALLENGES_LOCK = Lock()
-_CHALLENGES: dict[str, dict[str, Any]] = {}
+_AUTH_STATE_STORE: AuthStateStore | None = None
+
+
+def configure_auth_state_store(store: AuthStateStore) -> None:
+    global _AUTH_STATE_STORE
+    _AUTH_STATE_STORE = store
 
 
 def _env(name: str, default: str = "") -> str:
@@ -41,7 +47,11 @@ def renaiss_sso_enabled() -> bool:
 
 
 def renaiss_sso_admin_configured() -> bool:
-    return bool(_csv("RENAISS_SSO_ADMIN_SUBS") or _csv("RENAISS_SSO_ADMIN_EMAILS"))
+    return bool(
+        _csv("RENAISS_SSO_ADMIN_SUBS")
+        or _csv("RENAISS_SSO_ADMIN_EMAILS")
+        or _csv("RENAISS_SSO_ADMIN_WALLETS")
+    )
 
 
 def _issuer() -> str:
@@ -97,29 +107,23 @@ def _redirect_uri(request_origin: str) -> str:
     return f"{origin.rstrip('/')}/auth/callback"
 
 
-def _purge_challenges(now: float | None = None) -> None:
-    current = now if now is not None else time.time()
-    stale = [state for state, item in _CHALLENGES.items() if float(item.get("expires_at") or 0) <= current]
-    for state in stale:
-        _CHALLENGES.pop(state, None)
-
-
 def begin_login(request_origin: str, return_to: str | None = None) -> dict[str, str]:
+    if _AUTH_STATE_STORE is None:
+        raise RenaissSsoError("Renaiss login state storage is not configured")
     discovery = _discovery()
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     redirect_uri = _redirect_uri(request_origin)
-    with _CHALLENGES_LOCK:
-        _purge_challenges()
-        _CHALLENGES[state] = {
-            "verifier": verifier,
-            "nonce": nonce,
-            "redirect_uri": redirect_uri,
-            "return_to": _safe_return_to(return_to),
-            "expires_at": time.time() + 600,
-        }
+    expires_at = time.time() + 600
+    _AUTH_STATE_STORE.save_challenge(state, {
+        "verifier": verifier,
+        "nonce": nonce,
+        "redirect_uri": redirect_uri,
+        "return_to": _safe_return_to(return_to),
+        "expires_at": expires_at,
+    }, expires_at)
     params = {
         "response_type": "code",
         "client_id": _env("RENAISS_CLIENT_ID"),
@@ -143,10 +147,9 @@ def _consume_challenge(state: str) -> dict[str, Any]:
     supplied = str(state or "").strip()
     if not supplied:
         raise RenaissSsoError("Invalid OAuth state")
-    with _CHALLENGES_LOCK:
-        _purge_challenges()
-        matched_state = next((key for key in _CHALLENGES if hmac.compare_digest(key, supplied)), "")
-        challenge = _CHALLENGES.pop(matched_state, None) if matched_state else None
+    if _AUTH_STATE_STORE is None:
+        raise RenaissSsoError("Renaiss login state storage is not configured")
+    challenge = _AUTH_STATE_STORE.consume_challenge(supplied)
     if not isinstance(challenge, dict):
         raise RenaissSsoError("Invalid OAuth state")
     return challenge
@@ -257,12 +260,21 @@ def role_for_identity(identity: dict[str, Any]) -> str:
     sub = str(identity.get("sub") or "").strip().lower()
     email = str(identity.get("email") or "").strip().lower()
     twitter = str(identity.get("twitter_username") or "").strip().lstrip("@").lower()
-    if sub in _csv("RENAISS_SSO_ADMIN_SUBS") or email in _csv("RENAISS_SSO_ADMIN_EMAILS"):
+    wallets = {
+        str(identity.get("safe_wallet_address") or "").strip().lower(),
+        str(identity.get("legacy_wallet_address") or "").strip().lower(),
+    } - {""}
+    if (
+        sub in _csv("RENAISS_SSO_ADMIN_SUBS")
+        or email in _csv("RENAISS_SSO_ADMIN_EMAILS")
+        or bool(wallets & _csv("RENAISS_SSO_ADMIN_WALLETS"))
+    ):
         return "admin"
     if (
         sub in _csv("RENAISS_SSO_CREATOR_SUBS")
         or email in _csv("RENAISS_SSO_CREATOR_EMAILS")
         or twitter in _csv("RENAISS_SSO_CREATOR_X_USERNAMES")
+        or bool(wallets & _csv("RENAISS_SSO_CREATOR_WALLETS"))
     ):
         return "creator"
     default_role = _env("RENAISS_SSO_DEFAULT_ROLE", "viewer").lower()

@@ -11,6 +11,16 @@ globals().update(vars(_editorial))
 # Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
 
 X_SOURCE_CONFIG_FILE = "x_intel_sources.json"
+X_ACCOUNT_CATEGORIES = {"official", "official_community", "ambassador"}
+X_PROJECT_IDS = {"tcg", "index", "defi", "game", "hackathon", "outreach"}
+DEFAULT_X_ACCOUNT_PROJECTS = {
+    "renaissxyz": "tcg",
+    "renaiss_index": "index",
+    "renaiss_fi": "defi",
+    "vinciwld": "game",
+    "tastedotmd": "hackathon",
+    "renaisscltb": "outreach",
+}
 DISCORD_COVER_CACHE_DIR = "generated_covers"
 DISCORD_COVER_MAX_BYTES = 12 * 1024 * 1024
 DISCORD_COVER_EXT_BY_TYPE = {
@@ -628,6 +638,44 @@ def ensure_required_x_accounts(accounts: list[str]) -> list[str]:
     return normalize_x_accounts([*(accounts or []), *REQUIRED_X_ACCOUNT_LABELS])
 
 
+def default_x_account_category(account: str) -> str:
+    normalized = normalize_x_account(account).lower()
+    if normalized in DEFAULT_X_ACCOUNT_PROJECTS:
+        return "official"
+    if normalized in REGIONAL_COMMUNITY_X_HANDLES:
+        return "official_community"
+    return "ambassador"
+
+
+def normalize_x_account_categories(values: Any, accounts: list[str]) -> dict[str, str]:
+    rows = values if isinstance(values, dict) else {}
+    normalized_rows = {
+        normalize_x_account(key).lower(): str(value or "").strip().lower()
+        for key, value in rows.items()
+        if normalize_x_account(key) and str(value or "").strip().lower() in X_ACCOUNT_CATEGORIES
+    }
+    return {
+        account: normalized_rows.get(account.lower(), default_x_account_category(account))
+        for account in accounts
+    }
+
+
+def normalize_x_account_projects(values: Any, accounts: list[str]) -> dict[str, str]:
+    rows = values if isinstance(values, dict) else {}
+    normalized_rows = {
+        normalize_x_account(key).lower(): str(value or "").strip().lower()
+        for key, value in rows.items()
+        if normalize_x_account(key) and str(value or "").strip().lower() in X_PROJECT_IDS
+    }
+    out: dict[str, str] = {}
+    for account in accounts:
+        normalized = account.lower()
+        project_id = normalized_rows.get(normalized) or DEFAULT_X_ACCOUNT_PROJECTS.get(normalized, "")
+        if project_id:
+            out[account] = project_id
+    return out
+
+
 def x_source_config_path() -> Path:
     return data_dir() / X_SOURCE_CONFIG_FILE
 
@@ -640,9 +688,19 @@ def read_x_source_config() -> dict[str, Any]:
     pokemon_accounts = normalize_x_accounts(raw.get("pokemon_accounts") if isinstance(raw, dict) else [])
     account_keys = {x.lower() for x in accounts}
     pokemon_accounts = [x for x in pokemon_accounts if x.lower() in account_keys]
+    account_categories = normalize_x_account_categories(
+        raw.get("account_categories") if isinstance(raw, dict) else {},
+        accounts,
+    )
+    account_projects = normalize_x_account_projects(
+        raw.get("account_projects") if isinstance(raw, dict) else {},
+        accounts,
+    )
     updated_at = str(raw.get("updated_at") or "") if isinstance(raw, dict) else ""
     return {
         "x_accounts": accounts,
+        "account_categories": account_categories,
+        "account_projects": account_projects,
         "pokemon_accounts": pokemon_accounts,
         "default_x_accounts": list(DEFAULT_ACCOUNTS),
         "required_x_accounts": list(REQUIRED_X_ACCOUNT_LABELS),
@@ -652,19 +710,27 @@ def read_x_source_config() -> dict[str, Any]:
     }
 
 
-def write_x_source_config(accounts: list[str], pokemon_accounts: list[str] | None = None) -> dict[str, Any]:
+def write_x_source_config(
+    accounts: list[str],
+    pokemon_accounts: list[str] | None = None,
+    account_categories: dict[str, str] | None = None,
+    account_projects: dict[str, str] | None = None,
+) -> dict[str, Any]:
     normalized = ensure_required_x_accounts(normalize_x_accounts(accounts))
     pokemon_normalized = normalize_x_accounts(pokemon_accounts if pokemon_accounts is not None else [])
     account_keys = {x.lower() for x in normalized}
     pokemon_normalized = [x for x in pokemon_normalized if x.lower() in account_keys]
+    normalized_categories = normalize_x_account_categories(account_categories, normalized)
+    normalized_projects = normalize_x_account_projects(account_projects, normalized)
     payload = {
         "x_accounts": normalized,
+        "account_categories": normalized_categories,
+        "account_projects": normalized_projects,
         "pokemon_accounts": pokemon_normalized,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     path = x_source_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(path, payload)
     result = read_x_source_config()
     result["using_default"] = False
     return result
@@ -678,11 +744,19 @@ def resolve_pokemon_x_accounts() -> list[str]:
     return list(read_x_source_config().get("pokemon_accounts") or [])
 
 
-def update_x_source_accounts(action: str, account: str = "", accounts: list[str] | None = None) -> dict[str, Any]:
+def update_x_source_accounts(
+    action: str,
+    account: str = "",
+    accounts: list[str] | None = None,
+    category: str = "",
+    project_id: str = "",
+) -> dict[str, Any]:
     op = str(action or "").strip().lower()
     source_config = read_x_source_config()
     current = list(source_config.get("x_accounts") or [])
     pokemon_current = list(source_config.get("pokemon_accounts") or [])
+    category_current = dict(source_config.get("account_categories") or {})
+    project_current = dict(source_config.get("account_projects") or {})
     changed = False
     normalized_account = normalize_x_account(account)
 
@@ -692,6 +766,25 @@ def update_x_source_accounts(action: str, account: str = "", accounts: list[str]
         if normalized_account.lower() not in {x.lower() for x in current}:
             current.append(normalized_account)
             changed = True
+        normalized_category = str(category or "").strip().lower()
+        if normalized_category in X_ACCOUNT_CATEGORIES:
+            changed = changed or category_current.get(normalized_account) != normalized_category
+            category_current[normalized_account] = normalized_category
+        normalized_project = str(project_id or "").strip().lower()
+        if normalized_category == "official":
+            normalized_project = normalized_project or DEFAULT_X_ACCOUNT_PROJECTS.get(normalized_account.lower(), "")
+            if normalized_project not in X_PROJECT_IDS:
+                raise ValueError("official account project id is required")
+            changed = changed or project_current.get(normalized_account) != normalized_project
+            project_current[normalized_account] = normalized_project
+        elif normalized_category:
+            next_projects = {
+                key: value
+                for key, value in project_current.items()
+                if normalize_x_account(key).lower() != normalized_account.lower()
+            }
+            changed = changed or len(next_projects) != len(project_current)
+            project_current = next_projects
     elif op in {"add_pokemon", "add-pokemon", "pokemon_add"}:
         if not normalized_account:
             raise ValueError("invalid X username")
@@ -709,6 +802,16 @@ def update_x_source_accounts(action: str, account: str = "", accounts: list[str]
         changed = len(next_rows) != len(current) or len(next_pokemon_rows) != len(pokemon_current)
         current = next_rows
         pokemon_current = next_pokemon_rows
+        category_current = {
+            key: value
+            for key, value in category_current.items()
+            if normalize_x_account(key).lower() != normalized_account.lower()
+        }
+        project_current = {
+            key: value
+            for key, value in project_current.items()
+            if normalize_x_account(key).lower() != normalized_account.lower()
+        }
     elif op in {"remove_pokemon", "remove-pokemon", "pokemon_remove"}:
         if not normalized_account:
             raise ValueError("invalid X username")
@@ -720,10 +823,48 @@ def update_x_source_accounts(action: str, account: str = "", accounts: list[str]
         current_keys = {x.lower() for x in current}
         pokemon_current = [x for x in pokemon_current if x.lower() in current_keys]
         changed = True
+    elif op in {"set_category", "set-category", "categorize"}:
+        if not normalized_account or normalized_account.lower() not in {x.lower() for x in current}:
+            raise ValueError("tracked X username is required")
+        normalized_category = str(category or "").strip().lower()
+        if normalized_category not in X_ACCOUNT_CATEGORIES:
+            raise ValueError("category must be official, official_community, or ambassador")
+        current_account = next(x for x in current if x.lower() == normalized_account.lower())
+        changed = category_current.get(current_account) != normalized_category
+        category_current[current_account] = normalized_category
+        if normalized_category == "official":
+            normalized_project = str(project_id or "").strip().lower() or DEFAULT_X_ACCOUNT_PROJECTS.get(current_account.lower(), "")
+            if normalized_project not in X_PROJECT_IDS:
+                raise ValueError("official account project id is required")
+            changed = changed or project_current.get(current_account) != normalized_project
+            project_current[current_account] = normalized_project
+        else:
+            next_projects = {
+                key: value
+                for key, value in project_current.items()
+                if normalize_x_account(key).lower() != current_account.lower()
+            }
+            changed = changed or len(next_projects) != len(project_current)
+            project_current = next_projects
+    elif op in {"set_project", "set-project"}:
+        if not normalized_account or normalized_account.lower() not in {x.lower() for x in current}:
+            raise ValueError("tracked X username is required")
+        normalized_project = str(project_id or "").strip().lower()
+        if normalized_project not in X_PROJECT_IDS:
+            raise ValueError("unsupported project id")
+        current_account = next(x for x in current if x.lower() == normalized_account.lower())
+        changed = project_current.get(current_account) != normalized_project
+        project_current[current_account] = normalized_project
+        category_current[current_account] = "official"
     else:
         raise ValueError("unsupported source config action")
 
-    config = write_x_source_config(current, pokemon_accounts=pokemon_current)
+    config = write_x_source_config(
+        current,
+        pokemon_accounts=pokemon_current,
+        account_categories=category_current,
+        account_projects=project_current,
+    )
     config["changed"] = changed
     config["action"] = op
     config["account"] = normalized_account
@@ -1177,7 +1318,7 @@ def apply_minimax_story_refine(
 
 def plan_status_review_due(card: StoryCard, *, now: datetime | None = None) -> bool:
     account = str(card.account or "").strip().lower().lstrip("@")
-    if account != PRODUCT_PROGRESS_X_HANDLE:
+    if account not in PRODUCT_PROGRESS_X_HANDLES:
         return False
     status = _valid_plan_status(card.plan_status)
     if card.plan_ai_version != PLAN_STATUS_CLASSIFICATION_VERSION or not status or status == "needs_review":

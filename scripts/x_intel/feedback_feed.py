@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from threading import RLock, get_ident
 
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
@@ -20,6 +21,8 @@ globals().update(vars(_sources))
 
 # Domain: feedback memory, manual picks, curation, feed payload, sync entrypoints
 
+EDITORIAL_DATA_LOCK = RLock()
+
 def _emit_sync_progress(progress_callback: Any | None, event_name: str, **payload: Any) -> None:
     if not progress_callback:
         return
@@ -35,7 +38,23 @@ def _now_iso() -> str:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{get_ident()}.tmp")
+    with EDITORIAL_DATA_LOCK:
+        try:
+            prepared = payload
+            if path.name == "x_intel_feed.json" and isinstance(payload, dict):
+                merger = globals().get("_merge_latest_admin_state")
+                if callable(merger):
+                    prepared = merger(payload)
+            raw = json.dumps(prepared, ensure_ascii=False, indent=2)
+            with temp_path.open("w", encoding="utf-8") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
 
 
 def manual_picks_path() -> Path:
@@ -779,10 +798,90 @@ def _read_feed_payload() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _update_feed_card_fields(tweet_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+EDITORIAL_OVERRIDE_FIELDS = {
+    "timeline_date",
+    "timeline_end_date",
+    "event_wall",
+    "sbt_name",
+    "sbt_names",
+    "sbt_acquisition",
+    "event_region",
+    "plan_status",
+}
+
+
+def _persist_card_editorial_override(tweet_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     tid = str(tweet_id or "").strip()
     if not tid:
         raise ValueError("tweet id is required")
+    editorial_patch = {key: value for key, value in patch.items() if key in EDITORIAL_OVERRIDE_FIELDS}
+    if not editorial_patch:
+        return {}
+
+    snapshot = _read_current_feed_card(tid)
+    if not snapshot:
+        raise ValueError("card not found")
+    state = read_feedback_state()
+    overrides = state.get("card_field_overrides")
+    if not isinstance(overrides, dict):
+        overrides = {}
+        state["card_field_overrides"] = overrides
+    previous = overrides.get(tid, {}) if isinstance(overrides.get(tid), dict) else {}
+    next_override = dict(previous)
+    next_override.update(editorial_patch)
+    next_override["source_account"] = str(snapshot.get("account") or "")
+    next_override["source_title"] = clean_text(str(snapshot.get("title") or snapshot.get("glance") or ""))[:180]
+    next_override["source_url"] = str(snapshot.get("url") or "")
+    next_override["updated_at"] = datetime.now(timezone.utc).isoformat()
+    overrides[tid] = next_override
+    state["card_field_overrides"] = overrides
+    write_feedback_state(state)
+    return next_override
+
+
+def _apply_editorial_override(card: StoryCard, field_info: dict[str, Any]) -> int:
+    changed = 0
+    for key in ("timeline_date", "timeline_end_date", "sbt_name", "sbt_acquisition"):
+        if key not in field_info:
+            continue
+        value = str(field_info.get(key) or "")
+        if getattr(card, key) != value:
+            setattr(card, key, value)
+            changed += 1
+    if "event_wall" in field_info:
+        value = bool(field_info.get("event_wall"))
+        if card.event_wall != value:
+            card.event_wall = value
+            changed += 1
+    if "sbt_names" in field_info:
+        value = [clean_text(str(item)) for item in (field_info.get("sbt_names") or []) if clean_text(str(item))][:8]
+        if (card.sbt_names or []) != value:
+            card.sbt_names = value
+            changed += 1
+    if "event_region" in field_info:
+        value = str(field_info.get("event_region") or "unknown").strip().lower()
+        if card.event_region != value:
+            card.event_region = value
+            card.event_region_reason = "管理員手動覆寫地區。"
+            card.event_region_model = "manual"
+            changed += 1
+    if "plan_status" in field_info:
+        value = str(field_info.get("plan_status") or "needs_review").strip().lower()
+        if card.plan_status != value:
+            card.plan_status = value
+            card.plan_status_reason = "管理員手動覆寫產品進度。"
+            changed += 1
+    if "timeline_date" in field_info:
+        card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
+    return changed
+
+
+def _update_feed_card_fields(tweet_id: str, patch: dict[str, Any], *, persist_editorial: bool = False) -> dict[str, Any]:
+    tid = str(tweet_id or "").strip()
+    if not tid:
+        raise ValueError("tweet id is required")
+    if persist_editorial:
+        _persist_card_editorial_override(tid, patch)
     payload = _read_feed_payload()
     cards = payload.get("cards")
     if not isinstance(cards, list):
@@ -819,6 +918,7 @@ def update_card_timeline_fields(tweet_id: str, timeline_date: str = "", timeline
             "timeline_date": start,
             "timeline_end_date": end,
         },
+        persist_editorial=True,
     )
 
 
@@ -828,6 +928,7 @@ def update_card_event_wall_field(tweet_id: str, event_wall: bool) -> dict[str, A
         {
             "event_wall": bool(event_wall),
         },
+        persist_editorial=True,
     )
 
 
@@ -846,7 +947,156 @@ def update_card_sbt_fields(tweet_id: str, sbt_names: Any = "", sbt_acquisition: 
             "sbt_names": names,
             "sbt_acquisition": acquisition,
         },
+        persist_editorial=True,
     )
+
+
+def _append_editorial_audit(entry: dict[str, Any]) -> None:
+    path = data_dir() / "x_intel_editorial_audit.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def read_editorial_audit(limit: int = 50) -> list[dict[str, Any]]:
+    path = data_dir() / "x_intel_editorial_audit.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-max(1, min(int(limit or 50), 200)):]:
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    rows.reverse()
+    return rows
+
+
+def update_card_editorial_fields(
+    tweet_id: str,
+    *,
+    patch: dict[str, Any],
+    actor: str = "admin",
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    tid = str(tweet_id or "").strip()
+    if not tid:
+        raise ValueError("tweet id is required")
+    if not isinstance(patch, dict) or not patch:
+        raise ValueError("editorial patch is required")
+
+    allowed_regions = {"tw", "kr", "my", "vn", "th", "global", "multi_region", "unknown"}
+    allowed_plan_statuses = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
+    editorial_patch: dict[str, Any] = {}
+    if "timeline_date" in patch or "timeline_end_date" in patch:
+        start = str(patch.get("timeline_date") or "").strip()
+        end = str(patch.get("timeline_end_date") or "").strip()
+        if start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+            raise ValueError("timeline_date must be YYYY-MM-DD")
+        if end and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+            raise ValueError("timeline_end_date must be YYYY-MM-DD")
+        if start and end and end < start:
+            raise ValueError("timeline_end_date cannot be earlier than timeline_date")
+        editorial_patch.update({"timeline_date": start, "timeline_end_date": end})
+    if "event_wall" in patch:
+        editorial_patch["event_wall"] = bool(patch.get("event_wall"))
+    if "sbt_names" in patch or "sbt_acquisition" in patch:
+        raw_names = patch.get("sbt_names") or []
+        if isinstance(raw_names, list):
+            names = [clean_text(str(value)) for value in raw_names if clean_text(str(value))]
+        else:
+            names = [clean_text(value) for value in re.split(r"[,，、/|\\n]+", str(raw_names)) if clean_text(value)]
+        names = names[:8]
+        editorial_patch.update({
+            "sbt_name": names[0] if names else "",
+            "sbt_names": names,
+            "sbt_acquisition": clean_text(str(patch.get("sbt_acquisition") or ""))[:320],
+        })
+    if "event_region" in patch:
+        region = str(patch.get("event_region") or "unknown").strip().lower()
+        if region not in allowed_regions:
+            raise ValueError("invalid event_region")
+        editorial_patch["event_region"] = region
+    if "plan_status" in patch:
+        plan = str(patch.get("plan_status") or "needs_review").strip().lower()
+        if plan not in allowed_plan_statuses:
+            raise ValueError("invalid plan_status")
+        editorial_patch["plan_status"] = plan
+
+    card_type = str(patch.get("card_type") or "").strip().lower()
+    raw_topics = patch.get("topic_labels")
+    topic_labels = normalize_topic_labels(raw_topics if isinstance(raw_topics, list) else [])
+    reason = clean_text(str(patch.get("reason") or ""))[:600]
+    has_classification = bool(card_type or isinstance(raw_topics, list))
+    if card_type and card_type not in ALLOWED_CARD_TYPES:
+        raise ValueError("invalid card_type")
+    if isinstance(raw_topics, list) and not topic_labels:
+        raise ValueError("invalid topic_labels")
+
+    with EDITORIAL_DATA_LOCK:
+        before = _read_current_feed_card(tid)
+        if not before:
+            raise ValueError("card not found")
+        state = read_feedback_state()
+        overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
+        current_override = overrides.get(tid, {}) if isinstance(overrides.get(tid), dict) else {}
+        current_revision = int(current_override.get("revision") or 0)
+        if expected_revision is not None and int(expected_revision) != current_revision:
+            raise ValueError(f"editorial revision conflict: expected {expected_revision}, current {current_revision}")
+
+        if has_classification:
+            add_classification_feedback_fields(
+                tid,
+                card_type=card_type,
+                topic_labels=topic_labels if isinstance(raw_topics, list) else None,
+                reason=reason,
+            )
+            update_card_classification_fields(
+                tid,
+                card_type=card_type,
+                topic_labels=topic_labels if isinstance(raw_topics, list) else None,
+            )
+        if editorial_patch:
+            _update_feed_card_fields(tid, editorial_patch, persist_editorial=True)
+
+        state = read_feedback_state()
+        overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
+        next_override = dict(overrides.get(tid, {}) if isinstance(overrides.get(tid), dict) else {})
+        revision = current_revision + 1
+        next_override.update({
+            "revision": revision,
+            "updated_at": _now_iso(),
+            "updated_by": clean_text(str(actor or "admin"))[:160] or "admin",
+        })
+        overrides[tid] = next_override
+        state["card_field_overrides"] = overrides
+        write_feedback_state(state)
+
+        payload = _read_feed_payload()
+        cards = payload.get("cards") if isinstance(payload.get("cards"), list) else []
+        updated_card = next((item for item in cards if isinstance(item, dict) and str(item.get("id") or "").strip() == tid), None)
+        if isinstance(updated_card, dict):
+            updated_card["editorial_revision"] = revision
+            updated_card["editorial_updated_at"] = next_override["updated_at"]
+            updated_card["editorial_updated_by"] = next_override["updated_by"]
+            payload["generated_at"] = _now_iso()
+            write_json(data_dir() / "x_intel_feed.json", payload)
+        after = dict(updated_card) if isinstance(updated_card, dict) else {}
+        _append_editorial_audit({
+            "id": tid,
+            "revision": revision,
+            "actor": next_override["updated_by"],
+            "updated_at": next_override["updated_at"],
+            "reason": reason,
+            "patch": {**editorial_patch, **({"card_type": card_type} if card_type else {}), **({"topic_labels": topic_labels} if isinstance(raw_topics, list) else {})},
+            "source_account": str(before.get("account") or ""),
+            "source_title": clean_text(str(before.get("title") or before.get("glance") or ""))[:180],
+        })
+        return {"id": tid, "revision": revision, "card": after}
 
 
 def update_card_classification_fields(
@@ -1065,6 +1315,11 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
         if key in refreshed:
             updated[key] = refreshed.get(key)
     updated.update(preserved)
+    # Reapply saved editorial fields after AI refresh so dates, event-wall
+    # placement, and SBT details cannot be overwritten by a regeneration.
+    refreshed_with_overrides = _story_card_from_payload(updated)
+    apply_feedback_overrides([refreshed_with_overrides])
+    updated.update(refreshed_with_overrides.to_dict())
     _enforce_fixed_channel_payload_fields(updated)
 
     cards[target_index] = updated
@@ -1232,8 +1487,7 @@ def apply_feedback_overrides(cards: list[StoryCard]) -> dict[str, Any]:
             if label in ALLOWED_CARD_TYPES:
                 if _apply_card_type_override(card, label):
                     override_count += 1
-                continue
-            if label in ALLOWED_TOPIC_LABELS:
+            elif label in ALLOWED_TOPIC_LABELS:
                 labels = normalize_topic_labels([*(card.topic_labels or []), label])
                 if labels != normalize_topic_labels(card.topic_labels):
                     override_count += 1
@@ -1249,6 +1503,7 @@ def apply_feedback_overrides(cards: list[StoryCard]) -> dict[str, Any]:
                 if labels != normalize_topic_labels(card.topic_labels):
                     override_count += 1
                 _apply_topic_label_override(card, labels, exact=True)
+            override_count += _apply_editorial_override(card, field_info)
     return {"override_count": override_count, "excluded_ids": excluded_ids}
 
 
@@ -1269,6 +1524,59 @@ def read_manual_picks() -> dict[str, set[str]]:
         "pin_ids": pin_ids,
         "bottom_ids": bottom_ids,
     }
+
+
+def _merge_latest_admin_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge durable human decisions immediately before replacing the feed file."""
+    cards = payload.get("cards")
+    if not isinstance(cards, list):
+        return payload
+    picks = read_manual_picks()
+    include_ids = picks["include_ids"]
+    exclude_ids = picks["exclude_ids"]
+    pin_ids = picks["pin_ids"]
+    bottom_ids = picks["bottom_ids"]
+    force_ids = include_ids | pin_ids | bottom_ids
+    feedback = read_feedback_state()
+    overrides = feedback.get("card_field_overrides") if isinstance(feedback.get("card_field_overrides"), dict) else {}
+    feedback_items = feedback.get("items") if isinstance(feedback.get("items"), dict) else {}
+
+    next_cards: list[Any] = []
+    for item in cards:
+        if not isinstance(item, dict):
+            next_cards.append(item)
+            continue
+        card_id = str(item.get("id") or "").strip()
+        if card_id and card_id in exclude_ids and card_id not in force_ids:
+            continue
+        if card_id:
+            item["manual_pick"] = card_id in force_ids
+            item["manual_pin"] = card_id in pin_ids
+            item["manual_bottom"] = card_id in bottom_ids
+        field_info = overrides.get(card_id) if isinstance(overrides.get(card_id), dict) else {}
+        feedback_info = feedback_items.get(card_id) if isinstance(feedback_items.get(card_id), dict) else {}
+        if field_info or feedback_info:
+            card = _story_card_from_payload(item)
+            label = str(feedback_info.get("label") or "").strip().lower()
+            if label in ALLOWED_CARD_TYPES:
+                _apply_card_type_override(card, label)
+            elif label in ALLOWED_TOPIC_LABELS:
+                _apply_topic_label_override(card, [*(card.topic_labels or []), label], exact=False)
+            card_type = str(field_info.get("card_type") or "").strip().lower()
+            if card_type in ALLOWED_CARD_TYPES:
+                _apply_card_type_override(card, card_type)
+            labels = normalize_topic_labels(field_info.get("topic_labels"))
+            if labels:
+                _apply_topic_label_override(card, labels, exact=True)
+            _apply_editorial_override(card, field_info)
+            item.update(card.to_dict())
+            if field_info:
+                item["editorial_revision"] = int(field_info.get("revision") or 0)
+                item["editorial_updated_at"] = str(field_info.get("updated_at") or "")
+                item["editorial_updated_by"] = str(field_info.get("updated_by") or "")
+        next_cards.append(item)
+    payload["cards"] = next_cards
+    return payload
 
 
 def write_manual_picks(
@@ -2099,6 +2407,76 @@ def dedupe_new_cards_against_batch_canonical(
     return canonical, queued
 
 
+def dedupe_existing_public_events(
+    cards: list[StoryCard],
+    *,
+    force_ids: set[str] | None = None,
+) -> tuple[list[StoryCard], list[StoryCard]]:
+    """Recheck previously stored event cards against each other.
+
+    The regular ingest path compares only newly discovered cards with the
+    existing public corpus. This pass repairs duplicates that already coexist
+    in the stored feed, while keeping explicit editorial selections intact.
+    """
+    protected_ids = set(force_ids or set())
+    event_cards = sorted(
+        [
+            card
+            for card in cards
+            if not _is_admin_queue_card(card)
+            and str(card.card_type or "").strip().lower() == "event"
+            and card.event_wall is True
+        ],
+        key=lambda card: (
+            _canonical_dedupe_priority(card),
+            _parse_iso_safe(card.published_at) or datetime.min.replace(tzinfo=timezone.utc),
+            str(card.id or ""),
+        ),
+        reverse=True,
+    )
+    canonical: list[StoryCard] = []
+    queued: list[StoryCard] = []
+    dropped_ids: set[str] = set()
+    for card in event_cards:
+        card_id = str(card.id or "").strip()
+        if card_id in protected_ids or card.manual_pick or _is_protected_official_x_source_card(card):
+            canonical.append(card)
+            continue
+        winner, score, basis = _find_best_canonical_dedupe_match(card, canonical)
+        if winner is None:
+            canonical.append(card)
+            continue
+        dropped_ids.add(card_id)
+        queued.append(
+            _mark_duplicate_of_winner(
+                card,
+                winner,
+                reason_code="duplicate_existing_event",
+                similarity=score,
+                basis=basis,
+            )
+        )
+
+    if not dropped_ids:
+        return cards, []
+    kept = [card for card in cards if str(card.id or "").strip() not in dropped_ids]
+    return kept, queued
+
+
+def public_event_duplicate_ids(card_payloads: list[dict[str, Any]]) -> set[str]:
+    """Return existing event loser IDs without mutating the feed snapshot."""
+    cards: list[StoryCard] = []
+    for item in card_payloads:
+        if not isinstance(item, dict):
+            continue
+        try:
+            cards.append(_story_card_from_payload(item))
+        except Exception:
+            continue
+    _kept, queued = dedupe_existing_public_events(cards)
+    return {str(card.id or "").strip() for card in queued if str(card.id or "").strip()}
+
+
 def compact_point(text: str, max_len: int = 96) -> str:
     t = strip_links_mentions(text)
     t = re.sub(r"^\d+/\s*", "", t)
@@ -2851,10 +3229,12 @@ def build_feed_payload(
     preserved_raw: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
+    source_config = read_x_source_config()
     return {
         "generated_at": generated_at,
         "window_days": window_days,
         "accounts": accounts,
+        "account_projects": source_config.get("account_projects") if isinstance(source_config.get("account_projects"), dict) else {},
         "total_cards": len(cards),
         "layout_counts": {
             "poster": sum(1 for c in cards if c.layout == "poster"),
@@ -3202,6 +3582,12 @@ def sync_accounts(
     )
 
     queue_cards: list[StoryCard] = []
+    preserved_cards, queued_existing_event_dupes = dedupe_existing_public_events(
+        preserved_cards,
+        force_ids=force_ids,
+    )
+    queue_cards.extend(queued_existing_event_dupes)
+    removed_by_existing_event_recheck = len(queued_existing_event_dupes)
     public_existing_memory_cards = _public_cards(preserved_cards)
     _emit_sync_progress(
         progress_callback,
@@ -3432,7 +3818,7 @@ def sync_accounts(
     payload["excluded_cards"] = removed_count
     payload["excluded_by_selection"] = removed_by_selection
     payload["excluded_by_feedback"] = removed_by_feedback
-    payload["excluded_by_existing_dedupe"] = int(removed_by_existing_dedupe)
+    payload["excluded_by_existing_dedupe"] = int(removed_by_existing_dedupe + removed_by_existing_event_recheck)
     payload["excluded_by_source_preference"] = int(removed_by_source_pref)
     payload["key_terms"] = key_terms
     payload["intel_sections"] = sections
@@ -3474,7 +3860,8 @@ def sync_accounts(
         "excluded_count": len(feedback_excluded_ids),
     }
     payload["dedupe_stats"] = {
-        "existing_duplicate_removed": int(removed_by_existing_dedupe),
+        "existing_duplicate_removed": int(removed_by_existing_dedupe + removed_by_existing_event_recheck),
+        "existing_event_recheck_removed": int(removed_by_existing_event_recheck),
         "source_preference_removed": int(removed_by_source_pref),
         "ai_removed": int(ai_deduped),
         "local_removed": int(local_deduped),
@@ -3517,7 +3904,8 @@ def sync_accounts(
         "dedupe_batch_embedding_candidate_pairs": int(batch_embedding_dedupe_stats.get("candidate_pair_count", 0) or 0),
         "removed_by_selection": int(removed_by_selection),
         "removed_by_feedback": int(removed_by_feedback),
-        "removed_by_existing_dedupe": int(removed_by_existing_dedupe),
+        "removed_by_existing_dedupe": int(removed_by_existing_dedupe + removed_by_existing_event_recheck),
+        "removed_by_existing_event_recheck": int(removed_by_existing_event_recheck),
         "removed_by_source_preference": int(removed_by_source_pref),
         "removed_by_ai_dedupe": int(ai_deduped),
         "removed_by_local_dedupe": int(local_deduped),

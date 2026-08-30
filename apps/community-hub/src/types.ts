@@ -1,14 +1,16 @@
 export const LANGUAGES = ["zh-Hant", "zh-Hans", "en", "ko"] as const;
 
 export type Language = (typeof LANGUAGES)[number];
-export type HubView = "overview" | "official" | "feed" | "events" | "future" | "sbt" | "profile" | "guide" | "article" | "records" | "media" | "knowledge";
+export type HubView = "overview" | "official" | "feed" | "events" | "future" | "sbt" | "profile" | "guide" | "article" | "records" | "media" | "knowledge" | "manage";
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
 export type PlanStatus = "upcoming" | "in_progress" | "completed" | "cancelled" | "not_plan" | "needs_review";
 
 export interface FeedCard {
   account?: string;
+  ai_status?: string;
   bullets?: string[];
   card_type?: string;
+  classified_by?: string;
   cover_image?: string;
   dedupe_status?: string;
   detail_lines?: string[];
@@ -25,7 +27,14 @@ export interface FeedCard {
   event_region_model?: string;
   event_region_version?: string;
   event_wall?: boolean;
+  editorial_revision?: number;
+  editorial_updated_at?: string;
+  editorial_updated_by?: string;
   glance?: string;
+  id?: string;
+  manual_bottom?: boolean;
+  manual_pick?: boolean;
+  manual_pin?: boolean;
   published_at?: string;
   plan_ai_model?: string;
   plan_ai_version?: string;
@@ -33,6 +42,7 @@ export interface FeedCard {
   plan_status_checked_at?: string;
   plan_status_reason?: string;
   raw_text?: string;
+  review_status?: string;
   semantic_text?: string;
   sbt_acquisition?: string;
   sbt_name?: string;
@@ -62,6 +72,7 @@ export interface OfficialOverview {
 }
 
 export interface IntelFeed {
+  account_projects?: Record<string, string>;
   cards?: FeedCard[];
   community_metrics?: {
     accounts?: Record<string, CommunityMetric>;
@@ -127,13 +138,34 @@ export type LocalizedText = Partial<Record<Language, string>>;
 export interface GuideSection {
   bullets?: string[];
   image?: number;
+  imageUrl?: string;
   intro?: string;
   introTitle?: string;
   items?: Array<[string, string]>;
+  layout?: "image-left" | "image-right" | "image-top";
   primer?: Array<[string, string]>;
   text?: string;
   title?: string;
+  topic?: string;
   type?: "intro" | "steps" | "imageText" | "cards" | "sbtChecklist" | "ratings";
+}
+
+export interface GuideTopic {
+  anchor?: string;
+  icon?: string;
+  id: string;
+  subtitle?: string;
+  title?: string;
+}
+
+export interface LegacySbtItem {
+  badge?: string | LocalizedText;
+  difficulty?: number;
+  icons?: string[];
+  key?: string;
+  name?: string | LocalizedText;
+  requirement?: string | LocalizedText;
+  status?: string;
 }
 
 export interface LegacyGuideData {
@@ -151,7 +183,32 @@ export interface LegacyBeginnerData {
   guides?: Partial<Record<Language, LegacyGuideData>>;
   images?: string[];
   labels?: Partial<Record<Language, Record<string, string>>>;
+  menuLabels?: Partial<Record<Language, { groups?: Array<[string, string, string[], string?]>; label?: string; overview?: string; title?: string }>>;
+  sbtItems?: LegacySbtItem[];
+  sbtRequirements?: Partial<Record<Language, Record<string, string>>>;
+  topics?: Partial<Record<Language, GuideTopic[]>>;
+  toolNames?: Partial<Record<Language, Record<string, string>>>;
   tools?: Array<{ authors?: string[]; link?: string; linkLabel?: string | LocalizedText; name?: LocalizedText }>;
+}
+
+export interface BeginnerWikiMeta {
+  auto_translate?: boolean;
+  cache_seconds?: number;
+  content_hash?: string;
+  provider?: string;
+  revision?: number;
+  slug?: string;
+  source?: string;
+  studio_url?: string;
+  translation_modes?: string[];
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface BeginnerWikiDocument {
+  data: LegacyBeginnerData;
+  exists: boolean;
+  meta: BeginnerWikiMeta;
 }
 
 declare global {

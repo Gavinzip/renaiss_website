@@ -97,7 +97,14 @@ POKEMON_TOPIC_RE = re.compile(
 )
 COMMUNITY_TAG_RE = re.compile(r"(?<![A-Za-z0-9_])(?:#renaiss|@renaissxyz)(?![A-Za-z0-9_])", re.I)
 X_SOURCE_URL_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/", re.I)
-OFFICIAL_X_HANDLES = {"renaissxyz"}
+OFFICIAL_X_HANDLES = {
+    "renaissxyz",
+    "renaiss_index",
+    "renaiss_fi",
+    "vinciwld",
+    "tastedotmd",
+    "renaisscltb",
+}
 REGIONAL_COMMUNITY_X_HANDLE_LABELS = ("RenaissKrCM", "RenaissMyCM", "RenaissTwCM", "renaiss_vn", "Renaiss_TH")
 REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_X_HANDLE_LABELS}
 REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
@@ -109,6 +116,7 @@ EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
 PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
 EVENT_REGION_IDS = {"tw", "kr", "my", "vn", "th", "global", "multi_region", "unknown"}
 PRODUCT_PROGRESS_X_HANDLE = "renaissxyz"
+PRODUCT_PROGRESS_X_HANDLES = set(OFFICIAL_X_HANDLES)
 AI_REVIEW_AUTO_APPROVED = "auto_approved"
 AI_REVIEW_ADMIN_QUEUE = "admin_queue"
 AI_REVIEW_ADMIN_OVERRIDDEN = "admin_overridden"

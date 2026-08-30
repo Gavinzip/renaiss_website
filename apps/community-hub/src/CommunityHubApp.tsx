@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { AdminToolsProvider } from "@/components/admin/AdminToolsContext";
 import { EMPTY_AUTH_STATE, logout, readAuthState, renaissLoginUrl, type HubAuthState } from "@/lib/auth";
 import { intelApiUrl } from "@/lib/api";
 import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
 import { useHubRoute } from "@/lib/routes";
-import type { FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
+import { readBeginnerWiki } from "@/lib/wiki";
+import { readAdminFeed } from "@/lib/admin";
+import type { BeginnerWikiDocument, FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
 import { CommunityView, EventsView, FutureView, MediaView, OfficialView } from "@/views/FeedViews";
 import { OverviewView } from "@/views/OverviewView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
 import { ArticleView, GuideView, SbtView } from "@/views/SbtGuideViews";
 import { ProfileView } from "@/views/profile/ProfileView";
+
+const AdminView = lazy(() => import("@/views/admin/AdminView").then((module) => ({ default: module.AdminView })));
 
 const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
 
@@ -34,6 +39,8 @@ function initialLanguage(): Language {
 export function CommunityHubApp() {
   const [lang, setLang] = useState<Language>(initialLanguage);
   const [feed, setFeed] = useState<IntelFeed | null>(null);
+  const [adminFeed, setAdminFeed] = useState<IntelFeed | null>(null);
+  const [adminFeedError, setAdminFeedError] = useState("");
   const [loading, setLoading] = useState(true);
   const [sourceError, setSourceError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -43,6 +50,9 @@ export function CommunityHubApp() {
   const [leaderboardError, setLeaderboardError] = useState("");
   const [auth, setAuth] = useState<HubAuthState>(EMPTY_AUTH_STATE);
   const [authLoading, setAuthLoading] = useState(true);
+  const [wiki, setWiki] = useState<BeginnerWikiDocument | null>(null);
+  const [wikiLoading, setWikiLoading] = useState(false);
+  const [wikiError, setWikiError] = useState("");
   const { route, navigate } = useHubRoute();
   const articleBackView = useRef<Exclude<HubView, "article">>("overview");
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
@@ -81,6 +91,12 @@ export function CommunityHubApp() {
   }, [lang, route.view]);
 
   useEffect(() => {
+    if (!authLoading && route.view === "manage" && !auth.permissions.admin) {
+      navigate({ view: "overview", article: "" }, true);
+    }
+  }, [auth.permissions.admin, authLoading, navigate, route.view]);
+
+  useEffect(() => {
     if (route.view === "profile") {
       setLoading(false);
       setSourceError("");
@@ -110,7 +126,24 @@ export function CommunityHubApp() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [lang, refreshKey, route.view]);
+  }, [lang, refreshKey]);
+
+  useEffect(() => {
+    if (!auth.permissions.admin) {
+      setAdminFeed(null);
+      setAdminFeedError("");
+      return;
+    }
+    const controller = new AbortController();
+    setAdminFeedError("");
+    void readAdminFeed(controller.signal)
+      .then(setAdminFeed)
+      .catch((error: unknown) => {
+        setAdminFeed(null);
+        setAdminFeedError(error instanceof Error ? error.message : "無法讀取管理內容");
+      });
+    return () => controller.abort();
+  }, [auth.permissions.admin, refreshKey]);
 
   useEffect(() => {
     if (route.view !== "records") return;
@@ -139,6 +172,26 @@ export function CommunityHubApp() {
       controller.abort();
     };
   }, [route.view, refreshKey]);
+
+  useEffect(() => {
+    if (route.view !== "guide" && route.view !== "sbt") return;
+    const controller = new AbortController();
+    let mounted = true;
+    setWikiLoading(true);
+    setWikiError("");
+    void readBeginnerWiki(controller.signal)
+      .then((document) => { if (mounted) setWiki(document); })
+      .catch((error: unknown) => {
+        if (!mounted || (error instanceof DOMException && error.name === "AbortError")) return;
+        setWiki(null);
+        setWikiError(error instanceof Error ? error.message : "wiki_request_failed");
+      })
+      .finally(() => { if (mounted) setWikiLoading(false); });
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [route.view]);
 
   useEffect(() => {
     if (!hasPendingTranslation || translationRetries >= 10) return;
@@ -170,19 +223,20 @@ export function CommunityHubApp() {
   const status = route.view === "profile" ? "" : loading ? text(lang, "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
 
   let view = null;
-  const shared = { cards, communityMetrics: feed?.community_metrics, officialOverview: feed?.official_overview, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
+  const shared = { accountProjects: feed?.account_projects ?? {}, cards, communityMetrics: feed?.community_metrics, officialOverview: feed?.official_overview, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
   if (route.view === "official") view = <OfficialView {...shared} />;
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
   else if (route.view === "future") view = <FutureView {...shared} />;
-  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} />;
+  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
-  else if (route.view === "guide") view = <GuideView cards={cards} lang={lang} onOpenArticle={openArticle} topicId={route.guide} onTopicChange={openGuide} />;
+  else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go(articleBackView.current)} />;
   else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;
   else if (route.view === "media") view = <MediaView {...shared} />;
   else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={() => openGuide("overview")} />;
-  else view = <OverviewView cards={cards} lang={lang} onNavigate={go} />;
+  else if (route.view === "manage" && auth.permissions.admin) view = <Suspense fallback={<div className="community-hub-source-state"><strong>正在載入管理工具…</strong></div>}><AdminView cards={adminFeed?.cards ?? []} lang={lang} onRefresh={refresh} sourceError={adminFeedError} /></Suspense>;
+  else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} />;
 
-  return <AppShell auth={auth} authLoading={authLoading} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell>;
+  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
 }

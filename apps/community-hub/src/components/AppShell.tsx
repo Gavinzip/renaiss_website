@@ -17,6 +17,7 @@ const navItems: Array<{ icon: string; view: Exclude<HubView, "article"> }> = [
   { view: "records", icon: "trophy" },
   { view: "media", icon: "newspaper" },
   { view: "knowledge", icon: "book-open-check" },
+  { view: "manage", icon: "settings-2" },
 ];
 
 interface AppShellProps {
@@ -42,6 +43,7 @@ export function AppShell({ auth, authLoading, children, lang, loading, onLanguag
         <a className="brand" href="./" aria-label="Renaiss Community Hub"><img className="brand-logo" src={assets.renaissLogo} alt="Renaiss Logo" /><span className="brand-text">Renaiss Community Hub</span></a>
         <div className="community-hub-topbar-actions">
           <a className="community-hub-legacy-link" href="../index.html#cat-events">{text(lang, "app.legacy")}</a>
+          {auth.permissions.admin ? <button type="button" className="community-hub-manage-button" onClick={() => onNavigate("manage")}><Icon name="settings-2" /><span>{text(lang, "nav.manage")}</span></button> : null}
           {auth.authenticated
             ? <button type="button" className="community-hub-auth-button is-authenticated" onClick={onLogout} title={text(lang, "auth.logout")}><Icon name="circle-user-round" /><span>{authName || text(lang, "auth.account")}</span><Icon name="log-out" /></button>
             : <button type="button" className="community-hub-auth-button" onClick={onLogin} disabled={authLoading || !auth.renaiss_sso_configured}><Icon name="log-in" /><span>{authLoading ? text(lang, "auth.checking") : text(lang, "auth.login")}</span></button>}
@@ -53,7 +55,7 @@ export function AppShell({ auth, authLoading, children, lang, loading, onLanguag
         <aside className="community-hub-sidebar" aria-label="Community Hub sections">
           <div className="community-hub-sidebar-head"><p className="community-hub-sidebar-label">{text(lang, "app.source")}</p><span className={`community-hub-source-dot${sourceState === "live" ? " is-live" : sourceState === "error" ? " is-error" : ""}`} aria-hidden="true" /></div>
           <nav className="community-hub-nav-list">
-            {navItems.map((item) => <button key={item.view} type="button" className={`community-hub-nav-item${view === item.view ? " is-active" : ""}`} onClick={() => onNavigate(item.view)} aria-current={view === item.view ? "page" : undefined}><Icon name={item.icon} /><span>{text(lang, `nav.${item.view}`)}</span></button>)}
+            {navItems.filter((item) => item.view !== "manage" || auth.permissions.admin).map((item) => <button key={item.view} type="button" className={`community-hub-nav-item${view === item.view ? " is-active" : ""}`} onClick={() => onNavigate(item.view)} aria-current={view === item.view ? "page" : undefined}><Icon name={item.icon} /><span>{text(lang, `nav.${item.view}`)}</span></button>)}
           </nav>
           <div className="community-hub-sidebar-foot"><a href="../beginner.html?topic=start"><Icon name="book-marked" /><span>{text(lang, "app.wiki")}</span></a><a href="../agent.html"><Icon name="bot-message-square" /><span>{text(lang, "app.agent")}</span></a></div>
         </aside>

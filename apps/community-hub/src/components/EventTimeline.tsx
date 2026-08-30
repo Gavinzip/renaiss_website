@@ -1,5 +1,6 @@
 import { CardMedia } from "@/components/ContentCard";
 import { Icon } from "@/components/Icon";
+import { InlineCardAdmin } from "@/components/admin/InlineCardAdmin";
 import { eventStatus, formatDate, safeUrl, toDate } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { eventRegion, eventRegionLabel, isRegionalCommunitySource, preferredEventRegion } from "@/lib/regions";
@@ -93,6 +94,7 @@ function EventTimelineItem({ card, lang, onOpenArticle }: EventTimelineItemProps
         <small>{dateContext(card, lang)}</small>
       </time>
       <span className={`community-hub-event-state is-${status}`}>{statusLabel(lang, status)}</span>
+      {card.manual_pin ? <span className="community-hub-event-pin"><Icon name="pin" />{text(lang, "card.pinned")}</span> : null}
     </div>
 
     <button type="button" className="community-hub-event-media-button" onClick={openArticle} disabled={!source} aria-label={card.title || "Renaiss"}>
@@ -115,6 +117,7 @@ function EventTimelineItem({ card, lang, onOpenArticle }: EventTimelineItemProps
         </div> : null}
       </footer>
     </div>
+    <InlineCardAdmin card={card} />
   </li>;
 }
 

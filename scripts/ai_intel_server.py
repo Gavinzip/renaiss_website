@@ -43,12 +43,15 @@ from x_intel_core import (
     apply_manual_selection_to_feed_snapshot,
     feedback_memory_stats,
     load_environment,
+    read_editorial_audit,
     read_x_source_config,
     refresh_card_content,
     resolve_minimax_key,
+    public_event_duplicate_ids,
     set_manual_selection,
     sync_accounts,
     update_card_classification_fields,
+    update_card_editorial_fields,
     update_card_event_wall_field,
     update_card_sbt_fields,
     update_card_timeline_fields,
@@ -82,6 +85,7 @@ from directus_wiki import (
     wiki_data_hash,
     write_directus_beginner_wiki,
 )
+from admin_session_store import AuthStateStore
 from expo_profile_store import ExpoProfileStore, ProfileIdentity
 from privy_auth import PrivyAuthError, claims_from_authorization_header
 from renaiss_wallet_client import sync_wallet_cards
@@ -89,6 +93,7 @@ from renaiss_sso import (
     RenaissSsoError,
     begin_login as begin_renaiss_login,
     complete_login as complete_renaiss_login,
+    configure_auth_state_store,
     public_identity as public_renaiss_identity,
     renaiss_sso_admin_configured,
     renaiss_sso_enabled,
@@ -128,20 +133,20 @@ POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
 BEGINNER_WIKI_CONTENT_PATH = DATA_ROOT / "beginner_wiki_content.json"
 BEGINNER_WIKI_HISTORY_PATH = DATA_ROOT / "beginner_wiki_history.jsonl"
 PROFILE_STORE = ExpoProfileStore(DATA_ROOT / "expo_profile.sqlite3")
+AUTH_STATE_STORE = AuthStateStore(DATA_ROOT / "community_hub_auth.sqlite3")
+configure_auth_state_store(AUTH_STATE_STORE)
 POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 PUBLIC_FEEDBACK_LOCK = Lock()
 POKEMON_NEWS_LOCK = Lock()
 POKEMON_NEWS_STATE_LOCK = Lock()
-SESSIONS_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
 COMMUNITY_METRICS_LOCK = Lock()
 BEGINNER_WIKI_LOCK = Lock()
 PRIORITY_ACTIVITY_LOCK = Lock()
-SESSIONS: dict[str, dict[str, object]] = {}
 PRIORITY_ACTIVITY: dict[str, object] = {
     "last_user_request_at": 0.0,
     "last_card_scan_at": 0.0,
@@ -415,6 +420,7 @@ PROTECTED_POST_PATHS = {
     "/api/intel/event-wall",
     "/api/intel/sbt-fields",
     "/api/intel/feedback",
+    "/api/intel/editorial",
     "/api/intel/refresh-content",
     "/api/intel/source-config",
     "/api/intel/job-status",
@@ -551,7 +557,7 @@ def _is_priority_request_path(path: str) -> bool:
         return True
     if raw.endswith((".js", ".css")) and "/assets/" in raw:
         return True
-    if raw in {"/api/intel/feed", "/api/intel/admin-status", "/api/open-monitor/leaderboard"}:
+    if raw in {"/api/intel/feed", "/api/intel/admin-feed", "/api/intel/admin-status", "/api/open-monitor/leaderboard"}:
         return True
     return False
 
@@ -782,17 +788,6 @@ def _collectible_attribute(collectible: dict, name: str) -> str:
     return ""
 
 
-def _purge_sessions_unlocked(now_iso: str | None = None) -> None:
-    now_dt = _parse_iso_utc(now_iso) if now_iso else datetime.now(timezone.utc)
-    stale = []
-    for sid, data in SESSIONS.items():
-        exp = _parse_iso_utc(str(data.get("expires_at") or ""))
-        if not exp or exp <= now_dt:
-            stale.append(sid)
-    for sid in stale:
-        SESSIONS.pop(sid, None)
-
-
 def _create_session(
     username: str,
     role: str = "admin",
@@ -803,16 +798,15 @@ def _create_session(
     now = datetime.now(timezone.utc)
     expires = now + timedelta(seconds=SESSION_TTL_SECONDS)
     token = secrets.token_urlsafe(32)
-    with SESSIONS_LOCK:
-        _purge_sessions_unlocked(now.isoformat())
-        SESSIONS[token] = {
-            "username": username,
-            "role": str(role or "creator").strip().lower() or "creator",
-            "auth_provider": str(auth_provider or "password").strip().lower() or "password",
-            "identity": dict(identity) if isinstance(identity, dict) else {},
-            "created_at": now.isoformat(),
-            "expires_at": expires.isoformat(),
-        }
+    state = {
+        "username": username,
+        "role": str(role or "creator").strip().lower() or "creator",
+        "auth_provider": str(auth_provider or "password").strip().lower() or "password",
+        "identity": dict(identity) if isinstance(identity, dict) else {},
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+    }
+    AUTH_STATE_STORE.save_session(token, state, expires.timestamp())
     return token
 
 
@@ -820,20 +814,15 @@ def _get_session(session_id: str) -> dict | None:
     sid = str(session_id or "").strip()
     if not sid:
         return None
-    with SESSIONS_LOCK:
-        _purge_sessions_unlocked()
-        state = SESSIONS.get(sid)
-        if not isinstance(state, dict):
-            return None
-        return dict(state)
+    state = AUTH_STATE_STORE.get_session(sid)
+    return dict(state) if isinstance(state, dict) else None
 
 
 def _delete_session(session_id: str) -> None:
     sid = str(session_id or "").strip()
     if not sid:
         return
-    with SESSIONS_LOCK:
-        SESSIONS.pop(sid, None)
+    AUTH_STATE_STORE.delete_session(sid)
 
 
 def _auth_result_path(return_to: str, status: str) -> str:
@@ -1520,7 +1509,43 @@ def _read_feed_snapshot() -> dict:
         raw = json.loads(FEED_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    return _attach_knowledge_memory_stats(raw) if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    return _attach_x_source_metadata(_attach_knowledge_memory_stats(raw))
+
+
+def _card_is_public(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if bool(item.get("manual_pick")) or str(item.get("classified_by") or "").strip().lower() == "manual":
+        return True
+    review_status = str(item.get("review_status") or "").strip().lower()
+    ai_status = str(item.get("ai_status") or "").strip().lower()
+    if "queue" in review_status:
+        return False
+    return ai_status not in {"pending", "needs_review", "failed"}
+
+
+def _public_feed_snapshot(feed: dict, *, hidden_event_duplicate_ids: set[str] | None = None) -> dict:
+    public = dict(feed)
+    cards = feed.get("cards")
+    eligible_public_cards = [item for item in cards if _card_is_public(item)] if isinstance(cards, list) else []
+    hidden_ids = set(hidden_event_duplicate_ids or set())
+    hidden_public_ids = {
+        str(item.get("id") or "").strip()
+        for item in eligible_public_cards
+        if str(item.get("id") or "").strip() in hidden_ids
+    }
+    public_cards = [
+        item
+        for item in eligible_public_cards
+        if str(item.get("id") or "").strip() not in hidden_public_ids
+    ]
+    public["cards"] = public_cards
+    public["total_cards"] = len(public_cards)
+    public["review_queue_hidden"] = max(0, len(cards) - len(eligible_public_cards)) if isinstance(cards, list) else 0
+    public["existing_event_duplicates_hidden"] = len(hidden_public_ids)
+    return public
 
 
 def _read_knowledge_memory_stats() -> dict:
@@ -1571,6 +1596,22 @@ def _attach_knowledge_memory_stats(feed: dict) -> dict:
                 pipeline_counts["knowledge_memory_embedding_ready"] = _safe_int(stats.get("embedding_ready_count"), 0)
                 feed["pipeline_counts"] = pipeline_counts
     return feed
+
+
+def _attach_x_source_metadata(feed: dict) -> dict:
+    if not isinstance(feed, dict):
+        return feed
+    source_config = read_x_source_config()
+    account_projects = source_config.get("account_projects")
+    if not isinstance(account_projects, dict):
+        account_projects = {}
+    enriched = dict(feed)
+    enriched["account_projects"] = {
+        str(account): str(project_id)
+        for account, project_id in account_projects.items()
+        if str(account).strip() and str(project_id).strip()
+    }
+    return enriched
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -2886,6 +2927,8 @@ def _build_admin_status(limit: int = 10) -> dict:
         "monitors": {
             "x": {
                 "accounts": [str(x) for x in (x_source_config.get("x_accounts") or []) if str(x).strip()],
+                "account_categories": x_source_config.get("account_categories") if isinstance(x_source_config.get("account_categories"), dict) else {},
+                "account_projects": x_source_config.get("account_projects") if isinstance(x_source_config.get("account_projects"), dict) else {},
                 "pokemon_accounts": [str(x) for x in (x_source_config.get("pokemon_accounts") or []) if str(x).strip()],
                 "default_accounts": [str(x) for x in (x_source_config.get("default_x_accounts") or []) if str(x).strip()],
                 "using_default": bool(x_source_config.get("using_default")),
@@ -3500,6 +3543,9 @@ class Handler(SimpleHTTPRequestHandler):
         state = _get_session(session_id)
         if not state:
             return {}
+        if str(state.get("auth_provider") or "").strip().lower() == "renaiss":
+            identity = state.get("identity") if isinstance(state.get("identity"), dict) else {}
+            state["role"] = renaiss_role_for_identity(identity)
         return state
 
     def _permission_payload(self, role: str) -> dict:
@@ -3624,12 +3670,17 @@ class Handler(SimpleHTTPRequestHandler):
         extra_headers: dict[str, str] | list[tuple[str, str]] | None = None,
     ) -> bool:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        accepts_gzip = "gzip" in str(self.headers.get("Accept-Encoding") or "").lower()
+        encoded = gzip.compress(raw, compresslevel=5) if accepts_gzip and len(raw) >= 1024 else raw
         try:
             self.send_response(int(status))
             self._set_cors_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Vary", "Accept-Encoding")
+            if encoded is not raw:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(encoded)))
             if isinstance(extra_headers, dict):
                 for key, value in extra_headers.items():
                     self.send_header(str(key), str(value))
@@ -3637,7 +3688,7 @@ class Handler(SimpleHTTPRequestHandler):
                 for key, value in extra_headers:
                     self.send_header(str(key), str(value))
             self.end_headers()
-            self.wfile.write(raw)
+            self.wfile.write(encoded)
             return True
         except OSError as exc:
             if _is_client_disconnect_error(exc):
@@ -5466,6 +5517,23 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/tcg-profile":
             self._send_tcg_profile()
             return
+        if path == "/api/intel/admin-feed":
+            if not self._require_admin_access():
+                return
+            feed = _read_feed_snapshot()
+            if not isinstance(feed.get("cards"), list):
+                self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            _strip_missing_cover_images(feed)
+            self._send_json({"ok": True, "feed": feed, "lang": "zh-Hant"})
+            return
+        if path == "/api/intel/editorial-history":
+            if not self._require_admin_access():
+                return
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
+            limit = _safe_int((params.get("limit") or ["50"])[0], 50)
+            self._send_json({"ok": True, "history": read_editorial_audit(limit=limit)})
+            return
         if path == "/api/intel/admin-status":
             if not self._require_admin_access():
                 return
@@ -5530,8 +5598,14 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(feed, dict):
                 self._send_json({"ok": False, "error": "feed format invalid"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-            feed = _attach_knowledge_memory_stats(feed)
-            localized_feed = localized_feed_from_bundle(feed, request_lang)
+            feed = _attach_x_source_metadata(_attach_knowledge_memory_stats(feed))
+            base_cards = feed.get("cards") if isinstance(feed.get("cards"), list) else []
+            base_public_cards = [item for item in base_cards if _card_is_public(item)]
+            hidden_event_duplicate_ids = public_event_duplicate_ids(base_public_cards)
+            localized_feed = _public_feed_snapshot(
+                localized_feed_from_bundle(feed, request_lang),
+                hidden_event_duplicate_ids=hidden_event_duplicate_ids,
+            )
             _strip_missing_cover_images(localized_feed)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return
@@ -5579,6 +5653,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/event-wall",
             "/api/intel/sbt-fields",
             "/api/intel/feedback",
+            "/api/intel/editorial",
             "/api/intel/refresh-content",
             "/api/intel/source-config",
             "/api/intel/job-status",
@@ -5872,6 +5947,28 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "feed": result})
                 return
 
+            if path == "/api/intel/editorial":
+                tweet_id = str(payload.get("id") or "").strip()
+                patch = payload.get("patch")
+                expected_revision_raw = payload.get("expected_revision")
+                expected_revision = int(expected_revision_raw) if expected_revision_raw is not None else None
+                try:
+                    update = update_card_editorial_fields(
+                        tweet_id,
+                        patch=patch if isinstance(patch, dict) else {},
+                        actor=self._current_user() or "admin",
+                        expected_revision=expected_revision,
+                    )
+                except ValueError as exc:
+                    message = str(exc)
+                    status = HTTPStatus.CONFLICT if "revision conflict" in message else HTTPStatus.BAD_REQUEST
+                    self._send_json({"ok": False, "error": message}, status=status)
+                    return
+                feed = _read_feed_snapshot()
+                build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
+                self._send_json({"ok": True, "update": update})
+                return
+
             if path == "/api/intel/pick":
                 tweet_id = str(payload.get("id") or "").strip()
                 action = str(payload.get("action") or "").strip().lower()
@@ -5968,8 +6065,16 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/intel/source-config":
                 action = str(payload.get("action") or "").strip().lower()
                 account = str(payload.get("account") or "").strip()
+                category = str(payload.get("category") or "").strip()
+                project_id = str(payload.get("project_id") or "").strip()
                 accounts = payload.get("accounts")
-                source = update_x_source_accounts(action=action, account=account, accounts=accounts if isinstance(accounts, list) else None)
+                source = update_x_source_accounts(
+                    action=action,
+                    account=account,
+                    accounts=accounts if isinstance(accounts, list) else None,
+                    category=category,
+                    project_id=project_id,
+                )
                 self._send_json({"ok": True, "source": source})
                 return
 
@@ -6154,10 +6259,10 @@ def main() -> int:
         )
     print(
         "[ai-intel] API endpoints: "
-        "GET /api/auth/me, GET /api/auth/renaiss/start, GET /auth/callback, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-status, GET /api/open-monitor/leaderboard, "
+        "GET /api/auth/me, GET /api/auth/renaiss/start, GET /auth/callback, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-feed, GET /api/intel/admin-status, GET /api/intel/editorial-history, GET /api/open-monitor/leaderboard, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
+        "POST /api/intel/feedback, POST /api/intel/editorial, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
         "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/wiki/directus/translate, POST /api/card-scan/recognize, "
         "POST /api/card-scan/recognize-cards, "
         "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market, "

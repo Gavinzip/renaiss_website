@@ -4,6 +4,7 @@ import { coverUrl, formatDate, isCommunity, isOfficial, safeUrl } from "@/lib/fe
 import { text } from "@/lib/copy";
 import type { EventStatus, FeedCard, Language } from "@/types";
 import { Icon } from "./Icon";
+import { InlineCardAdmin } from "./admin/InlineCardAdmin";
 
 interface CardMediaProps {
   card: FeedCard;
@@ -67,6 +68,7 @@ export function ContentCard({ card, lang, onOpenArticle, sourceLabel, status = "
         {source ? <a href={source} target="_blank" rel="noreferrer">{text(lang, "action.original")}<Icon name="arrow-up-right" /></a> : null}
       </div>
     </div>
+    <InlineCardAdmin card={card} />
   </article>;
 }
 

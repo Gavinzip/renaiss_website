@@ -79,7 +79,6 @@ const toolGroups = [
     id: "product",
     icon: "layout-grid",
     links: [
-      ["Renaiss Game", "../game.html"],
       ["Renaiss Aggregator", "../index.html"],
       ["Card Scan", "../card_scan.html"],
       ["Renaiss Agent", "../agent.html"],
