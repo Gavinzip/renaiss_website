@@ -41,6 +41,7 @@ export interface FeedCard {
   plan_status?: PlanStatus;
   plan_status_checked_at?: string;
   plan_status_reason?: string;
+  product_progress_group_key?: string;
   raw_text?: string;
   review_status?: string;
   semantic_text?: string;

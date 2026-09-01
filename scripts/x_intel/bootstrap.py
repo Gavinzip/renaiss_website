@@ -52,8 +52,9 @@ TOPIC_LABEL_ALIASES = {
     "5": "other",
 }
 JINA_HOST = "r.jina.ai"
-JINA_MIN_INTERVAL_SECONDS = 6.0
-JINA_MAX_RETRIES = 3
+JINA_ANON_MIN_INTERVAL_SECONDS = 3.2
+JINA_KEYED_MIN_INTERVAL_SECONDS = 0.2
+JINA_MAX_RETRIES = 1
 JINA_RETRY_BASE_SECONDS = 0.9
 JINA_RATE_LOCK = Lock()
 SYNDICATION_RATE_LOCK = Lock()
@@ -111,13 +112,21 @@ REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_
 REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
-AI_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
+AI_CLASSIFICATION_VERSION = "20260901-official-account-roles2"
 PLAN_STATUS_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
 EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
 PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
 EVENT_REGION_IDS = {"tw", "kr", "my", "vn", "th", "global", "multi_region", "unknown"}
 PRODUCT_PROGRESS_X_HANDLE = "renaissxyz"
 PRODUCT_PROGRESS_X_HANDLES = set(OFFICIAL_X_HANDLES)
+OFFICIAL_X_ACCOUNT_ROLES = {
+    "renaissxyz": "Renaiss 卡牌主業務官方帳號",
+    "renaiss_index": "Renaiss Index 卡牌價格指數官方帳號",
+    "renaiss_fi": "Renaiss DeFi 收藏品金融官方帳號；fi 代表 finance，不是芬蘭地區",
+    "vinciwld": "Vinci World Web2 卡牌遊戲官方帳號",
+    "tastedotmd": "TasteMD 黑客松與開發者活動官方帳號",
+    "renaisscltb": "Renaiss Collectibles Web2 推廣與收藏活動官方帳號",
+}
 AI_REVIEW_AUTO_APPROVED = "auto_approved"
 AI_REVIEW_ADMIN_QUEUE = "admin_queue"
 AI_REVIEW_ADMIN_OVERRIDDEN = "admin_overridden"
@@ -327,6 +336,7 @@ class StoryCard:
 
 SYNDICATION_META_CACHE: dict[str, dict[str, Any]] = {}
 SYNDICATION_LAST_REQUEST_AT = 0.0
+SYNDICATION_BLOCKED_UNTIL_MONOTONIC = 0.0
 
 
 def project_root() -> Path:
@@ -597,13 +607,39 @@ def _is_jina_url(url: str) -> bool:
         return False
 
 
+class JinaCooldownError(RuntimeError):
+    """Raised when Reader has blocked this process and the current sync must continue."""
+
+
+def _jina_api_key() -> str:
+    return str(os.getenv("JINA_API_KEY") or "").strip()
+
+
+def _jina_request_timeout_seconds(default: int = 15) -> int:
+    try:
+        configured = int(os.getenv("JINA_REQUEST_TIMEOUT_SECONDS") or default)
+    except Exception:
+        configured = default
+    return max(5, min(configured, 30))
+
+
+def _jina_retry_count() -> int:
+    try:
+        configured = int(os.getenv("JINA_MAX_RETRIES") or JINA_MAX_RETRIES)
+    except Exception:
+        configured = JINA_MAX_RETRIES
+    return max(0, min(configured, 2))
+
+
 def _wait_for_jina_slot() -> None:
     global JINA_LAST_REQUEST_AT
     with JINA_RATE_LOCK:
         now = time.monotonic()
-        rate_wait_seconds = JINA_MIN_INTERVAL_SECONDS - (now - JINA_LAST_REQUEST_AT)
         block_wait_seconds = JINA_BLOCKED_UNTIL_MONOTONIC - now
-        wait_seconds = max(rate_wait_seconds, block_wait_seconds)
+        if block_wait_seconds > 0:
+            raise JinaCooldownError(f"jina_cooldown_active:{int(round(block_wait_seconds))}s")
+        min_interval = JINA_KEYED_MIN_INTERVAL_SECONDS if _jina_api_key() else JINA_ANON_MIN_INTERVAL_SECONDS
+        wait_seconds = min_interval - (now - JINA_LAST_REQUEST_AT)
         if wait_seconds > 0:
             time.sleep(wait_seconds)
         JINA_LAST_REQUEST_AT = time.monotonic()
@@ -661,41 +697,49 @@ def _retry_after_seconds(resp: requests.Response | None) -> float:
         return 0.0
 
 
-def fetch_text(url: str, timeout: int = 45) -> str:
+def fetch_text(url: str, timeout: int = 15) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; RenaissXIntel/1.0)",
         "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
     }
     is_jina = _is_jina_url(url)
-    attempts = JINA_MAX_RETRIES + 1 if is_jina else 1
+    jina_key = _jina_api_key() if is_jina else ""
+    if jina_key:
+        headers["Authorization"] = f"Bearer {jina_key}"
+    attempts = _jina_retry_count() + 1 if is_jina else 1
+    request_timeout = min(max(1, int(timeout)), _jina_request_timeout_seconds()) if is_jina else timeout
     last_error: Exception | None = None
     for attempt in range(attempts):
         resp: requests.Response | None = None
         try:
             if is_jina:
                 _wait_for_jina_slot()
-            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp = requests.get(url, headers=headers, timeout=request_timeout)
             if not is_jina or resp.status_code not in {429, 500, 502, 503, 504}:
                 resp.raise_for_status()
                 return resp.text
             resp.raise_for_status()
         except Exception as exc:
             last_error = exc
-            if not is_jina or attempt >= attempts - 1:
+            if not is_jina:
                 raise
             abuse_wait = _jina_abuse_block_wait_seconds(resp)
             if abuse_wait > 0:
                 _remember_jina_abuse_block(abuse_wait)
-                continue
+                raise JinaCooldownError(f"jina_abuse_block:{int(round(abuse_wait))}s") from exc
+            if attempt >= attempts - 1:
+                raise
+            if resp is not None and resp.status_code in {400, 401, 403, 404}:
+                raise
             retry_after = _retry_after_seconds(resp)
             backoff = retry_after or (JINA_RETRY_BASE_SECONDS * (2 ** attempt))
-            time.sleep(min(backoff, 12.0))
+            time.sleep(min(backoff, 5.0))
     if last_error:
         raise last_error
     raise RuntimeError("failed to fetch text")
 
 
-def fetch_profile_page(username: str) -> str:
+def fetch_profile_page(username: str, errors: list[str] | None = None) -> str:
     variants = [
         f"https://r.jina.ai/http://x.com/{username}",
         f"https://r.jina.ai/http://x.com/{username}?mx=1",
@@ -703,8 +747,16 @@ def fetch_profile_page(username: str) -> str:
     combined: list[str] = []
     for url in variants:
         try:
-            combined.append(fetch_text(url))
-        except Exception:
+            page = fetch_text(url)
+            if page:
+                combined.append(page)
+                if extract_status_ids(page, username):
+                    break
+        except Exception as exc:
+            if errors is not None:
+                errors.append(f"{type(exc).__name__}:{clean_text(str(exc))[:120]}")
+            if isinstance(exc, JinaCooldownError):
+                break
             continue
     return "\n\n".join(combined)
 
@@ -718,7 +770,7 @@ def fetch_account_status_ids_from_nitter_rss(username: str, limit: int = 80) -> 
         resp = requests.get(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; RenaissXIntel/1.0)"},
-            timeout=30,
+            timeout=max(3, min(int(os.getenv("NITTER_RSS_TIMEOUT_SECONDS") or "8"), 15)),
         )
         if resp.status_code != 200 or not resp.text.strip():
             return []
@@ -792,26 +844,44 @@ def _extract_syndication_cover(data: dict[str, Any]) -> str:
 
 
 def fetch_status_metadata(tweet_id: str, force: bool = False) -> dict[str, Any] | None:
+    global SYNDICATION_BLOCKED_UNTIL_MONOTONIC, SYNDICATION_LAST_REQUEST_AT
     sid = str(tweet_id or "").strip()
     if not sid:
         return None
     if not force and sid in SYNDICATION_META_CACHE:
         cached = SYNDICATION_META_CACHE.get(sid) or {}
         return dict(cached) if cached else None
+    if time.monotonic() < SYNDICATION_BLOCKED_UNTIL_MONOTONIC:
+        return None
     params = {"id": sid, "token": "a"}
+    resp: requests.Response | None = None
     try:
         min_interval = max(0.0, float(os.getenv("X_TWEET_RESULT_MIN_INTERVAL_SECONDS", "1.2") or "1.2"))
-        global SYNDICATION_LAST_REQUEST_AT
         with SYNDICATION_RATE_LOCK:
             if min_interval > 0:
                 elapsed = time.monotonic() - SYNDICATION_LAST_REQUEST_AT
                 if elapsed < min_interval:
                     time.sleep(min_interval - elapsed)
             SYNDICATION_LAST_REQUEST_AT = time.monotonic()
-            resp = requests.get(SYNDICATION_TWEET_URL, params=params, timeout=30)
+            try:
+                request_timeout = int(os.getenv("X_TWEET_RESULT_TIMEOUT_SECONDS") or "8")
+            except Exception:
+                request_timeout = 8
+            request_timeout = max(3, min(request_timeout, 15))
+            resp = requests.get(SYNDICATION_TWEET_URL, params=params, timeout=request_timeout)
             resp.raise_for_status()
             data = resp.json()
     except Exception:
+        status_code = int(resp.status_code) if resp is not None else 0
+        if status_code == 429 or status_code >= 500 or resp is None:
+            try:
+                cooldown = float(os.getenv("X_TWEET_RESULT_FAILURE_COOLDOWN_SECONDS") or "60")
+            except Exception:
+                cooldown = 60.0
+            SYNDICATION_BLOCKED_UNTIL_MONOTONIC = max(
+                SYNDICATION_BLOCKED_UNTIL_MONOTONIC,
+                time.monotonic() + max(5.0, min(cooldown, 300.0)),
+            )
         return None
 
     if not isinstance(data, dict) or not data:

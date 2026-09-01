@@ -3308,6 +3308,8 @@ def sync_accounts(
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
+    account_scan_meta: dict[str, dict[str, Any]] = {}
+    source_scan_errors: dict[str, list[str]] = {}
     discord_cfg = resolve_discord_monitor_config()
     scan_total_sources = len(target_accounts) + (1 if discord_cfg.get("enabled") else 0)
     scan_done_sources = 0
@@ -3328,7 +3330,32 @@ def sync_accounts(
             found_cards=len(account_cards),
             latest_source=f"@{username}",
         )
-        cards = collect_account_cards(username, since_dt=since_dt, max_posts=max_posts_per_account)
+        diagnostics: dict[str, Any] = {"account": username, "errors": []}
+        try:
+            cards = collect_account_cards(
+                username,
+                since_dt=since_dt,
+                max_posts=max_posts_per_account,
+                diagnostics=diagnostics,
+            )
+        except Exception as exc:
+            cards = []
+            diagnostics["errors"] = [f"{type(exc).__name__}:{clean_text(str(exc))[:160]}"]
+        account_scan_meta[username] = diagnostics
+        diagnostic_errors = [str(value) for value in diagnostics.get("errors", []) if str(value).strip()]
+        if diagnostic_errors:
+            source_scan_errors[username] = diagnostic_errors
+            _emit_sync_progress(
+                progress_callback,
+                "scan_source_error",
+                done_sources=scan_done_sources,
+                total_sources=scan_total_sources,
+                found_cards=len(account_cards),
+                latest_source=f"@{username}",
+                account=username,
+                elapsed_ms=int(diagnostics.get("elapsed_ms", 0) or 0),
+                error="; ".join(diagnostic_errors)[:260],
+            )
         account_cards.extend(cards)
         account_stats[username] = len(cards)
         scan_done_sources += 1
@@ -3479,13 +3506,13 @@ def sync_accounts(
 
     feedback_result = apply_feedback_overrides(existing_cards)
     _enforce_fixed_channel_topic_labels(existing_cards)
+    reclassified_existing_count = 0
+    plan_status_reclassified_count = 0
+    event_region_reclassified_count = 0
     plan_review_limit = _env_positive_int("INTEL_PLAN_STATUS_REVIEW_LIMIT", 80)
     plan_review_cards = [card for card in existing_cards if plan_status_review_due(card)][:plan_review_limit]
     event_region_review_limit = _env_positive_int("INTEL_EVENT_REGION_REVIEW_LIMIT", 80)
     event_region_review_cards = [card for card in existing_cards if event_region_review_due(card)][:event_region_review_limit]
-    reclassified_existing_count = 0
-    plan_status_reclassified_count = 0
-    event_region_reclassified_count = 0
     if api_key and plan_review_cards:
         plan_status_reclassified_count = apply_minimax_plan_status_review(
             plan_review_cards,
@@ -3571,6 +3598,9 @@ def sync_accounts(
                 ai_status=str(card.ai_status or ""),
                 review_status=str(card.review_status or ""),
             )
+
+    for card in [*existing_cards, *new_source_cards]:
+        normalize_official_account_role_copy(card)
 
     _emit_sync_progress(
         progress_callback,
@@ -3915,6 +3945,11 @@ def sync_accounts(
     }
     payload["removed_source_accounts"] = sorted(removed_source_accounts)
     payload["source_stats"] = account_stats
+    payload["source_scan"] = {
+        "accounts": account_scan_meta,
+        "errors": source_scan_errors,
+        "error_count": len(source_scan_errors),
+    }
     payload["new_source_stats"] = {
         "x": len(new_account_cards),
         "discord": len(new_discord_cards),

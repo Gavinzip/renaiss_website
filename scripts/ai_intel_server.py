@@ -40,9 +40,11 @@ from x_intel_core import (
     add_classification_feedback,
     add_classification_feedback_fields,
     add_manual_tweet,
+    attach_product_progress_group_keys,
     apply_manual_selection_to_feed_snapshot,
     feedback_memory_stats,
     load_environment,
+    migrate_official_account_role_copy_v1,
     read_editorial_audit,
     read_x_source_config,
     refresh_card_content,
@@ -2240,7 +2242,7 @@ def _record_sync_progress(event_name: str, payload: dict | None = None) -> None:
             SYNC_STATE["current_call_index"] = _safe_int(row.get("call_index"), 0)
             SYNC_STATE["current_prompt_len"] = _safe_int(row.get("prompt_len"), 0)
             SYNC_STATE["current_elapsed_ms"] = _safe_int(row.get("elapsed_ms"), 0)
-        if event_name in {"minimax_error", "refine_card_failed"}:
+        if event_name in {"scan_source_error", "minimax_error", "refine_card_failed"}:
             SYNC_STATE["last_error"] = str(row.get("error") or "")[:260]
         recent = SYNC_STATE.get("recent_events")
         recent_rows = recent if isinstance(recent, list) else []
@@ -2250,6 +2252,7 @@ def _record_sync_progress(event_name: str, payload: dict | None = None) -> None:
     if event_name in {
         "scan_start",
         "scan_source_start",
+        "scan_source_error",
         "scan_progress",
         "scan_done",
         "refine_start",
@@ -3425,7 +3428,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path.endswith("/page-prefetch.js"):
             return "no-store"
         filename = path.rsplit("/", 1)[-1]
-        if re.search(r"-[A-Za-z0-9_-]{8,}\.(?:css|js|json|svg|webp|png|jpe?g|gif|ico|woff2?)$", filename, re.IGNORECASE):
+        if re.search(r"-[A-Za-z0-9_-]{8,}\.(?:css|js|json|svg|avif|webp|png|jpe?g|gif|ico|woff2?|mp4)$", filename, re.IGNORECASE):
             return "public, max-age=31536000, immutable"
         if path.endswith((".js", ".css")):
             return "no-cache, max-age=0, must-revalidate"
@@ -5446,6 +5449,9 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self._request_path()
         _record_priority_request(path)
+        if path == "/favicon.ico":
+            self.path = "/assets/renaiss-favicon.png"
+            return super().do_GET()
         if self._send_data_file(path):
             return
         if path == "/api/auth/renaiss/start":
@@ -5606,6 +5612,11 @@ class Handler(SimpleHTTPRequestHandler):
                 localized_feed_from_bundle(feed, request_lang),
                 hidden_event_duplicate_ids=hidden_event_duplicate_ids,
             )
+            attach_product_progress_group_keys(localized_feed)
+            localized_cards = localized_feed.get("cards") if isinstance(localized_feed.get("cards"), list) else []
+            for card in localized_cards:
+                if isinstance(card, dict):
+                    migrate_official_account_role_copy_v1(card)
             _strip_missing_cover_images(localized_feed)
             self._send_json({"ok": True, "feed": localized_feed, "lang": _normalize_lang_tag(request_lang)})
             return

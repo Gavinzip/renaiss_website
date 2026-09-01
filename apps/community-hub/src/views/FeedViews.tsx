@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CommunityMapDialog } from "@/components/CommunityMapDialog";
 import { ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
@@ -8,7 +8,7 @@ import { OfficialSummaryDialog } from "@/components/OfficialSummaryDialog";
 import { Pagination } from "@/components/Pagination";
 import { ProjectFilterNav } from "@/components/ProjectFilterNav";
 import { ViewHeader } from "@/components/AppShell";
-import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isProductProgressSource, isUpcomingEventWithinDisplayWindow, planStatus, sortEventsByStatus } from "@/lib/feed";
+import { collapseProductMilestones, eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isProductProgressSource, isRecentOfficialUpdate, isUpcomingEventWithinDisplayWindow, isVisibleProductProgress, planStatus, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
 import { projectIdForCard, type AccountProjectMap, type ProjectId } from "@/lib/projects";
@@ -145,47 +145,57 @@ export function FutureView(props: FutureViewProps) {
   const { accountProjects, cards, lang, loading, onNavigate, onOpenArticle, onRefresh, translationPending } = props;
   const [filter, setFilter] = useState<"upcoming" | "in_progress" | "completed">("in_progress");
   const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
-  const productCards = useMemo(() => cards.filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
-  const projectCards = useMemo(() => productCards.filter((card) => (
+  const productSourceCards = useMemo(() => cards
+    .filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
+  const recentProductUpdates = useMemo(() => productSourceCards
+    .filter((card) => isRecentOfficialUpdate(card)), [productSourceCards]);
+  const projectCards = useMemo(() => productSourceCards.filter((card) => (
     projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
-  )), [accountProjects, productCards, projectFilter]);
-  const filterCards = useMemo(() => productCards.filter((card) => planStatus(card) === filter), [filter, productCards]);
-  const projectCounts = useMemo(() => filterCards.reduce((counts, card) => {
+  )), [accountProjects, productSourceCards, projectFilter]);
+  const milestoneCards = useMemo(() => collapseProductMilestones(projectCards.filter((card) => isVisibleProductProgress(card))), [projectCards]);
+  const recentProjectCards = useMemo(() => recentProductUpdates.filter((card) => (
+    projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
+  )), [accountProjects, projectFilter, recentProductUpdates]);
+  const projectCounts = useMemo(() => recentProductUpdates.reduce((counts, card) => {
     const projectId = projectIdForCard(card, accountProjects);
     if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
     return counts;
-  }, new Map<ProjectId, number>()), [accountProjects, filterCards]);
-  const statusCounts = useMemo(() => projectCards.reduce((counts, card) => {
+  }, new Map<ProjectId, number>()), [accountProjects, recentProductUpdates]);
+  const statusCounts = useMemo(() => milestoneCards.reduce((counts, card) => {
     const status = planStatus(card);
     if (status === "upcoming" || status === "in_progress" || status === "completed") counts.set(status, (counts.get(status) ?? 0) + 1);
     return counts;
-  }, new Map<"upcoming" | "in_progress" | "completed", number>()), [projectCards]);
-  const rows = useMemo(() => projectCards
+  }, new Map<"upcoming" | "in_progress" | "completed", number>()), [milestoneCards]);
+  const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
+  const availableFilters = useMemo(() => filters.filter(([value]) => (statusCounts.get(value) ?? 0) > 0), [statusCounts]);
+  useEffect(() => {
+    if (availableFilters.length && !availableFilters.some(([value]) => value === filter)) setFilter(availableFilters[0][0]);
+  }, [availableFilters, filter]);
+  const rows = useMemo(() => milestoneCards
     .filter((card) => planStatus(card) === filter)
     .sort((left, right) => {
       const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
       const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
       return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
-    }), [filter, projectCards]);
-  const recentOfficialUpdates = useMemo(() => projectFilter === "all" ? [] : projectCards
-    .filter((card) => planStatus(card) === "not_plan")
+    }), [filter, milestoneCards]);
+  const recentOfficialUpdates = useMemo(() => projectFilter === "all" ? [] : recentProjectCards
+    .filter((card) => !isVisibleProductProgress(card))
     .sort((left, right) => new Date(right.published_at || 0).valueOf() - new Date(left.published_at || 0).valueOf())
-    .slice(0, 3), [projectCards, projectFilter]);
+    .slice(0, 4), [projectFilter, recentProjectCards]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}:${projectFilter}`);
-  const awaitingClassification = projectCards.some((card) => !planStatus(card) || planStatus(card) === "needs_review");
-  const hasOfficialUpdates = projectCards.length > 0;
+  const hasOfficialUpdates = recentProjectCards.length > 0;
   const hasOtherProgress = [...statusCounts.values()].some((count) => count > 0);
   const emptyBodyKey = hasOtherProgress ? "future.empty.otherStatus" : hasOfficialUpdates ? "future.empty.withUpdates" : "future.empty.noUpdates";
-  const showRecentOfficialUpdates = pageRows.length === 0 && !awaitingClassification && !translationPending && recentOfficialUpdates.length > 0;
+  const showRecentOfficialUpdates = !translationPending && recentOfficialUpdates.length > 0;
   const openOfficialAction = <button type="button" className="community-hub-empty-link" onClick={() => onNavigate("official")}>{text(lang, "future.openOfficial")}<Icon name="arrow-right" /></button>;
-  const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
     <div className="community-hub-progress-controls">
-      <ProjectFilterNav active={projectFilter} allCount={filterCards.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
-      <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-progress-status-filter" aria-label={text(lang, "future.statusFilter")}>{filters.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}><span>{text(lang, label)}</span><span>{statusCounts.get(value) ?? 0}</span></button>)}</div>
+      <ProjectFilterNav active={projectFilter} allCount={recentProductUpdates.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
+      <p className="community-hub-progress-count-guide">{text(lang, "future.countGuide")}</p>
+      {availableFilters.length ? <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-progress-status-filter" aria-label={text(lang, "future.statusFilter")}>{availableFilters.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}><span>{text(lang, label)}</span><span>{statusCounts.get(value)}</span></button>)}</div> : null}
     </div>
-    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" ? "active" : "past"} statusLabel={text(lang, `filter.plan.${filter}`)} />) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "future.empty")} body={!awaitingClassification && !translationPending ? text(lang, emptyBodyKey) : undefined} action={!awaitingClassification && !translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" ? "active" : "past"} statusLabel={text(lang, `filter.plan.${filter}`)} />) : <EmptyState title={text(lang, translationPending ? "empty.translating" : "future.noMilestones")} body={!translationPending ? text(lang, emptyBodyKey) : undefined} action={!translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
     <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
     {showRecentOfficialUpdates ? <section className="community-hub-progress-updates" aria-labelledby="community-hub-progress-updates-title">
       <div className="community-hub-progress-updates-head">
@@ -203,7 +213,7 @@ export function EventsView({ accountProjects, cards, lang, loading, onOpenArticl
   const rows = useMemo(() => {
     const events = cards.filter((card) => isEvent(card, accountProjects));
     if (filter === "past") {
-      return sortEventsByStatus(events.filter((card) => eventStatus(card) === "past"), "past");
+      return sortEventsByStatus(events.filter((card) => eventStatus(card) === "past" && isPastEventWithinDisplayWindow(card)), "past");
     }
 
     const active = sortEventsByStatus(events.filter((card) => eventStatus(card) === "active"), "active");

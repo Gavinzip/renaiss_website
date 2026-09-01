@@ -4,7 +4,11 @@ import defaultCoverImage from "../../../../website/assets/renaiss-community-defa
 import renaissLogo from "../../../../website/assets/renaiss-logo-alpha-cropped.png";
 import type { LegacyBeginnerData, LegacySbtRow } from "@/types";
 
-const guideAssets = import.meta.glob("../../../../website/assets/beginner-guide/*", {
+const guideAssets = import.meta.glob([
+  "../../../../website/assets/beginner-guide/*",
+  "!../../../../website/assets/beginner-guide/report_Zekrom_ex_profile.png",
+  "!../../../../website/assets/beginner-guide/report_Zekrom_ex_data.png",
+], {
   eager: true,
   import: "default",
   query: "?url",

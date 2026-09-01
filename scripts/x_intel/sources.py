@@ -42,6 +42,7 @@ AI_UNSUPPORTED_TOPIC_TERMS = {
     "線上": re.compile(r"線上|线上|online", re.I),
     "獎勵": re.compile(r"獎勵|奖励|獎品|奖品|reward|prize", re.I),
 }
+_DISCORD_AUTH_FAILURE_FINGERPRINT = ""
 AI_TOPIC_SUPPORT_TERMS = {
     "Discord": re.compile(r"discord|discord\.com|discord-rest", re.I),
     "線上": re.compile(r"線上|线上|online|オンライン|web|www\.|https?://", re.I),
@@ -182,6 +183,52 @@ def _apply_plan_status(
     card.plan_status_checked_at = checked_at or datetime.now(timezone.utc).isoformat()
     card.plan_ai_model = str(model or minimax_model_name()).strip()
     card.plan_ai_version = PLAN_STATUS_CLASSIFICATION_VERSION
+    return True
+
+
+def migrate_official_account_role_copy_v1(payload: dict[str, Any]) -> bool:
+    """Idempotently repair the historical @renaiss_fi/Finland role mix-up."""
+    account = normalize_account_handle(payload.get("account"))
+    if account != "renaiss_fi":
+        return False
+    replacements = (
+        (r"Renaiss\s*(?:芬蘭|芬兰)\s*(?:區域帳號|区域账号)", "@renaiss_fi DeFi 官方帳號"),
+        (r"(?:芬蘭|芬兰)\s*(?:區域帳號|区域账号)", "DeFi 官方帳號"),
+        (r"Renaiss\s+Finland\s+(?:regional\s+)?account", "the official @renaiss_fi DeFi account"),
+        (r"Renaiss\s*핀란드\s*(?:지역\s*)?계정", "@renaiss_fi DeFi 공식 계정"),
+    )
+    changed = False
+
+    def repair(value: str) -> str:
+        nonlocal changed
+        result = str(value or "")
+        for pattern, replacement in replacements:
+            updated = re.sub(pattern, replacement, result, flags=re.I)
+            if updated != result:
+                changed = True
+                result = updated
+        return result
+
+    for field in ("title", "summary", "glance", "detail_summary", "classification_reason", "plan_status_reason"):
+        if field in payload:
+            payload[field] = repair(str(payload.get(field) or ""))
+    for field in ("bullets", "detail_lines"):
+        values = payload.get(field)
+        if isinstance(values, list):
+            payload[field] = [repair(str(item or "")) for item in values]
+    return changed
+
+
+def normalize_official_account_role_copy(card: StoryCard) -> bool:
+    """Apply the v1 role-copy data migration to a pipeline card."""
+    payload = card.to_dict()
+    changed = migrate_official_account_role_copy_v1(payload)
+    if not changed:
+        return False
+    for field in ("title", "summary", "glance", "detail_summary", "classification_reason", "plan_status_reason"):
+        setattr(card, field, str(payload.get(field) or ""))
+    card.bullets = [str(item or "") for item in payload.get("bullets", [])]
+    card.detail_lines = [str(item or "") for item in payload.get("detail_lines", [])]
     return True
 
 
@@ -1076,6 +1123,7 @@ def apply_minimax_story_refine(
     total_cards = len(cards)
     call_index = 0
     regional_cm_accounts = ", ".join(REGIONAL_COMMUNITY_X_HANDLE_LABELS)
+    official_product_accounts = "；".join(f"@{account}={role}" for account, role in OFFICIAL_X_ACCOUNT_ROLES.items())
     classification_date = datetime.now(timezone.utc).date().isoformat()
 
     def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
@@ -1180,6 +1228,7 @@ def apply_minimax_story_refine(
             "22) guides 只放教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊；一般心得、行情、公告、活動不能標 guides；"
             "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
             "24) official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord 公告來源；Pokemon Center、零售商、媒體或一般情報帳號不算 official；不要因為內文提到 @renaissxyz 就標 official；"
+            f"24b) 以下是官方產品帳號的固定身分：{official_product_accounts}。必須依這份對照理解來源，不可從帳號尾碼猜國家或地區；"
             f"24a) {regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X；除非原文有 #renaiss 或 @renaissxyz，否則不要標 community，也永遠不要因帳號名標 official；"
             "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
             "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
@@ -1208,6 +1257,7 @@ def apply_minimax_story_refine(
             "42) 整份 JSON 請控制在約 1500 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
+            f"來源帳號固定身分: {OFFICIAL_X_ACCOUNT_ROLES.get(normalize_account_handle(card.account), '非官方或社群來源')}\n"
             f"來源URL: {card.url}\n"
             f"發布時間: {card.published_at}\n"
             f"既有標題: {card.title}\n"
@@ -1228,12 +1278,14 @@ def apply_minimax_story_refine(
                     "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
                     "number_facts.text 只能放原文實際出現的價格、數量、名額、比例、成交價、積分門檻，不要放日期/時間/時區/純年份；原文沒有 Discord、直播、線上或獎勵時不可補。"
                     "official 只給 Renaiss 官方來源；other 只能單獨出現；events 只在 card_type=event 時使用。"
+                    f"官方產品帳號固定身分：{official_product_accounts}。不可從帳號尾碼猜國家或地區。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
                     f"規劃狀態以 {classification_date} 為判斷日；alpha 不是未來狀態。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
                     "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
+                    f"帳號固定身分:{OFFICIAL_X_ACCOUNT_ROLES.get(normalize_account_handle(card.account), '非官方或社群來源')}\n"
                     f"URL:{card.url}\n"
                     f"發布時間:{card.published_at}\n"
                     f"既有標題:{card.title}\n"
@@ -1428,8 +1480,10 @@ def apply_minimax_plan_status_review(
     total = len(cards)
 
     for index, card in enumerate(cards):
+        account = normalize_account_handle(card.account)
+        account_role = OFFICIAL_X_ACCOUNT_ROLES.get(account, "Renaiss 官方產品帳號")
         prompt = (
-            "你是 Renaiss 產品進度分類員。資料只來自 Renaiss 官方主帳號 @renaissxyz。"
+            "你是 Renaiss 產品進度分類員。資料來自 Renaiss 的官方產品帳號。"
             "只判斷這則原始貼文在指定日期的產品生命週期，不改寫任何文案。"
             "請輸出單一合法 JSON："
             "{\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\"}。"
@@ -1439,6 +1493,8 @@ def apply_minimax_plan_status_review(
             "completed 給已上線、售罄、完售、認領完畢、已結束，或原文所述單日發售/啟動日期已經過去的項目；"
             "cancelled 只給明確取消或終止；not_plan 給教學、回顧、一般資訊及沒有剩餘行動的公告；"
             "只有原文與日期仍不足以判斷時才用 needs_review。理由必須引用原文狀態訊號或日期，不可只說有 alpha 標籤。\n\n"
+            f"來源帳號：@{card.account}\n"
+            f"來源帳號固定身分：{account_role}\n"
             f"發布時間：{card.published_at}\n"
             f"時間欄位：開始={card.timeline_date or '空'}；結束={card.timeline_end_date or '空'}\n"
             f"標題：{card.title}\n"
@@ -1898,6 +1954,10 @@ def fetch_discord_channel_messages(
     limit: int = DEFAULT_DISCORD_MONITOR_LIMIT,
     after_message_id: str = "",
 ) -> list[dict[str, Any]]:
+    global _DISCORD_AUTH_FAILURE_FINGERPRINT
+    token_fingerprint = hashlib.sha256(str(token or "").encode("utf-8", "ignore")).hexdigest()
+    if token_fingerprint and token_fingerprint == _DISCORD_AUTH_FAILURE_FINGERPRINT:
+        raise RuntimeError("discord_auth_invalid")
     headers = {
         "Authorization": f"Bot {token}",
         "User-Agent": "RenaissIntelDiscordMonitor/1.0",
@@ -1909,8 +1969,11 @@ def fetch_discord_channel_messages(
     url = f"{DISCORD_API_BASE_URL}/channels/{channel_id}/messages"
     resp = requests.get(url, headers=headers, params=params, timeout=30)
     if resp.status_code >= 400:
+        if resp.status_code in {401, 403}:
+            _DISCORD_AUTH_FAILURE_FINGERPRINT = token_fingerprint
+            raise RuntimeError("discord_auth_invalid")
         body = clean_text(resp.text or "")[:120]
-        raise RuntimeError(f"HTTP {resp.status_code} {body}".strip())
+        raise RuntimeError(f"discord_http_{resp.status_code}:{body}".strip())
     data = resp.json()
     if not isinstance(data, list):
         return []
@@ -2040,7 +2103,14 @@ def collect_discord_cards(
     return ordered, stats, errors, meta
 
 
-def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DEFAULT_MAX_POSTS_PER_ACCOUNT) -> list[StoryCard]:
+def collect_account_cards(
+    username: str,
+    since_dt: datetime,
+    max_posts: int = DEFAULT_MAX_POSTS_PER_ACCOUNT,
+    diagnostics: dict[str, Any] | None = None,
+) -> list[StoryCard]:
+    scan_started = time.monotonic()
+    scan_errors: list[str] = []
     cached_payload = read_json(data_dir() / "x_intel_feed.json", {})
     cached_cards_raw = cached_payload.get("cards") if isinstance(cached_payload, dict) else []
     cached_cards: list[StoryCard] = []
@@ -2103,12 +2173,8 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
         max_posts=max_posts,
     )
 
-    ids: list[str] = []
-    for _ in range(3):
-        profile_text = fetch_profile_page(username)
-        ids = extract_status_ids(profile_text, username)
-        if ids:
-            break
+    profile_text = fetch_profile_page(username, errors=scan_errors)
+    ids: list[str] = extract_status_ids(profile_text, username)
 
     if len(ids) < max_posts:
         rss_ids = fetch_account_status_ids_from_nitter_rss(
@@ -2232,6 +2298,15 @@ def collect_account_cards(username: str, since_dt: datetime, max_posts: int = DE
     cards = merge_reply_chain_cards(cards)
     cards = merge_numbered_thread_cards(cards)
     cards.sort(key=lambda c: c.published_at, reverse=True)
+    if diagnostics is not None:
+        diagnostics.update({
+            "account": username,
+            "elapsed_ms": max(0, int(round((time.monotonic() - scan_started) * 1000))),
+            "discovered_ids": len(ids),
+            "cached_cards": len(cached_cards),
+            "result_cards": min(len(cards), max_posts),
+            "errors": list(dict.fromkeys(scan_errors))[:6],
+        })
     return cards[:max_posts]
 
 

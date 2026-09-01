@@ -43,7 +43,7 @@ function useAdminStatus() {
   };
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 15_000);
+    const timer = window.setInterval(() => void load(), 5_000);
     return () => window.clearInterval(timer);
   }, []);
   return { error, load, status };
@@ -57,6 +57,15 @@ function StatusSection({ cards, onRefresh }: { cards: FeedCard[]; onRefresh: () 
   const sync = status?.sync;
   const done = Number(sync?.progress_done_cards ?? 0);
   const total = Number(sync?.progress_total_cards ?? 0);
+  const doneSources = Number(sync?.progress_done_sources ?? 0);
+  const totalSources = Number(sync?.progress_total_sources ?? 0);
+  const latestSource = String(sync?.latest_source ?? "");
+  const isScanning = sync?.status === "running" && sync?.stage === "scan" && totalSources > 0;
+  const syncDetail = isScanning
+    ? `正在掃描第 ${Math.min(totalSources, doneSources + 1)}/${totalSources} 個來源${latestSource ? ` · ${latestSource}` : ""}`
+    : total
+      ? `${done}/${total} 篇 · ${sync?.stage_label || "等待下一階段"}`
+      : `上次完成 ${formatUpdate(sync?.last_success_at, "zh-Hant")}`;
   const i18nRows = status?.i18n?.lang_progress ?? {};
   const jobItems = [...(status?.content_refresh?.items ?? []), ...(status?.jobs?.items ?? [])].slice(0, 8);
   const runSync = async () => {
@@ -69,7 +78,7 @@ function StatusSection({ cards, onRefresh }: { cards: FeedCard[]; onRefresh: () 
     <div className="community-hub-admin-section-head"><div><h3>系統與整理進度</h3><p>管理員操作直接在各內容卡片完成；這裡顯示同步、翻譯與人工確認狀態。</p></div><div><button type="button" onClick={() => void load()}><Icon name="refresh-cw" />更新狀態</button><button type="button" onClick={runSync} disabled={syncing}><Icon name="scan-search" />{syncing ? "啟動中" : "立即掃描"}</button></div></div>
     {error ? <p className="community-hub-admin-error" role="alert">{error}</p> : null}
     <div className="community-hub-admin-metrics">
-      <StatusMetric label="同步" value={statusText(sync?.status)} detail={total ? `${done}/${total} 篇 · ${sync?.stage_label || "等待下一階段"}` : `上次完成 ${formatUpdate(sync?.last_success_at, "zh-Hant")}`} />
+      <StatusMetric label="同步" value={statusText(sync?.status)} detail={syncDetail} />
       <StatusMetric label="待人工確認" value={String(queue)} detail={`這些內容不會出現在公開頁面 · 人工分類 ${manual} 篇`} />
       <StatusMetric label="新貼文" value={`${Number(status?.new_posts?.new_cards_24h ?? 0)} / 24h`} detail={`6h ${Number(status?.new_posts?.new_cards_6h ?? 0)} · 待處理 ${Number(status?.new_posts?.pending_processing ?? 0)}`} />
       <StatusMetric label="人工覆寫" value={String(Number(status?.memory?.field_overrides ?? 0))} detail={`回饋 ${Number(status?.memory?.feedback_items ?? 0)} · 規則 ${Number(status?.memory?.rules ?? 0)}`} />

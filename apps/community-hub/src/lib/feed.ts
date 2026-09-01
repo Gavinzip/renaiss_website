@@ -7,6 +7,10 @@ const PRODUCT_PROGRESS_X_HANDLE = "renaissxyz";
 const REMOVED_SOURCE_HANDLES = new Set(["pokegetinfomain"]);
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
 const UPCOMING_EVENT_DISPLAY_DAYS = 14;
+const PAST_EVENT_DISPLAY_DAYS = 14;
+const RECENT_OFFICIAL_UPDATE_DAYS = 30;
+const IN_PROGRESS_DISPLAY_DAYS = 14;
+const COMPLETED_PROGRESS_DISPLAY_DAYS = 30;
 
 export function safeUrl(value: unknown): string {
   const raw = String(value ?? "").trim();
@@ -47,6 +51,19 @@ function toCalendarDay(value: unknown): Date | null {
 
 function eventStartDay(card: FeedCard): Date | null {
   return toCalendarDay(card.timeline_date) ?? toCalendarDay(card.published_at);
+}
+
+function calendarToday(referenceDate = new Date()): Date {
+  return new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+}
+
+function isWithinPastDays(value: unknown, days: number, referenceDate = new Date()): boolean {
+  const day = toCalendarDay(value);
+  if (!day) return false;
+  const today = calendarToday(referenceDate);
+  const firstVisibleDay = new Date(today);
+  firstVisibleDay.setDate(firstVisibleDay.getDate() - days);
+  return day <= today && day >= firstVisibleDay;
 }
 
 function localeFor(lang: Language): string {
@@ -146,6 +163,49 @@ export function isUpcomingEventWithinDisplayWindow(card: FeedCard, referenceDate
   const lastVisibleStartDay = new Date(today);
   lastVisibleStartDay.setDate(lastVisibleStartDay.getDate() + UPCOMING_EVENT_DISPLAY_DAYS);
   return startDay <= lastVisibleStartDay;
+}
+
+export function isPastEventWithinDisplayWindow(card: FeedCard, referenceDate = new Date()): boolean {
+  if (card.manual_pin) return true;
+  const endDay = toCalendarDay(card.timeline_end_date) ?? eventStartDay(card);
+  if (!endDay) return false;
+  const today = calendarToday(referenceDate);
+  if (endDay >= today) return false;
+  const firstVisibleEndDay = new Date(today);
+  firstVisibleEndDay.setDate(firstVisibleEndDay.getDate() - PAST_EVENT_DISPLAY_DAYS);
+  return endDay >= firstVisibleEndDay;
+}
+
+export function isRecentOfficialUpdate(card: FeedCard, referenceDate = new Date()): boolean {
+  return isWithinPastDays(card.published_at, RECENT_OFFICIAL_UPDATE_DAYS, referenceDate);
+}
+
+export function isVisibleProductProgress(card: FeedCard, referenceDate = new Date()): boolean {
+  if (card.event_wall === true || ["event", "report", "market"].includes(String(card.card_type ?? "").toLowerCase())) return false;
+  const status = planStatus(card);
+  if (status === "upcoming") {
+    const startDay = toCalendarDay(card.timeline_date);
+    return Boolean(startDay && startDay > calendarToday(referenceDate));
+  }
+  if (status === "in_progress") {
+    return isWithinPastDays(card.published_at, IN_PROGRESS_DISPLAY_DAYS, referenceDate);
+  }
+  if (status === "completed") {
+    const completedDay = card.timeline_end_date || card.timeline_date;
+    return Boolean(completedDay) && isWithinPastDays(completedDay, COMPLETED_PROGRESS_DISPLAY_DAYS, referenceDate);
+  }
+  return false;
+}
+
+export function collapseProductMilestones(cards: FeedCard[]): FeedCard[] {
+  const seenGroups = new Set<string>();
+  return cards.filter((card) => {
+    const groupKey = String(card.product_progress_group_key ?? "").trim();
+    if (!groupKey) return true;
+    if (seenGroups.has(groupKey)) return false;
+    seenGroups.add(groupKey);
+    return true;
+  });
 }
 
 export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): FeedCard[] {

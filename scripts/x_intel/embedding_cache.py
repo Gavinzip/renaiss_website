@@ -12,6 +12,27 @@ from .bootstrap import clean_text, data_dir, similarity_ratio, strip_links_menti
 
 
 EMBED_CACHE_FILENAME = "x_intel_embedding_cache.json"
+_EMBEDDING_AUTH_FAILURE_FINGERPRINT = ""
+
+
+def _embedding_key_fingerprint(api_key: str) -> str:
+    return hashlib.sha256(str(api_key or "").encode("utf-8", "ignore")).hexdigest()
+
+
+def _guard_embedding_auth(api_key: str) -> str:
+    fingerprint = _embedding_key_fingerprint(api_key)
+    if fingerprint and fingerprint == _EMBEDDING_AUTH_FAILURE_FINGERPRINT:
+        raise RuntimeError("embedding_auth_invalid")
+    return fingerprint
+
+
+def _raise_embedding_http_error(resp: requests.Response, fingerprint: str) -> None:
+    global _EMBEDDING_AUTH_FAILURE_FINGERPRINT
+    if resp.status_code in {401, 403}:
+        _EMBEDDING_AUTH_FAILURE_FINGERPRINT = fingerprint
+        raise RuntimeError("embedding_auth_invalid")
+    body = clean_text(resp.text or "")[:180]
+    raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
 
 
 def _compact_point(text: str, max_len: int = 96) -> str:
@@ -88,6 +109,7 @@ def create_embedding_vector(
     value = clean_text(str(text or ""))[:6000]
     if not value:
         return []
+    fingerprint = _guard_embedding_auth(api_key)
     resp = requests.post(
         "https://api.openai.com/v1/embeddings",
         headers={
@@ -101,8 +123,7 @@ def create_embedding_vector(
         timeout=max(10, int(timeout_seconds)),
     )
     if resp.status_code >= 400:
-        body = clean_text(resp.text or "")[:180]
-        raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
+        _raise_embedding_http_error(resp, fingerprint)
     payload = resp.json() if resp.content else {}
     data_rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data_rows, list) or not data_rows:
@@ -151,6 +172,7 @@ def ensure_embeddings_for_rows(
     batch_size: int = 40,
     cache_max_entries: int = 8000,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    fingerprint = _guard_embedding_auth(api_key)
     cache_payload = _load_cache()
     cache_entries = cache_payload.get("entries")
     if not isinstance(cache_entries, dict):
@@ -210,8 +232,7 @@ def ensure_embeddings_for_rows(
                 timeout=max(10, int(timeout_seconds)),
             )
             if resp.status_code >= 400:
-                body = clean_text(resp.text or "")[:180]
-                raise RuntimeError(f"embedding_http_{resp.status_code}:{body}")
+                _raise_embedding_http_error(resp, fingerprint)
             payload = resp.json() if resp.content else {}
             data_rows = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(data_rows, list) or len(data_rows) != len(chunk):

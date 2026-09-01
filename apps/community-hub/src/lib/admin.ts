@@ -9,11 +9,17 @@ export interface AdminStatus {
   server_time?: string;
   sync?: {
     status?: string;
+    stage?: string;
     stage_label?: string;
+    last_error?: string;
+    latest_source?: string;
     last_success_at?: string;
     next_run_at?: string;
     progress_done_cards?: number;
     progress_total_cards?: number;
+    progress_done_sources?: number;
+    progress_total_sources?: number;
+    progress_found_cards?: number;
     total_cards?: number;
     pipeline_counts?: Record<string, number>;
   };
