@@ -3130,6 +3130,18 @@ AI_METADATA_PRESERVED_FIELDS = {
     "event_region_version",
 }
 
+ARTICLE_SOURCE_REFRESH_FIELDS = {
+    "provider",
+    "raw_text",
+    "cover_image",
+    "media_images",
+    "article_id",
+    "article_title",
+    "article_preview",
+    "article_blocks",
+    "article_fetch_status",
+}
+
 PRESERVED_CARD_MUTABLE_FIELDS = {
     "card_type",
     "layout",
@@ -3162,6 +3174,7 @@ PRESERVED_CARD_MUTABLE_FIELDS = {
     "dedupe_winner_title",
     "dedupe_similarity",
     "dedupe_basis",
+    *ARTICLE_SOURCE_REFRESH_FIELDS,
     *AI_METADATA_PRESERVED_FIELDS,
 }
 
@@ -3253,6 +3266,25 @@ def build_feed_payload(
         "digest": digest,
         "cards": _serialize_feed_cards(cards, preserved_raw),
     }
+
+
+def _merge_existing_article_refreshes(existing_cards: list[StoryCard], fetched_cards: list[StoryCard]) -> int:
+    """Apply refreshed X Article source data before existing IDs are filtered from the new-card pipeline."""
+    existing_by_id = {str(card.id or "").strip(): card for card in existing_cards if str(card.id or "").strip()}
+    refreshed_count = 0
+    for fetched in fetched_cards:
+        card_id = str(fetched.id or "").strip()
+        existing = existing_by_id.get(card_id)
+        if existing is None:
+            continue
+        if not (fetched.article_id or fetched.article_fetch_status or fetched.article_blocks):
+            continue
+        before = tuple(existing.to_dict().get(key) for key in ARTICLE_SOURCE_REFRESH_FIELDS)
+        merge_article_refresh(existing, fetched)
+        after = tuple(existing.to_dict().get(key) for key in ARTICLE_SOURCE_REFRESH_FIELDS)
+        if after != before:
+            refreshed_count += 1
+    return refreshed_count
 
 
 def default_format_templates() -> list[dict[str, Any]]:
@@ -3470,6 +3502,8 @@ def sync_accounts(
         found_cards=len(account_cards) + len(discord_cards),
         latest_source="",
     )
+
+    existing_article_refresh_count = _merge_existing_article_refreshes(existing_cards, account_cards)
 
     picks = read_manual_picks()
     include_ids = set(picks["include_ids"])
@@ -3950,6 +3984,7 @@ def sync_accounts(
         "removed_by_batch_candidate_dedupe": int(batch_deduped),
         "removed_by_curation": int(removed_count),
         "removed_by_deleted_source": int(len(removed_source_card_ids)),
+        "existing_article_refreshed": int(existing_article_refresh_count),
     }
     payload["removed_source_accounts"] = sorted(removed_source_accounts)
     payload["source_stats"] = account_stats
@@ -3957,6 +3992,7 @@ def sync_accounts(
         "accounts": account_scan_meta,
         "errors": source_scan_errors,
         "error_count": len(source_scan_errors),
+        "existing_article_refreshed": int(existing_article_refresh_count),
     }
     payload["new_source_stats"] = {
         "x": len(new_account_cards),
