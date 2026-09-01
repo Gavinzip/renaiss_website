@@ -5,9 +5,21 @@ export type HubView = "overview" | "official" | "feed" | "events" | "future" | "
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
 export type PlanStatus = "upcoming" | "in_progress" | "completed" | "cancelled" | "not_plan" | "needs_review";
 
+export interface ArticleBlock {
+  alt?: string;
+  text?: string;
+  type?: "heading" | "paragraph" | "image" | string;
+  url?: string;
+}
+
 export interface FeedCard {
   account?: string;
   ai_status?: string;
+  article_blocks?: ArticleBlock[];
+  article_fetch_status?: "complete" | "partial" | string;
+  article_id?: string;
+  article_preview?: string;
+  article_title?: string;
   bullets?: string[];
   card_type?: string;
   classified_by?: string;
@@ -35,6 +47,7 @@ export interface FeedCard {
   manual_bottom?: boolean;
   manual_pick?: boolean;
   manual_pin?: boolean;
+  media_images?: string[];
   official_update_kind?: string;
   partner_names?: string[];
   published_at?: string;

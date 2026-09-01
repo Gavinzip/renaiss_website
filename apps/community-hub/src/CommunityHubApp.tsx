@@ -18,6 +18,11 @@ import { ProfileView } from "@/views/profile/ProfileView";
 const AdminView = lazy(() => import("@/views/admin/AdminView").then((module) => ({ default: module.AdminView })));
 
 const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
+type PreviewEnvironment = "production" | "local" | "";
+
+function initialPreviewEnvironment(): PreviewEnvironment {
+  return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname) ? "production" : "";
+}
 
 function normalizeLanguage(value: string | null | undefined): Language {
   const raw = String(value ?? "").trim();
@@ -38,6 +43,7 @@ function initialLanguage(): Language {
 
 export function CommunityHubApp() {
   const [lang, setLang] = useState<Language>(initialLanguage);
+  const [previewEnvironment, setPreviewEnvironment] = useState<PreviewEnvironment>(initialPreviewEnvironment);
   const [feed, setFeed] = useState<IntelFeed | null>(null);
   const [adminFeed, setAdminFeed] = useState<IntelFeed | null>(null);
   const [adminFeedError, setAdminFeedError] = useState("");
@@ -57,6 +63,19 @@ export function CommunityHubApp() {
   const articleBackView = useRef<Exclude<HubView, "article">>("overview");
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
   const hasPendingTranslation = translationPending(feed, lang);
+
+  useEffect(() => {
+    if (!previewEnvironment) return;
+    let mounted = true;
+    void fetch("/api/community-hub/preview-config", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as { environment?: string };
+        if (!response.ok || !["production", "local"].includes(String(payload.environment || ""))) return;
+        if (mounted) setPreviewEnvironment(payload.environment as PreviewEnvironment);
+      })
+      .catch(() => { /* A Vite preview may not expose the runtime environment endpoint. */ });
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -238,5 +257,5 @@ export function CommunityHubApp() {
   else if (route.view === "manage" && auth.permissions.admin) view = <Suspense fallback={<div className="community-hub-source-state"><strong>正在載入管理工具…</strong></div>}><AdminView cards={adminFeed?.cards ?? []} lang={lang} onRefresh={refresh} sourceError={adminFeedError} /></Suspense>;
   else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} />;
 
-  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
+  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
 }

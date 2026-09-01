@@ -96,7 +96,23 @@ def _safe_return_to(value: str | None) -> str:
     return raw[:2048]
 
 
-def _redirect_uri(request_origin: str) -> str:
+def _preview_redirect_uri(preview_origin: str | None) -> str:
+    raw = str(preview_origin or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    allowed = _csv("RENAISS_LOCAL_PREVIEW_ORIGINS") or {"http://127.0.0.1:8791"}
+    if raw.lower() not in allowed:
+        raise RenaissSsoError("Renaiss local preview origin is not allowed")
+    parsed = urlparse(raw)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.path not in {"", "/"}:
+        raise RenaissSsoError("Renaiss local preview origin is invalid")
+    return f"{raw}/auth/callback"
+
+
+def _redirect_uri(request_origin: str, preview_origin: str | None = None) -> str:
+    preview_redirect = _preview_redirect_uri(preview_origin)
+    if preview_redirect:
+        return preview_redirect
     configured = _env("RENAISS_REDIRECT_URI")
     if configured:
         return configured
@@ -107,7 +123,7 @@ def _redirect_uri(request_origin: str) -> str:
     return f"{origin.rstrip('/')}/auth/callback"
 
 
-def begin_login(request_origin: str, return_to: str | None = None) -> dict[str, str]:
+def begin_login(request_origin: str, return_to: str | None = None, preview_origin: str | None = None) -> dict[str, str]:
     if _AUTH_STATE_STORE is None:
         raise RenaissSsoError("Renaiss login state storage is not configured")
     discovery = _discovery()
@@ -115,7 +131,7 @@ def begin_login(request_origin: str, return_to: str | None = None) -> dict[str, 
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    redirect_uri = _redirect_uri(request_origin)
+    redirect_uri = _redirect_uri(request_origin, preview_origin)
     expires_at = time.time() + 600
     _AUTH_STATE_STORE.save_challenge(state, {
         "verifier": verifier,

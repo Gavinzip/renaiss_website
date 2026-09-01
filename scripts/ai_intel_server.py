@@ -5458,7 +5458,11 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 params = parse_qs(urlparse(self.path).query, keep_blank_values=False)
                 return_to = str((params.get("return_to") or ["/community-hub/"])[0] or "/community-hub/")
-                login = begin_renaiss_login(self._request_host_origin(), return_to=return_to)
+                login = begin_renaiss_login(
+                    self._request_host_origin(),
+                    return_to=return_to,
+                    preview_origin=str(self.headers.get("X-Renaiss-Preview-Origin") or "").strip(),
+                )
                 if str((params.get("format") or [""])[0]).strip().lower() == "json":
                     self._send_json(
                         {

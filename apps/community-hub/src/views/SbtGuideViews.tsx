@@ -292,6 +292,29 @@ interface ArticleViewProps {
   onBack: () => void;
 }
 
+function ArticleSourceBlocks({ card, lang }: { card: FeedCard; lang: Language }) {
+  const cover = coverUrl(card.cover_image);
+  const seenImages = new Set<string>();
+  if (cover) seenImages.add(cover);
+  const blocks = (card.article_blocks ?? []).flatMap((block, index) => {
+    const kind = String(block.type ?? "").trim();
+    if (kind === "image") {
+      const source = coverUrl(block.url);
+      if (!source || seenImages.has(source)) return [];
+      seenImages.add(source);
+      return [<figure className="community-hub-article-source-image" key={`image-${source}-${index}`}><img src={source} alt={String(block.alt ?? "")} loading="lazy" decoding="async" referrerPolicy="no-referrer" /></figure>];
+    }
+    const value = String(block.text ?? "").trim();
+    if (!value) return [];
+    if (kind === "heading") return [<h4 key={`heading-${index}`}>{value}</h4>];
+    if (kind === "paragraph") return [<p key={`paragraph-${index}`}>{value}</p>];
+    return [];
+  });
+  const partial = card.article_fetch_status === "partial" ? <p className="community-hub-article-source-warning">{text(lang, "article.partial")}</p> : null;
+  if (!blocks.length) return card.raw_text ? <section><h3>{text(lang, "article.sourceText")}</h3>{partial}<p className="community-hub-article-source-text">{card.raw_text}</p></section> : null;
+  return <section className="community-hub-article-source-content"><h3>{text(lang, "article.sourceText")}</h3>{partial}{blocks}</section>;
+}
+
 export function ArticleView({ articleUrl, cards, lang, onBack }: ArticleViewProps) {
   const card = cards.find((row) => safeUrl(row.url) === articleUrl);
   if (!card) return <section className="community-hub-view is-active is-entering"><button type="button" className="community-hub-back-button" onClick={onBack}><Icon name="arrow-left" />{text(lang, "action.back")}</button><EmptyState title={text(lang, "empty.unavailable")} /></section>;
@@ -313,7 +336,7 @@ export function ArticleView({ articleUrl, cards, lang, onBack }: ArticleViewProp
       {detailLines.length ? <section><h3>{text(lang, "article.details")}</h3><ul>{detailLines.map((line) => <li key={line}>{line}</li>)}</ul></section> : null}
       {sbtNames.length || card.sbt_acquisition ? <section><h3>{text(lang, "article.sbt")}</h3>{sbtNames.length ? <p><strong>{sbtNames.join(" · ")}</strong></p> : null}{card.sbt_acquisition ? <p>{card.sbt_acquisition}</p> : null}</section> : null}
       {card.plan_status || card.plan_status_reason ? <section><h3>{text(lang, "article.plan")}</h3>{card.plan_status ? <p><strong>{text(lang, `filter.plan.${card.plan_status}`)}</strong></p> : null}{card.plan_status_reason ? <p>{card.plan_status_reason}</p> : null}</section> : null}
-      {card.raw_text ? <section><h3>{text(lang, "article.sourceText")}</h3><p className="community-hub-article-source-text">{card.raw_text}</p></section> : null}
+      <ArticleSourceBlocks card={card} lang={lang} />
       {labels.length ? <div className="community-hub-article-tags" aria-label={text(lang, "article.tags")}>{labels.map((label) => <span key={label}>{label}</span>)}</div> : null}
       <footer><a className="community-hub-article-source" href={safeUrl(card.url)} target="_blank" rel="noreferrer">{text(lang, "action.original")}<Icon name="arrow-up-right" /></a></footer>
     </div>

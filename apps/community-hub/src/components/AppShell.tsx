@@ -24,6 +24,7 @@ interface AppShellProps {
   auth: HubAuthState;
   authLoading: boolean;
   children: ReactNode;
+  environment: "production" | "local" | "";
   lang: Language;
   loading: boolean;
   onLanguageChange: (lang: Language) => void;
@@ -35,7 +36,7 @@ interface AppShellProps {
   view: HubView;
 }
 
-export function AppShell({ auth, authLoading, children, lang, loading, onLanguageChange, onLogin, onLogout, onNavigate, sourceState, status, view }: AppShellProps) {
+export function AppShell({ auth, authLoading, children, environment, lang, loading, onLanguageChange, onLogin, onLogout, onNavigate, sourceState, status, view }: AppShellProps) {
   const authName = auth.profile.name || auth.user;
   const navRef = useRef<HTMLElement | null>(null);
 
@@ -54,6 +55,7 @@ export function AppShell({ auth, authLoading, children, lang, loading, onLanguag
       <header className="nav community-hub-topbar">
         <a className="brand" href="./" aria-label="Renaiss Community Hub"><img className="brand-logo" src={assets.renaissLogo} alt="Renaiss Logo" /><span className="brand-text">Renaiss Community Hub</span></a>
         <div className="community-hub-topbar-actions">
+          {environment ? <span className={`community-hub-environment is-${environment}`}><Icon name={environment === "production" ? "shield-alert" : "flask-conical"} />{environment.toUpperCase()}</span> : null}
           <a className="community-hub-legacy-link" href="../index.html#cat-events">{text(lang, "app.legacy")}</a>
           {auth.permissions.admin ? <button type="button" className="community-hub-manage-button" onClick={() => onNavigate("manage")}><Icon name="settings-2" /><span>{text(lang, "nav.manage")}</span></button> : null}
           {auth.authenticated

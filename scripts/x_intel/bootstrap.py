@@ -67,6 +67,7 @@ PUBLISHED_RE = re.compile(r"^Published Time:\s*(.+)$", re.M)
 MARKDOWN_RE = re.compile(r"Markdown Content:\s*(.*)$", re.S)
 LINK_RE = re.compile(r"https?://[^\s)]+")
 IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)]+)\)")
+ARTICLE_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 EVENT_SIGNAL_RE = re.compile(
     r"活動|\bevent\b|直播|\blive\b|\bama\b|\bspace\b|community\s*session|join us|報名|报名|\btour\b|\bfestival\b|開包活動|开包活动|参赛|參賽|竞猜|\bgathering\b|\bplaza\b|"
     r"goes live|restock(?:ing)?|poker night|get ready|drops?\b|開賣|开卖",
@@ -234,6 +235,12 @@ class StoryCard:
     raw_text: str
     provider: str = "r.jina.ai"
     cover_image: str = ""
+    media_images: list[str] | None = None
+    article_id: str = ""
+    article_title: str = ""
+    article_preview: str = ""
+    article_blocks: list[dict[str, str]] | None = None
+    article_fetch_status: str = ""
     metrics: dict[str, int] | None = None
     importance: float = 0.0
     template_id: str = "community_brief"
@@ -305,6 +312,12 @@ class StoryCard:
             "raw_text": self.raw_text,
             "provider": self.provider,
             "cover_image": self.cover_image,
+            "media_images": self.media_images or [],
+            "article_id": self.article_id,
+            "article_title": self.article_title,
+            "article_preview": self.article_preview,
+            "article_blocks": self.article_blocks or [],
+            "article_fetch_status": self.article_fetch_status,
             "metrics": self.metrics or {},
             "importance": self.importance,
             "template_id": self.template_id,
@@ -419,6 +432,116 @@ def clean_text(text: str) -> str:
     text = text.replace("\\n", " ").replace("\n", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def normalize_media_images(value: Any, limit: int = 24) -> list[str]:
+    rows = value if isinstance(value, list) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in rows:
+        url = str(item or "").strip()
+        if not url.startswith("https://pbs.twimg.com/media/") or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def normalize_article_blocks(value: Any, limit: int = 120) -> list[dict[str, str]]:
+    rows = value if isinstance(value, list) else []
+    out: list[dict[str, str]] = []
+    total_text = 0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind == "image":
+            urls = normalize_media_images([item.get("url")], limit=1)
+            if not urls:
+                continue
+            out.append({"type": "image", "url": urls[0], "alt": clean_text(str(item.get("alt") or ""))[:160]})
+        elif kind in {"heading", "paragraph"}:
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            text = re.sub(r"\s+", " ", text)[:4000].strip()
+            if not text:
+                continue
+            remaining = max(0, 60000 - total_text)
+            if remaining <= 0:
+                break
+            text = text[:remaining]
+            total_text += len(text)
+            out.append({"type": kind, "text": text})
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _clean_article_inline_markdown(value: str) -> str:
+    text = unescape(str(value or "")).strip()
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", text)
+    text = re.sub(r"</?[^>]+>", " ", text)
+    text = re.sub(r"\\([\\`*_{}\[\]()#+.!|>\-])", r"\1", text)
+    text = text.replace("\\", " ")
+    text = re.sub(r"(?:^|\s)>\s*", " ", text)
+    text = re.sub(r"[`*_~]+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def extract_article_blocks(markdown: str) -> list[dict[str, str]]:
+    source = str(markdown or "")
+    body_match = MARKDOWN_RE.search(source)
+    body = body_match.group(1).strip() if body_match else source
+    for stop in ("## New to X?", "## Trending now", "Terms of Service", "© 2026 X Corp."):
+        if stop in body:
+            body = body.split(stop, 1)[0]
+
+    blocks: list[dict[str, str]] = []
+    paragraph: list[str] = []
+
+    def flush_paragraph() -> None:
+        if not paragraph:
+            return
+        text = _clean_article_inline_markdown(" ".join(paragraph))
+        paragraph.clear()
+        if text:
+            blocks.append({"type": "paragraph", "text": text})
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flush_paragraph()
+            continue
+
+        image_matches = list(ARTICLE_IMAGE_RE.finditer(line))
+        line_without_images = ARTICLE_IMAGE_RE.sub(" ", line).strip()
+        heading_match = re.match(r"^#{1,6}\s*(.+)$", line_without_images)
+        if heading_match:
+            flush_paragraph()
+            heading = _clean_article_inline_markdown(heading_match.group(1))
+            if heading:
+                blocks.append({"type": "heading", "text": heading})
+        elif line_without_images:
+            paragraph.append(line_without_images)
+
+        if image_matches:
+            flush_paragraph()
+            for match in image_matches:
+                url_rows = normalize_media_images([match.group(2)], limit=1)
+                if not url_rows:
+                    continue
+                blocks.append({
+                    "type": "image",
+                    "url": url_rows[0],
+                    "alt": _clean_article_inline_markdown(match.group(1))[:160],
+                })
+
+    flush_paragraph()
+    return normalize_article_blocks(blocks)
 
 
 def strip_links_mentions(text: str) -> str:
@@ -819,6 +942,18 @@ def fetch_account_status_ids_from_nitter_rss(username: str, limit: int = 80) -> 
 
 
 def _extract_direct_syndication_cover(data: dict[str, Any]) -> str:
+    article = data.get("article") if isinstance(data.get("article"), dict) else {}
+    article_cover = article.get("cover_media") if isinstance(article.get("cover_media"), dict) else {}
+    article_media = article_cover.get("media_info") if isinstance(article_cover.get("media_info"), dict) else {}
+    article_cover_url = str(
+        article_media.get("original_img_url")
+        or article_media.get("original_image_url")
+        or article_media.get("url")
+        or ""
+    ).strip()
+    if article_cover_url.startswith("http"):
+        return article_cover_url
+
     photos = data.get("photos") if isinstance(data.get("photos"), list) else []
     for item in photos:
         if not isinstance(item, dict):
@@ -945,6 +1080,11 @@ def fetch_status_metadata(tweet_id: str, force: bool = False) -> dict[str, Any] 
     if not reply_to_account and parent_account:
         reply_to_account = parent_account
 
+    article = data.get("article") if isinstance(data.get("article"), dict) else {}
+    article_id = str(article.get("id") or article.get("rest_id") or "").strip()
+    article_title = clean_text(str(article.get("title") or ""))
+    article_preview = clean_text(str(article.get("preview_text") or ""))
+
     meta = {
         "id": str(data.get("id_str") or sid),
         "account": account,
@@ -957,6 +1097,10 @@ def fetch_status_metadata(tweet_id: str, force: bool = False) -> dict[str, Any] 
         "parent_id": parent_id,
         "parent_account": parent_account,
         "parent_text": clean_text(parent_text),
+        "article_id": article_id,
+        "article_title": article_title,
+        "article_preview": article_preview,
+        "is_article": bool(article_id or article_title),
         "conversation_count": int(data.get("conversation_count") or 0),
         "metrics": {
             "likes": int(data.get("favorite_count") or data.get("likes") or 0),
@@ -1256,15 +1400,25 @@ def parse_status_page(
     tweet_meta: dict[str, Any] | None = None,
 ) -> StoryCard | None:
     title_match = TITLE_RE.search(markdown)
-    if not title_match:
+    article_id = str(tweet_meta.get("article_id") or "").strip() if isinstance(tweet_meta, dict) else ""
+    article_title = clean_text(str(tweet_meta.get("article_title") or "")) if isinstance(tweet_meta, dict) else ""
+    article_preview = clean_text(str(tweet_meta.get("article_preview") or "")) if isinstance(tweet_meta, dict) else ""
+    is_article = bool(article_id or article_title)
+    if not title_match and not is_article:
         return None
 
     published_match = PUBLISHED_RE.search(markdown)
     markdown_match = MARKDOWN_RE.search(markdown)
 
-    title = _extract_title(title_match.group(1))
+    title = article_title or (_extract_title(title_match.group(1)) if title_match else "")
     raw = markdown_match.group(1).strip() if markdown_match else ""
     raw_clean = extract_focus_content(raw) or clean_text(raw)
+    article_blocks = extract_article_blocks(markdown) if is_article else []
+    media_images = normalize_media_images([
+        block.get("url")
+        for block in article_blocks
+        if isinstance(block, dict) and str(block.get("type") or "") == "image"
+    ])
 
     if len(raw_clean) < 8 and len(title) < 8:
         return None
@@ -1291,13 +1445,15 @@ def parse_status_page(
     if not published_at:
         published_at = snowflake_to_datetime(tweet_id).isoformat()
 
-    cover = ""
-    for img in IMAGE_RE.findall(markdown):
-        if "pbs.twimg.com/media/" in img:
-            cover = img
-            break
+    cover = str(tweet_meta.get("cover_image") or "").strip() if isinstance(tweet_meta, dict) and is_article else ""
+    if not cover:
+        for img in IMAGE_RE.findall(markdown):
+            if "pbs.twimg.com/media/" in img:
+                cover = img
+                break
     if not cover and isinstance(tweet_meta, dict):
         cover = str(tweet_meta.get("cover_image") or "").strip()
+    media_images = [url for url in media_images if url != cover]
 
     reply_to_id = ""
     metrics: dict[str, int] = {}
@@ -1324,6 +1480,16 @@ def parse_status_page(
         raw_text=content_source[:2500],
         provider=provider,
         cover_image=cover,
+        media_images=media_images,
+        article_id=article_id,
+        article_title=article_title,
+        article_preview=article_preview,
+        article_blocks=article_blocks,
+        article_fetch_status=(
+            str(tweet_meta.get("article_fetch_status") or "").strip()
+            if isinstance(tweet_meta, dict)
+            else ""
+        ) or ("complete" if article_blocks else "partial" if is_article else ""),
         metrics=metrics,
         reply_to_id=reply_to_id,
         topic_labels=["other"],

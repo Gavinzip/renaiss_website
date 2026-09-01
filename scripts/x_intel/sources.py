@@ -1838,6 +1838,37 @@ def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str
     url = f"https://x.com/{username}/status/{tweet_id}"
     meta = fetch_status_metadata(tweet_id)
 
+    is_article = bool(
+        isinstance(meta, dict)
+        and (str(meta.get("article_id") or "").strip() or str(meta.get("article_title") or "").strip())
+    )
+    if is_article:
+        article_urls = [
+            f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}",
+            f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}?mx=1",
+        ]
+        best_markdown = ""
+        best_score = (0, 0, 0)
+        for article_url in article_urls:
+            try:
+                candidate = fetch_text(article_url)
+            except Exception:
+                continue
+            blocks = extract_article_blocks(candidate)
+            text_chars = sum(len(str(row.get("text") or "")) for row in blocks if isinstance(row, dict))
+            image_count = sum(1 for row in blocks if isinstance(row, dict) and row.get("type") == "image")
+            score = (1 if text_chars >= 240 else 0, image_count, text_chars)
+            if score > best_score:
+                best_markdown = candidate
+                best_score = score
+            if score[0] and image_count:
+                break
+        if best_markdown and best_score[0]:
+            meta["article_fetch_status"] = "complete"
+            meta["article_inline_image_count"] = best_score[1]
+            return best_markdown, "r.jina.ai", meta
+        meta["article_fetch_status"] = "partial"
+
     twitter_cli_data = fetch_status_with_twitter_cli(url)
     if twitter_cli_data:
         return twitter_cli_data, "twitter-cli", meta
@@ -2103,6 +2134,23 @@ def collect_discord_cards(
     return ordered, stats, errors, meta
 
 
+def merge_article_refresh(existing: StoryCard, refreshed: StoryCard) -> None:
+    existing.cover_image = refreshed.cover_image or existing.cover_image
+    existing.article_id = refreshed.article_id or existing.article_id
+    existing.article_title = refreshed.article_title or existing.article_title
+    existing.article_preview = refreshed.article_preview or existing.article_preview
+    has_complete_refresh = refreshed.article_fetch_status == "complete" and bool(refreshed.article_blocks)
+    has_complete_existing = existing.article_fetch_status == "complete" and bool(existing.article_blocks)
+    if not has_complete_refresh and has_complete_existing:
+        return
+    existing.provider = refreshed.provider
+    existing.media_images = refreshed.media_images
+    existing.article_blocks = refreshed.article_blocks
+    existing.article_fetch_status = refreshed.article_fetch_status
+    if len(clean_text(refreshed.raw_text or "")) > len(clean_text(existing.raw_text or "")):
+        existing.raw_text = refreshed.raw_text
+
+
 def collect_account_cards(
     username: str,
     since_dt: datetime,
@@ -2144,6 +2192,12 @@ def collect_account_cards(
                         raw_text=str(item.get("raw_text") or ""),
                         provider=provider_raw,
                         cover_image=str(item.get("cover_image") or ""),
+                        media_images=normalize_media_images(item.get("media_images")),
+                        article_id=str(item.get("article_id") or ""),
+                        article_title=str(item.get("article_title") or ""),
+                        article_preview=str(item.get("article_preview") or ""),
+                        article_blocks=normalize_article_blocks(item.get("article_blocks")),
+                        article_fetch_status=str(item.get("article_fetch_status") or ""),
                         metrics=item.get("metrics") if isinstance(item.get("metrics"), dict) else {},
                         importance=float(item.get("importance") or 0.0),
                         template_id=str(item.get("template_id") or "community_brief"),
@@ -2271,6 +2325,17 @@ def collect_account_cards(
                 meta_text = clean_text(str(tweet_meta.get("text") or ""))
                 if meta_text and len(meta_text) > len(clean_text(existing.raw_text or "")):
                     existing.raw_text = meta_text[:2500]
+                if str(tweet_meta.get("article_id") or "").strip() and status_markdown:
+                    refreshed = parse_status_page(
+                        status_markdown,
+                        username=username,
+                        tweet_id=tweet_id,
+                        url=f"https://x.com/{username}/status/{tweet_id}",
+                        provider=provider,
+                        tweet_meta=tweet_meta,
+                    )
+                    if refreshed:
+                        merge_article_refresh(existing, refreshed)
             continue
 
         if not status_markdown:
@@ -2425,6 +2490,12 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         raw_text=merged_raw,
         provider=last.provider or first.provider,
         cover_image=cover,
+        media_images=next((c.media_images for c in rows if c.media_images), []),
+        article_id=next((c.article_id for c in rows if c.article_id), ""),
+        article_title=next((c.article_title for c in rows if c.article_title), ""),
+        article_preview=next((c.article_preview for c in rows if c.article_preview), ""),
+        article_blocks=next((c.article_blocks for c in rows if c.article_blocks), []),
+        article_fetch_status=next((c.article_fetch_status for c in rows if c.article_fetch_status), ""),
         metrics=_sum_metrics(rows),
         reply_to_id=str(first.reply_to_id or ""),
         topic_labels=["other"],
