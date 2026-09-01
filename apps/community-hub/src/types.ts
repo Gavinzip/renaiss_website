@@ -35,6 +35,8 @@ export interface FeedCard {
   manual_bottom?: boolean;
   manual_pick?: boolean;
   manual_pin?: boolean;
+  official_update_kind?: string;
+  partner_names?: string[];
   published_at?: string;
   plan_ai_model?: string;
   plan_ai_version?: string;

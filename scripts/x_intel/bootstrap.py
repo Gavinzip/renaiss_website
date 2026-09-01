@@ -194,6 +194,28 @@ SBT_THRESHOLD_NOTICE_RE = re.compile(
     r"((?:threshold|snapshot|top\s*\d+%|門檻|快照|排名|rank).{0,42}(?:sbt|soulbound|points?|積分|积分))",
     re.I,
 )
+INDEX_PARTNERSHIP_PATTERNS = (
+    re.compile(r'\b(?:renaiss\s+index\s+)?is\s+partnering\s+with\s+[“"]?([^.!?\n🤝]{2,80})', re.I),
+    re.compile(r'\b(?:renaiss\s+index\s+)?(?:has\s+)?partnered\s+with\s+[“"]?([^.!?\n🤝]{2,80})', re.I),
+    re.compile(r'\b(?:renaiss\s+index\s+)?announces?\s+(?:a\s+)?partnership\s+with\s+[“"]?([^.!?\n🤝]{2,80})', re.I),
+)
+
+
+def infer_official_update_metadata(account: Any, source: Any) -> tuple[str, list[str]]:
+    """Return structured metadata only for explicit official source statements."""
+    normalized_account = str(account or "").strip().lstrip("@").lower()
+    if normalized_account != "renaiss_index":
+        return "", []
+    raw_source = str(source or "").strip()
+    for pattern in INDEX_PARTNERSHIP_PATTERNS:
+        match = pattern.search(raw_source)
+        if not match:
+            continue
+        partner_name = re.sub(r'[”\"\'`]+$', "", match.group(1)).strip()
+        partner_name = re.sub(r"\s+", " ", partner_name)[:80]
+        if partner_name:
+            return "partnership", [partner_name]
+    return "", []
 
 
 @dataclass
@@ -223,6 +245,8 @@ class StoryCard:
     manual_pick: bool = False
     manual_pin: bool = False
     manual_bottom: bool = False
+    official_update_kind: str = ""
+    partner_names: list[str] | None = None
     event_facts: dict[str, str] | None = None
     event_region: str = ""
     event_region_reason: str = ""
@@ -265,6 +289,7 @@ class StoryCard:
     source_message_timestamp: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        derived_update_kind, derived_partner_names = infer_official_update_metadata(self.account, self.raw_text)
         return {
             "id": self.id,
             "account": self.account,
@@ -291,6 +316,8 @@ class StoryCard:
             "manual_pick": self.manual_pick,
             "manual_pin": self.manual_pin,
             "manual_bottom": self.manual_bottom,
+            "official_update_kind": self.official_update_kind or derived_update_kind,
+            "partner_names": self.partner_names or derived_partner_names,
             "event_facts": self.event_facts or {},
             "event_region": self.event_region,
             "event_region_reason": self.event_region_reason,
