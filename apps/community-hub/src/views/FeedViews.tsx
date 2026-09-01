@@ -6,13 +6,14 @@ import { EventTimeline } from "@/components/EventTimeline";
 import { Icon } from "@/components/Icon";
 import { OfficialSummaryDialog } from "@/components/OfficialSummaryDialog";
 import { Pagination } from "@/components/Pagination";
+import { ProjectFilterNav } from "@/components/ProjectFilterNav";
 import { ViewHeader } from "@/components/AppShell";
-import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isProductProgressSource, planStatus, sortEventsByStatus } from "@/lib/feed";
+import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isProductProgressSource, isUpcomingEventWithinDisplayWindow, planStatus, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
-import { PROJECTS, projectIdForCard, projectLabel, type AccountProjectMap, type ProjectId } from "@/lib/projects";
+import { projectIdForCard, type AccountProjectMap, type ProjectId } from "@/lib/projects";
 import { regionIdForAccount, regionLabel, regionLabelForAccount, type EventRegionId } from "@/lib/regions";
-import type { FeedCard, IntelFeed, Language } from "@/types";
+import type { FeedCard, HubView, IntelFeed, Language } from "@/types";
 
 interface SharedViewProps {
   accountProjects: AccountProjectMap;
@@ -116,14 +117,16 @@ export function OfficialView(props: SharedViewProps) {
   const selectRows = useCallback((cards: FeedCard[]) => selectOfficialCards(cards, props.accountProjects).filter((card) => (
     projectFilter === "all" || projectIdForCard(card, props.accountProjects) === projectFilter
   )), [projectFilter, props.accountProjects]);
-  const projectFilters = <div className="community-hub-filter-row community-hub-project-filter" aria-label={text(props.lang, "official.categoryFilter")}>
-    <button type="button" className={projectFilter === "all" ? "is-active" : ""} onClick={() => setProjectFilter("all")}>{text(props.lang, "filter.allOfficialCategories")} <span>{officialCards.length}</span></button>
-    {PROJECTS.map((project) => <button type="button" key={project.id} className={projectFilter === project.id ? "is-active" : ""} onClick={() => setProjectFilter(project.id)}><Icon name={project.icon} />{projectLabel(project.id, props.lang)} <span>{projectCounts.get(project.id) ?? 0}</span></button>)}
-  </div>;
-  const getSourceLabel = (card: FeedCard) => {
-    const projectId = projectIdForCard(card, props.accountProjects);
-    return projectId ? `${projectLabel(projectId, props.lang)} · ${text(props.lang, "card.official")}` : text(props.lang, "card.official");
-  };
+  const projectFilters = <ProjectFilterNav
+    active={projectFilter}
+    allCount={officialCards.length}
+    allLabel={text(props.lang, "filter.allOfficialCategories")}
+    ariaLabel={text(props.lang, "official.categoryFilter")}
+    counts={projectCounts}
+    lang={props.lang}
+    onChange={setProjectFilter}
+  />;
+  const getSourceLabel = () => text(props.lang, "card.official");
   const action = <div className="community-hub-header-actions">
     <button type="button" className="community-hub-summary-trigger" onClick={() => setSummaryOpen(true)}><Icon name="sparkles" /><span>{text(props.lang, "official.aiSummary")}</span></button>
     <RefreshButton disabled={props.loading} lang={props.lang} onRefresh={props.onRefresh} />
@@ -134,28 +137,64 @@ export function OfficialView(props: SharedViewProps) {
   </>;
 }
 
-export function FutureView(props: SharedViewProps) {
-  const { accountProjects, cards, lang, loading, onOpenArticle, onRefresh, translationPending } = props;
+interface FutureViewProps extends SharedViewProps {
+  onNavigate: (view: Exclude<HubView, "article">) => void;
+}
+
+export function FutureView(props: FutureViewProps) {
+  const { accountProjects, cards, lang, loading, onNavigate, onOpenArticle, onRefresh, translationPending } = props;
   const [filter, setFilter] = useState<"upcoming" | "in_progress" | "completed">("in_progress");
   const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
   const productCards = useMemo(() => cards.filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
-  const rows = useMemo(() => productCards
-    .filter((card) => projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter)
+  const projectCards = useMemo(() => productCards.filter((card) => (
+    projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
+  )), [accountProjects, productCards, projectFilter]);
+  const filterCards = useMemo(() => productCards.filter((card) => planStatus(card) === filter), [filter, productCards]);
+  const projectCounts = useMemo(() => filterCards.reduce((counts, card) => {
+    const projectId = projectIdForCard(card, accountProjects);
+    if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+    return counts;
+  }, new Map<ProjectId, number>()), [accountProjects, filterCards]);
+  const statusCounts = useMemo(() => projectCards.reduce((counts, card) => {
+    const status = planStatus(card);
+    if (status === "upcoming" || status === "in_progress" || status === "completed") counts.set(status, (counts.get(status) ?? 0) + 1);
+    return counts;
+  }, new Map<"upcoming" | "in_progress" | "completed", number>()), [projectCards]);
+  const rows = useMemo(() => projectCards
     .filter((card) => planStatus(card) === filter)
     .sort((left, right) => {
       const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
       const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
       return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
-    }), [accountProjects, productCards, filter, projectFilter]);
+    }), [filter, projectCards]);
+  const recentOfficialUpdates = useMemo(() => projectFilter === "all" ? [] : projectCards
+    .filter((card) => planStatus(card) === "not_plan")
+    .sort((left, right) => new Date(right.published_at || 0).valueOf() - new Date(left.published_at || 0).valueOf())
+    .slice(0, 3), [projectCards, projectFilter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}:${projectFilter}`);
-  const awaitingClassification = productCards.some((card) => !planStatus(card) || planStatus(card) === "needs_review");
+  const awaitingClassification = projectCards.some((card) => !planStatus(card) || planStatus(card) === "needs_review");
+  const hasOfficialUpdates = projectCards.length > 0;
+  const hasOtherProgress = [...statusCounts.values()].some((count) => count > 0);
+  const emptyBodyKey = hasOtherProgress ? "future.empty.otherStatus" : hasOfficialUpdates ? "future.empty.withUpdates" : "future.empty.noUpdates";
+  const showRecentOfficialUpdates = pageRows.length === 0 && !awaitingClassification && !translationPending && recentOfficialUpdates.length > 0;
+  const openOfficialAction = <button type="button" className="community-hub-empty-link" onClick={() => onNavigate("official")}>{text(lang, "future.openOfficial")}<Icon name="arrow-right" /></button>;
   const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
-    <div className="community-hub-filter-row community-hub-project-filter" aria-label={text(lang, "official.categoryFilter")}><button type="button" className={projectFilter === "all" ? "is-active" : ""} onClick={() => setProjectFilter("all")}>{text(lang, "filter.allOfficialCategories")}</button>{PROJECTS.map((project) => <button type="button" key={project.id} className={projectFilter === project.id ? "is-active" : ""} onClick={() => setProjectFilter(project.id)}><Icon name={project.icon} />{projectLabel(project.id, lang)}</button>)}</div>
-    <div className="community-hub-filter-row community-hub-filter-row-wide">{filters.map(([value, label]) => <button type="button" key={value} className={filter === value ? "is-active" : ""} onClick={() => setFilter(value)}>{text(lang, label)}</button>)}</div>
-    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => { const projectId = projectIdForCard(card, accountProjects); return <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={projectId ? `${projectLabel(projectId, lang)} · ${text(lang, "card.official")}` : undefined} />; }) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "empty.unavailable")} />}</div>
+    <div className="community-hub-progress-controls">
+      <ProjectFilterNav active={projectFilter} allCount={filterCards.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
+      <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-progress-status-filter" aria-label={text(lang, "future.statusFilter")}>{filters.map(([value, label]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}><span>{text(lang, label)}</span><span>{statusCounts.get(value) ?? 0}</span></button>)}</div>
+    </div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" ? "active" : "past"} statusLabel={text(lang, `filter.plan.${filter}`)} />) : <EmptyState title={text(lang, awaitingClassification ? "future.pending" : translationPending ? "empty.translating" : "future.empty")} body={!awaitingClassification && !translationPending ? text(lang, emptyBodyKey) : undefined} action={!awaitingClassification && !translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
     <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
+    {showRecentOfficialUpdates ? <section className="community-hub-progress-updates" aria-labelledby="community-hub-progress-updates-title">
+      <div className="community-hub-progress-updates-head">
+        <div><p>{text(lang, "future.recentEyebrow")}</p><h3 id="community-hub-progress-updates-title">{text(lang, "future.recentTitle")}</h3></div>
+        {openOfficialAction}
+      </div>
+      <p className="community-hub-progress-updates-lead">{text(lang, "future.recentLead")}</p>
+      <div className="community-hub-content-list">{recentOfficialUpdates.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} statusLabel={text(lang, "future.recentStatus")} />)}</div>
+    </section> : null}
   </section>;
 }
 
@@ -168,7 +207,7 @@ export function EventsView({ accountProjects, cards, lang, loading, onOpenArticl
     }
 
     const active = sortEventsByStatus(events.filter((card) => eventStatus(card) === "active"), "active");
-    const upcoming = sortEventsByStatus(events.filter((card) => eventStatus(card) === "upcoming"), "upcoming");
+    const upcoming = sortEventsByStatus(events.filter((card) => isUpcomingEventWithinDisplayWindow(card)), "upcoming");
     return [...active, ...upcoming];
   }, [accountProjects, cards, filter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);

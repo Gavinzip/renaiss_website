@@ -6,6 +6,7 @@ const OFFICIAL_X_HANDLES = new Set(["renaissxyz"]);
 const PRODUCT_PROGRESS_X_HANDLE = "renaissxyz";
 const REMOVED_SOURCE_HANDLES = new Set(["pokegetinfomain"]);
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
+const UPCOMING_EVENT_DISPLAY_DAYS = 14;
 
 export function safeUrl(value: unknown): string {
   const raw = String(value ?? "").trim();
@@ -28,6 +29,24 @@ export function toDate(value: unknown): Date | null {
   if (!raw) return null;
   const date = new Date(raw);
   return Number.isNaN(date.valueOf()) ? null : date;
+}
+
+function toCalendarDay(value: unknown): Date | null {
+  const raw = String(value ?? "").trim();
+  const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    const year = Number(dateOnly[1]);
+    const month = Number(dateOnly[2]) - 1;
+    const day = Number(dateOnly[3]);
+    const date = new Date(year, month, day);
+    return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day ? date : null;
+  }
+  const date = toDate(value);
+  return date ? new Date(date.getFullYear(), date.getMonth(), date.getDate()) : null;
+}
+
+function eventStartDay(card: FeedCard): Date | null {
+  return toCalendarDay(card.timeline_date) ?? toCalendarDay(card.published_at);
 }
 
 function localeFor(lang: Language): string {
@@ -109,16 +128,24 @@ export function isVerifiedResult(card: FeedCard): boolean {
   return /(?:\bwinners?\s+(?:are|is|were|have been|revealed|live|announced)|\bresults?\s+(?:are|is|were|live|announced)|(?:lucky draw|giveaway).{0,64}(?:winner|result)|中獎|得獎|獲獎|中奖|获奖|수상|抽獎結果|抽奖结果|(?:獎勵|奖励|rewards?).{0,24}(?:完成|發放|发放|complete|sent))/i.test(value);
 }
 
-export function eventStatus(card: FeedCard): EventStatus {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const start = toDate(card.timeline_date) ?? toDate(card.published_at);
-  if (!start) return "reference";
-  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const end = toDate(card.timeline_end_date) ?? start;
-  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+export function eventStatus(card: FeedCard, referenceDate = new Date()): EventStatus {
+  const now = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+  const startDay = eventStartDay(card);
+  if (!startDay) return "reference";
+  const endDay = toCalendarDay(card.timeline_end_date) ?? startDay;
   if (startDay > now) return "upcoming";
   return endDay >= now ? "active" : "past";
+}
+
+export function isUpcomingEventWithinDisplayWindow(card: FeedCard, referenceDate = new Date()): boolean {
+  const startDay = eventStartDay(card);
+  if (!startDay) return false;
+  const today = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+  if (startDay <= today) return false;
+  if (card.manual_pin) return true;
+  const lastVisibleStartDay = new Date(today);
+  lastVisibleStartDay.setDate(lastVisibleStartDay.getDate() + UPCOMING_EVENT_DISPLAY_DAYS);
+  return startDay <= lastVisibleStartDay;
 }
 
 export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): FeedCard[] {

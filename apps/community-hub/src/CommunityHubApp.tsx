@@ -227,7 +227,7 @@ export function CommunityHubApp() {
   if (route.view === "official") view = <OfficialView {...shared} />;
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
-  else if (route.view === "future") view = <FutureView {...shared} />;
+  else if (route.view === "future") view = <FutureView {...shared} onNavigate={go} />;
   else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
   else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;

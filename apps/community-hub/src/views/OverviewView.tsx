@@ -1,6 +1,6 @@
 import { Icon } from "@/components/Icon";
 import { FeatureCard } from "@/components/ContentCard";
-import { formatDate, isEvent, isMedia, limitedSbtCampaigns, eventStatus } from "@/lib/feed";
+import { eventStatus, formatDate, isEvent, isMedia, isUpcomingEventWithinDisplayWindow, limitedSbtCampaigns } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import type { AccountProjectMap } from "@/lib/projects";
 import type { FeedCard, HubView, Language } from "@/types";
@@ -13,7 +13,10 @@ interface OverviewViewProps {
 }
 
 export function OverviewView({ accountProjects, cards, lang, onNavigate }: OverviewViewProps) {
-  const events = cards.filter((card) => isEvent(card, accountProjects)).filter((card) => ["active", "upcoming"].includes(eventStatus(card))).slice(0, 3);
+  const events = cards
+    .filter((card) => isEvent(card, accountProjects))
+    .filter((card) => eventStatus(card) === "active" || isUpcomingEventWithinDisplayWindow(card))
+    .slice(0, 3);
   const signals = cards.filter((card) => isMedia(card, accountProjects)).slice(0, 4);
   const limitedSbt = limitedSbtCampaigns(cards, accountProjects).slice(0, 4);
   const routes: Array<{ icon: string; label: string; sub: string; view: Exclude<HubView, "article"> }> = [

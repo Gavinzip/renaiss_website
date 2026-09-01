@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { assets } from "@/data/legacy";
 import type { HubAuthState } from "@/lib/auth";
 import { text } from "@/lib/copy";
@@ -37,6 +37,18 @@ interface AppShellProps {
 
 export function AppShell({ auth, authLoading, children, lang, loading, onLanguageChange, onLogin, onLogout, onNavigate, sourceState, status, view }: AppShellProps) {
   const authName = auth.profile.name || auth.user;
+  const navRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const nav = navRef.current;
+    const activeItem = nav?.querySelector<HTMLButtonElement>(".community-hub-nav-item.is-active");
+    if (!nav || !activeItem || nav.scrollWidth <= nav.clientWidth) return;
+    nav.scrollTo({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      left: Math.max(0, activeItem.offsetLeft - (nav.clientWidth - activeItem.clientWidth) / 2),
+    });
+  }, [view]);
+
   return <div className="community-hub-react-root">
     <main className="shell community-hub-shell">
       <header className="nav community-hub-topbar">
@@ -54,7 +66,7 @@ export function AppShell({ auth, authLoading, children, lang, loading, onLanguag
       <div className="community-hub-app">
         <aside className="community-hub-sidebar" aria-label="Community Hub sections">
           <div className="community-hub-sidebar-head"><p className="community-hub-sidebar-label">{text(lang, "app.source")}</p><span className={`community-hub-source-dot${sourceState === "live" ? " is-live" : sourceState === "error" ? " is-error" : ""}`} aria-hidden="true" /></div>
-          <nav className="community-hub-nav-list">
+          <nav ref={navRef} className="community-hub-nav-list">
             {navItems.filter((item) => item.view !== "manage" || auth.permissions.admin).map((item) => <button key={item.view} type="button" className={`community-hub-nav-item${view === item.view ? " is-active" : ""}`} onClick={() => onNavigate(item.view)} aria-current={view === item.view ? "page" : undefined}><Icon name={item.icon} /><span>{text(lang, `nav.${item.view}`)}</span></button>)}
           </nav>
           <div className="community-hub-sidebar-foot"><a href="../beginner.html?topic=start"><Icon name="book-marked" /><span>{text(lang, "app.wiki")}</span></a><a href="../agent.html"><Icon name="bot-message-square" /><span>{text(lang, "app.agent")}</span></a></div>
@@ -76,5 +88,5 @@ interface ViewHeaderProps {
 }
 
 export function ViewHeader({ action, eyebrow, lead, title }: ViewHeaderProps) {
-  return <header className="community-hub-page-head"><div><p className="community-hub-section-index">{eyebrow}</p><h2>{title}</h2><p>{lead}</p></div>{action}</header>;
+  return <header className="community-hub-page-head"><div><p className="community-hub-section-index">{eyebrow}</p><h2>{title}</h2><p>{lead}</p></div>{action ? <div className="community-hub-page-head-actions">{action}</div> : null}</header>;
 }
