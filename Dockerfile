@@ -7,8 +7,6 @@ RUN apt-get update \
     python3 python3-pip ca-certificates git curl procps ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g mmx-cli@1.0.11
-
 COPY requirements.txt ./
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
@@ -22,8 +20,6 @@ RUN python3 scripts/stamp_client_release.py
 ENV HOST=0.0.0.0
 ENV PORT=8787
 ENV PYTHONUNBUFFERED=1
-ENV NEWS_SEARCH_PROVIDER=mmx
-ENV NEWS_LANGS=zh-Hant,zh-Hans,en,ko
 ENV X_SYNC_ENABLED=1
 ENV X_SYNC_RUN_ON_STARTUP=1
 ENV X_SYNC_INTERVAL_HOURS=0.5

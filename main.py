@@ -18,19 +18,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 import ai_intel_server  # noqa: E402
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = str(os.getenv(name, "")).strip().lower()
-    if not raw:
-        return bool(default)
-    return raw in {"1", "true", "yes", "y", "on"}
-
-
 def main() -> int:
     host = os.getenv("HOST") or "0.0.0.0"
     port = os.getenv("PORT") or "8787"
-    news_interval = os.getenv("NEWS_INTERVAL_MINUTES") or str(ai_intel_server.DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES)
-    news_langs = os.getenv("NEWS_LANGS") or "zh-Hant,zh-Hans,en,ko"
-    sync_run_on_startup = _env_flag("X_SYNC_RUN_ON_STARTUP", True)
+    os.environ.setdefault("X_SYNC_RUN_ON_STARTUP", "1")
 
     sys.argv = [
         sys.argv[0],
@@ -38,13 +29,7 @@ def main() -> int:
         host,
         "--port",
         str(port),
-        "--news-interval-minutes",
-        str(news_interval),
-        "--news-langs",
-        news_langs,
     ]
-    if sync_run_on_startup:
-        sys.argv.append("--sync-run-on-startup")
     return ai_intel_server.main()
 
 
