@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { CommunityMapDialog } from "@/components/CommunityMapDialog";
 import { ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
@@ -8,13 +8,12 @@ import { OfficialSummaryDialog } from "@/components/OfficialSummaryDialog";
 import { Pagination } from "@/components/Pagination";
 import { ProjectFilterNav } from "@/components/ProjectFilterNav";
 import { ViewHeader } from "@/components/AppShell";
-import { collapseProductMilestones, eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isProductProgressSource, isRecentOfficialUpdate, isUpcomingEventWithinDisplayWindow, isVisibleProductProgress, planStatus, sortEventsByStatus } from "@/lib/feed";
+import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isUpcomingEventWithinDisplayWindow, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
-import { isIndexPartnershipUpdate } from "@/lib/partnerships";
 import { projectIdForCard, type AccountProjectMap, type ProjectId } from "@/lib/projects";
 import { regionIdForAccount, regionLabel, regionLabelForAccount, type EventRegionId } from "@/lib/regions";
-import type { FeedCard, HubView, IntelFeed, Language } from "@/types";
+import type { FeedCard, IntelFeed, Language } from "@/types";
 
 interface SharedViewProps {
   accountProjects: AccountProjectMap;
@@ -136,88 +135,6 @@ export function OfficialView(props: SharedViewProps) {
     <DynamicStream {...props} eyebrow="OFFICIAL" getSourceLabel={getSourceLabel} headerAction={action} paginationKey={projectFilter} titleKey="official.title" leadKey="official.lead" selectRows={selectRows} toolbarLeading={projectFilters} />
     <OfficialSummaryDialog lang={props.lang} open={summaryOpen} overview={props.officialOverview} onClose={() => setSummaryOpen(false)} />
   </>;
-}
-
-interface FutureViewProps extends SharedViewProps {
-  onNavigate: (view: Exclude<HubView, "article">) => void;
-}
-
-export function FutureView(props: FutureViewProps) {
-  const { accountProjects, cards, lang, loading, onNavigate, onOpenArticle, onRefresh, translationPending } = props;
-  type ProgressFilter = "upcoming" | "in_progress" | "completed";
-  const [filter, setFilter] = useState<ProgressFilter>("in_progress");
-  const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
-  const productSourceCards = useMemo(() => cards
-    .filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
-  const productProgressCards = useMemo(() => productSourceCards
-    .filter((card) => String(card.card_type ?? "").toLowerCase() === "product_progress"), [productSourceCards]);
-  const recentProductUpdates = useMemo(() => productSourceCards
-    .filter((card) => isRecentOfficialUpdate(card)), [productSourceCards]);
-  const projectCards = useMemo(() => productProgressCards.filter((card) => (
-    projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
-  )), [accountProjects, productProgressCards, projectFilter]);
-  const milestoneCards = useMemo(() => collapseProductMilestones(projectCards.filter((card) => isVisibleProductProgress(card))), [projectCards]);
-  const recentProjectCards = useMemo(() => recentProductUpdates.filter((card) => (
-    projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
-  )), [accountProjects, projectFilter, recentProductUpdates]);
-  const projectCounts = useMemo(() => productProgressCards.reduce((counts, card) => {
-    const projectId = projectIdForCard(card, accountProjects);
-    if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
-    return counts;
-  }, new Map<ProjectId, number>()), [accountProjects, productProgressCards]);
-  const statusCounts = useMemo(() => milestoneCards.reduce((counts, card) => {
-    const status = planStatus(card);
-    if (status === "upcoming" || status === "in_progress" || status === "completed") counts.set(status, (counts.get(status) ?? 0) + 1);
-    return counts;
-  }, new Map<"upcoming" | "in_progress" | "completed", number>()), [milestoneCards]);
-  const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
-  const availableFilters = useMemo<Array<readonly [ProgressFilter, string, number]>>(() => {
-    const rows: Array<readonly [ProgressFilter, string, number]> = [];
-    filters.forEach(([value, label]) => {
-      const count = statusCounts.get(value) ?? 0;
-      if (count > 0) rows.push([value, label, count]);
-    });
-    return rows;
-  }, [statusCounts]);
-  useEffect(() => {
-    if (availableFilters.length && !availableFilters.some(([value]) => value === filter)) setFilter(availableFilters[0][0]);
-  }, [availableFilters, filter]);
-  const rows = useMemo(() => milestoneCards
-    .filter((card) => planStatus(card) === filter)
-    .sort((left, right) => {
-      const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
-      const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
-      return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
-    }), [filter, milestoneCards]);
-  const recentOfficialUpdates = useMemo(() => projectFilter === "all" ? [] : recentProjectCards
-    .filter((card) => !isVisibleProductProgress(card))
-    .filter((card) => !isIndexPartnershipUpdate(card))
-    .sort((left, right) => new Date(right.published_at || 0).valueOf() - new Date(left.published_at || 0).valueOf())
-    .slice(0, 4), [projectFilter, recentProjectCards]);
-  const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}:${projectFilter}`);
-  const hasOfficialUpdates = recentProjectCards.length > 0;
-  const hasOtherProgress = [...statusCounts.values()].some((count) => count > 0);
-  const emptyBodyKey = hasOtherProgress ? "future.empty.otherStatus" : hasOfficialUpdates ? "future.empty.withUpdates" : "future.empty.noUpdates";
-  const showRecentOfficialUpdates = !translationPending && recentOfficialUpdates.length > 0;
-  const openOfficialAction = <button type="button" className="community-hub-empty-link" onClick={() => onNavigate("official")}>{text(lang, "future.openOfficial")}<Icon name="arrow-right" /></button>;
-  return <section className="community-hub-view is-active is-entering">
-    <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
-    <div className="community-hub-progress-controls">
-      <ProjectFilterNav active={projectFilter} allCount={productProgressCards.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
-      <p className="community-hub-progress-count-guide">{text(lang, "future.countGuide")}</p>
-      {availableFilters.length ? <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-progress-status-filter" aria-label={text(lang, "future.statusFilter")}>{availableFilters.map(([value, label, count]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}><span>{text(lang, label)}</span><span>{count}</span></button>)}</div> : null}
-    </div>
-    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" ? "active" : "past"} statusLabel={text(lang, `filter.plan.${filter}`)} />) : <EmptyState title={text(lang, translationPending ? "empty.translating" : "future.noMilestones")} body={!translationPending ? text(lang, emptyBodyKey) : undefined} action={!translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
-    <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
-    {showRecentOfficialUpdates ? <section className="community-hub-progress-updates" aria-labelledby="community-hub-progress-updates-title">
-      <div className="community-hub-progress-updates-head">
-        <div><p>{text(lang, "future.recentEyebrow")}</p><h3 id="community-hub-progress-updates-title">{text(lang, "future.recentTitle")}</h3></div>
-        {openOfficialAction}
-      </div>
-      <p className="community-hub-progress-updates-lead">{text(lang, "future.recentLead")}</p>
-      <div className="community-hub-content-list">{recentOfficialUpdates.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} statusLabel={text(lang, "future.recentStatus")} />)}</div>
-    </section> : null}
-  </section>;
 }
 
 export function EventsView({ accountProjects, cards, lang, loading, onOpenArticle, onRefresh, translationPending }: SharedViewProps) {
