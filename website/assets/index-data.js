@@ -248,9 +248,8 @@
       checking: false,
     };
     const intelFeedbackLabels = new Set([
-      "event", "feature", "announcement", "market", "report", "insight",
-      "trend",
-      "events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other",
+      "event", "product_progress", "announcement", "market", "report", "guide", "insight",
+      "sbt", "collectibles",
       "exclude",
     ]);
     const INTEL_ANALYZE_JOB_KEY = "intel_analyze_job_id";
@@ -261,8 +260,6 @@
       lastPayload: null,
     };
     let intelFeedbackModalResolver = null;
-    let pokemonNewsPollTimer = null;
-    let pokemonNewsItemsState = [];
     const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
 
     function normalizeIntelApiBase(raw) {
@@ -400,7 +397,7 @@
       if (fromText instanceof Date && !Number.isNaN(fromText.valueOf())) return fromText;
 
       const cardType = String(item?.card_type || "").toLowerCase();
-      if (["event", "feature", "announcement"].includes(cardType) && publishedAt) {
+      if (["event", "product_progress", "announcement"].includes(cardType) && publishedAt) {
         const dt = new Date(publishedAt);
         if (!Number.isNaN(dt.valueOf())) {
           return new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()));
@@ -655,10 +652,10 @@
     const intelTypeLabelMap = {
       event: "活動",
       market: "市場",
-      trend: "收藏趨勢",
       report: "報告",
       announcement: "公告",
-      feature: "功能",
+      product_progress: "產品進度",
+      guide: "攻略",
       insight: "觀點",
     };
 
@@ -669,13 +666,11 @@
         market: "市場",
         report: "報告",
         announcement: "公告",
-        feature: "功能",
         insight: "觀點",
         trend: "收藏趨勢",
         official: "官方",
-        pokemon: "寶可夢",
         collectibles: "收藏趨勢",
-        alpha: "未來規劃",
+        alpha: "產品進度",
         guides: "攻略",
         tools: "攻略",
         community: "社群精選",
@@ -705,7 +700,7 @@
         noExpanded: "目前沒有可用的展開整理。",
         noImage: "此貼文沒有可用圖片，仍可看下方完整整理。",
         clickForDetail: "點開可查看完整 AI 整理、原文連結與圖片。",
-        alphaSlots: "Alpha 四格整理",
+        alphaSlots: "產品進度四格整理",
         eventSlots: "活動四格整理",
         marketSlots: "市場四格整理",
         reportSlots: "工具/攻略四格整理",
@@ -766,23 +761,6 @@
         joinMethod: "參與方式",
         possibleImpact: "可能影響",
         sourceRulesFirst: "先看原文確認規則、時間與限制，再決定是否參與。",
-        pokemonNews: "寶可夢最新消息",
-        keySummary: "重點摘要",
-        fullSummary: "完整整理",
-        noPokemonNews: "目前沒有可顯示的最新消息。",
-        noPokemonPoints: "目前沒有可顯示重點。",
-        clickCardFull: "點擊卡片可看完整整理。",
-        aiOrganized: "AI整理",
-        basicOrganized: "基礎整理",
-        source: "來源",
-        language: "語言",
-        updated: "更新",
-        cached: "快取",
-        realtime: "即時",
-        backgroundUpdating: "背景更新中",
-        nextRefresh: "下次",
-        loadingNews: "來源：MiniMax NewsAgent · 載入中...",
-        updatingNews: "來源：MiniMax NewsAgent · 正在更新最新消息...",
         repairingLoadState: "正在修復載入狀態...",
         repairDoneReloading: "載入狀態已清理，正在重新抓取資料...",
         repairFailed: "修復失敗",
@@ -795,13 +773,11 @@
         market: "市场",
         report: "报告",
         announcement: "公告",
-        feature: "功能",
         insight: "观点",
         trend: "收藏趋势",
         official: "官方",
-        pokemon: "宝可梦",
         collectibles: "收藏趋势",
-        alpha: "未来规划",
+        alpha: "产品进度",
         guides: "攻略",
         tools: "攻略",
         community: "社群精选",
@@ -831,7 +807,7 @@
         noExpanded: "目前没有可用的展开整理。",
         noImage: "此贴文没有可用图片，仍可看下方完整整理。",
         clickForDetail: "点开可查看完整 AI 整理、原文链接与图片。",
-        alphaSlots: "Alpha 四格整理",
+        alphaSlots: "产品进度四格整理",
         eventSlots: "活动四格整理",
         marketSlots: "市场四格整理",
         reportSlots: "工具/攻略四格整理",
@@ -892,23 +868,6 @@
         joinMethod: "参与方式",
         possibleImpact: "可能影响",
         sourceRulesFirst: "先看原文确认规则、时间与限制，再决定是否参与。",
-        pokemonNews: "宝可梦最新消息",
-        keySummary: "重点摘要",
-        fullSummary: "完整整理",
-        noPokemonNews: "目前没有可显示的最新消息。",
-        noPokemonPoints: "目前没有可显示重点。",
-        clickCardFull: "点击卡片可看完整整理。",
-        aiOrganized: "AI整理",
-        basicOrganized: "基础整理",
-        source: "来源",
-        language: "语言",
-        updated: "更新",
-        cached: "缓存",
-        realtime: "实时",
-        backgroundUpdating: "后台更新中",
-        nextRefresh: "下次",
-        loadingNews: "来源：MiniMax NewsAgent · 加载中...",
-        updatingNews: "来源：MiniMax NewsAgent · 正在更新最新消息...",
         repairingLoadState: "正在修复加载状态...",
         repairDoneReloading: "加载状态已清理，正在重新抓取数据...",
         repairFailed: "修复失败",
@@ -921,13 +880,11 @@
         market: "Market",
         report: "Report",
         announcement: "Announcement",
-        feature: "Feature",
         insight: "Insight",
         trend: "Collectibles",
         official: "Official",
-        pokemon: "Pokemon",
         collectibles: "Collectibles",
-        alpha: "Future Plans",
+        alpha: "Product Progress",
         guides: "Guides",
         tools: "Guides",
         community: "Community Picks",
@@ -957,7 +914,7 @@
         noExpanded: "No expanded analysis available yet.",
         noImage: "No image is available for this post. Read the full analysis below.",
         clickForDetail: "Open for the full AI analysis, source link, and images.",
-        alphaSlots: "Alpha Four-Point Brief",
+        alphaSlots: "Product Progress Four-Point Brief",
         eventSlots: "Event Four-Point Brief",
         marketSlots: "Market Four-Point Brief",
         reportSlots: "Tool / Guide Four-Point Brief",
@@ -1018,23 +975,6 @@
         joinMethod: "How To Join",
         possibleImpact: "Possible Impact",
         sourceRulesFirst: "Check the original post for rules, timing, and limits before joining.",
-        pokemonNews: "Pokemon News",
-        keySummary: "Key Summary",
-        fullSummary: "Full Brief",
-        noPokemonNews: "No news items available yet.",
-        noPokemonPoints: "No key points available yet.",
-        clickCardFull: "Open the card for the full brief.",
-        aiOrganized: "AI brief",
-        basicOrganized: "Basic brief",
-        source: "Source",
-        language: "Language",
-        updated: "Updated",
-        cached: "cached",
-        realtime: "live",
-        backgroundUpdating: "background update",
-        nextRefresh: "next",
-        loadingNews: "Source: MiniMax NewsAgent · Loading...",
-        updatingNews: "Source: MiniMax NewsAgent · Updating news...",
         repairingLoadState: "Repairing loading state...",
         repairDoneReloading: "Loading state cleared. Refetching data...",
         repairFailed: "Repair failed",
@@ -1047,13 +987,11 @@
         market: "시장",
         report: "리포트",
         announcement: "공지",
-        feature: "기능",
         insight: "관점",
         trend: "컬렉터블 트렌드",
         official: "공식",
-        pokemon: "포켓몬",
         collectibles: "컬렉터블 트렌드",
-        alpha: "미래 계획",
+        alpha: "제품 진행",
         guides: "가이드",
         tools: "가이드",
         community: "커뮤니티 픽",
@@ -1083,7 +1021,7 @@
         noExpanded: "사용 가능한 상세 정리가 없습니다.",
         noImage: "이 게시물에는 사용할 수 있는 이미지가 없습니다. 아래 정리를 확인하세요.",
         clickForDetail: "전체 AI 정리, 원문 링크, 이미지를 보려면 여세요.",
-        alphaSlots: "Alpha 4분할 정리",
+        alphaSlots: "제품 진행 4분할 정리",
         eventSlots: "이벤트 4분할 정리",
         marketSlots: "시장 4분할 정리",
         reportSlots: "도구 / 가이드 4분할 정리",
@@ -1144,23 +1082,6 @@
         joinMethod: "참여 방법",
         possibleImpact: "가능한 영향",
         sourceRulesFirst: "참여 전 원문에서 규칙, 시간, 제한을 확인하세요.",
-        pokemonNews: "포켓몬 최신 소식",
-        keySummary: "핵심 요약",
-        fullSummary: "전체 정리",
-        noPokemonNews: "표시할 최신 소식이 없습니다.",
-        noPokemonPoints: "표시할 핵심 요점이 없습니다.",
-        clickCardFull: "카드를 열어 전체 정리를 확인하세요.",
-        aiOrganized: "AI 정리",
-        basicOrganized: "기본 정리",
-        source: "출처",
-        language: "언어",
-        updated: "업데이트",
-        cached: "캐시",
-        realtime: "실시간",
-        backgroundUpdating: "백그라운드 업데이트 중",
-        nextRefresh: "다음",
-        loadingNews: "출처: MiniMax NewsAgent · 로딩 중...",
-        updatingNews: "출처: MiniMax NewsAgent · 최신 소식 업데이트 중...",
         repairingLoadState: "로딩 상태를 복구하는 중...",
         repairDoneReloading: "로딩 상태를 정리했습니다. 데이터를 다시 가져오는 중...",
         repairFailed: "복구 실패",
@@ -1181,7 +1102,6 @@
       "趋势": "trend",
       "數據": "keyNumber",
       "数据": "keyNumber",
-      "功能": "feature",
       "即將開放": "alpha",
       "即将开放": "alpha",
       "觀點": "insight",
@@ -1189,8 +1109,8 @@
       "公告": "announcement",
       "報告": "report",
       "报告": "report",
-      "寶可夢": "pokemon",
-      "宝可梦": "pokemon",
+      "寶可夢": "collectibles",
+      "宝可梦": "collectibles",
       "工具": "guides",
       "攻略": "guides",
       "官方": "official",
@@ -1742,18 +1662,7 @@
       return parts.join(" ").toLowerCase();
     }
 
-    const TOPIC_LABELS = ["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"];
-    const TOPIC_LABEL_ALIASES = {
-      tool: "guides",
-      tools: "guides",
-      guide: "guides",
-      community_picks: "community",
-      "community-picks": "community",
-      none: "other",
-      unclassified: "other",
-      uncategorized: "other",
-      "5": "other",
-    };
+    const TOPIC_LABELS = ["sbt", "collectibles"];
 
     function normalizeTopicLabels(value) {
       const raw = Array.isArray(value)
@@ -1762,7 +1671,7 @@
       const out = [];
       raw.forEach((item) => {
         const rawLabel = String(item || "").trim().toLowerCase();
-        const label = TOPIC_LABEL_ALIASES[rawLabel] || rawLabel;
+        const label = rawLabel === "pokemon" ? "collectibles" : rawLabel;
         if (!label || !TOPIC_LABELS.includes(label) || out.includes(label)) return;
         out.push(label);
       });
@@ -1771,7 +1680,7 @@
 
     function cardTopicLabels(card) {
       const labels = normalizeTopicLabels(card?.topic_labels);
-      return labels.length ? labels : ["other"];
+      return labels;
     }
 
     function dateOnlyUtc(value) {
@@ -1784,7 +1693,7 @@
 
     function resolveCardWindowRange(item) {
       const cardType = String(item?.card_type || "").trim().toLowerCase();
-      if (cardType === "event" || cardType === "feature" || cardType === "announcement") {
+      if (cardType === "event" || cardType === "product_progress" || cardType === "announcement") {
         const start = dateOnlyUtc(item?.timeline_date);
         const end = dateOnlyUtc(item?.timeline_end_date);
         if (start || end) {
@@ -1822,40 +1731,36 @@
         events: [],
         official: [],
         sbt: [],
-        pokemon: [],
         collectibles: [],
         alpha: [],
         guides: [],
         community: [],
-        other: [],
       };
       const seenByBucket = {
         events: new Set(),
         official: new Set(),
         sbt: new Set(),
-        pokemon: new Set(),
         collectibles: new Set(),
         alpha: new Set(),
         guides: new Set(),
         community: new Set(),
-        other: new Set(),
       };
       (Array.isArray(cards) ? cards : []).forEach((card) => {
         const labels = cardTopicLabels(card);
         const key = cardStableKey(card);
         const normalized = { ...card, route_labels: labels, _card_key: key };
+        const cardType = String(normalized.card_type || "").trim().toLowerCase();
+        const sourceRole = String(normalized.source_role || "other").trim().toLowerCase();
         const keepByWindow = Boolean(normalized.manual_pin) || isWithinBiweekWindow(normalized);
-        if (normalized.event_wall === true && keepByWindow) {
-          const eventSeen = seenByBucket.events;
-          if (!eventSeen.has(key)) {
-            eventSeen.add(key);
-            buckets.events.push(normalized);
-          }
-        }
-        labels.forEach((label) => {
-          const bucket = buckets[label] ? label : "other";
-          if (bucket === "events") return;
-          if (bucket !== "collectibles" && !keepByWindow) return;
+        const routes = [];
+        if (cardType === "event" && keepByWindow) routes.push("events");
+        if (sourceRole === "official" && keepByWindow) routes.push("official");
+        if (sourceRole === "official" && cardType === "product_progress") routes.push("alpha");
+        if (cardType === "guide" && keepByWindow) routes.push("guides");
+        if (["official_community", "other"].includes(sourceRole) && keepByWindow) routes.push("community");
+        if (labels.includes("sbt") && keepByWindow) routes.push("sbt");
+        if (labels.includes("collectibles")) routes.push("collectibles");
+        routes.forEach((bucket) => {
           const seen = seenByBucket[bucket];
           if (seen.has(key)) return;
           seen.add(key);

@@ -27,7 +27,7 @@ from .embedding_cache import (
 
 
 KNOWLEDGE_MEMORY_FILENAME = "x_intel_knowledge_memory.json"
-KNOWLEDGE_MEMORY_VERSION = "20260518-knowledge-memory2"
+KNOWLEDGE_MEMORY_VERSION = "20260902-source-role-taxonomy1"
 DEFAULT_KNOWLEDGE_EMBEDDING_MODEL = "text-embedding-3-small"
 DATE_ROLE_EVENT_START = "event_start"
 DATE_ROLE_SCHEDULE_UPDATE = "schedule_update"
@@ -194,9 +194,6 @@ def is_public_website_memory_card(card: StoryCard) -> tuple[bool, str]:
     ai_status = str(card.ai_status or "").strip().lower()
     if review_status == AI_REVIEW_ADMIN_QUEUE or ai_status in {"needs_review", "pending", "failed"}:
         return False, "not_public_review"
-    labels = normalize_topic_labels(card.topic_labels)
-    if labels == ["other"]:
-        return False, "other_queue"
     return True, "public_site"
 
 
@@ -377,6 +374,7 @@ def _knowledge_item(card: StoryCard, window: dict[str, Any], *, embedding_model:
         "detail_summary": _compact(card.detail_summary, 600),
         "raw_hint": _compact(raw_hint, 900),
         "card_type": str(card.card_type or ""),
+        "source_role": str(card.source_role or "other"),
         "topic_labels": list(card.topic_labels or []),
         "tags": list(card.tags or []),
         "published_at": str(card.published_at or ""),
@@ -528,7 +526,7 @@ def write_knowledge_memory(
         "embedding_model": model,
         "memory_policy": {
             "visibility": "public_website_only",
-            "visibility_rule": "cards hidden in admin_queue, needs_review/pending/failed AI states, dropped dedupe, or other-only queue are excluded before embeddings are generated",
+            "visibility_rule": "cards hidden in admin_queue, needs_review/pending/failed AI states, or dropped dedupe are excluded before embeddings are generated",
             "retention_rule": "event dated cards keep memory from event_start - retention_days through event_end + retention_days; undated cards expire retention_days after published_at",
             "manual_rule": "manual pin/pick can keep an already public card past expiration, but cannot put hidden review cards into memory",
             "date_role_rule": "event_start and schedule_update are live event timing; registration_open, registration_deadline, product_release, feature_launch, and result_announcement are action dates, not live events",

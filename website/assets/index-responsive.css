@@ -379,10 +379,6 @@
         grid-template-columns: 1fr;
       }
 
-      .pokemon-news-grid {
-        grid-template-columns: 1fr;
-      }
-
       .intel-masterline-head {
         align-items: start;
       }

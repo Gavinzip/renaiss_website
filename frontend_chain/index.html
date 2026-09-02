@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Renaiss Aggregator collects official updates, event timelines, SBT notes, Pokemon and TCG posts, guides, community picks, and admin-curated intelligence." />
+  <meta name="description" content="Renaiss Aggregator collects official updates, product progress, event timelines, SBT notes, collectibles, guides, and community intelligence." />
   <title>Renaiss 新手入門指南 | Renaiss Starter Guide</title>
   <link rel="icon" type="image/png" href="./assets/renaiss-favicon.png" />
   <script defer src="./assets/analytics.js?v=20260509-ga1"></script>
@@ -21,12 +21,12 @@
         versions: "events",
         intel: "official",
         sbt: "sbt",
-        pipeline: "pokemon",
+        pipeline: "collectibles",
         timeline: "alpha",
         ops: "guides",
         tools: "guides",
         world: "community",
-        community: "other",
+        community: "community",
       };
       const rawHash = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
       const rawCategory = rawHash.replace(/^cat-/, "");
@@ -48,7 +48,7 @@
   <link rel="stylesheet" href="./assets/index-base.css?v=20260507-logo-original1" />
   <link rel="stylesheet" href="./assets/index-intel.css?v=20260519-agent-source-card1" />
   <link rel="stylesheet" href="./assets/index-responsive.css?v=20260507-logo-original1" />
-  <script defer src="assets/release-integrity.js?release=647e3bd10c7c2e5963b8" data-client-release="647e3bd10c7c2e5963b8"></script>
+  <script defer src="assets/release-integrity.js?release=a18129ee924294201d25" data-client-release="a18129ee924294201d25"></script>
 </head>
 <body>
   <main class="shell">
@@ -99,7 +99,7 @@
           <span class="line"><span class="text-gradient">Aggregator</span></span>
         </h1>
         <p class="hero-intro observe" data-i18n-key="home.heroIntro" style="--delay: 220ms;">
-          這裡是 Renaiss 社群的情報入口：把官方更新、活動、SBT 取得方式、寶可夢 / TCG 討論、未來規劃與工具資源整理成可快速判讀的分區。你可以先看活動時間軸掌握近期行程，再切到各分類看重點摘要、完整分析與原始來源。
+          這裡是 Renaiss 社群的情報入口：每篇內容先判斷來源角色與卡片類型，再視內容加上收藏品或 SBT 主題。你可以先看活動時間軸，再切到官方更新、產品進度、指南與社群內容查看重點與原始來源。
         </p>
 
         <div class="hero-actions observe" style="--delay: 320ms;">
@@ -136,12 +136,10 @@
           <button type="button" class="category-tab is-active" data-category-tab="events" data-category-target="events" data-i18n-key="category.events">活動</button>
           <button type="button" class="category-tab" data-category-tab="official" data-category-target="intel" data-i18n-key="category.official">官方近期更新</button>
           <button type="button" class="category-tab" data-category-tab="sbt" data-category-target="sbt" data-i18n-key="category.sbt">SBT</button>
-          <button type="button" class="category-tab" data-category-tab="pokemon" data-category-target="pipeline" data-i18n-key="category.pokemon">寶可夢相關資訊</button>
           <button type="button" class="category-tab" data-category-tab="collectibles" data-category-target="collectibles" data-i18n-key="category.collectibles">收藏趨勢</button>
-          <button type="button" class="category-tab" data-category-tab="alpha" data-category-target="timeline" data-i18n-key="category.alpha">未來規劃</button>
+          <button type="button" class="category-tab" data-category-tab="alpha" data-category-target="timeline" data-i18n-key="category.alpha">產品進度</button>
           <button type="button" class="category-tab" data-category-tab="guides" data-category-target="ops" data-i18n-key="category.guides">攻略</button>
           <button type="button" class="category-tab" data-category-tab="community" data-category-target="world" data-i18n-key="category.community">社群精選</button>
-          <button type="button" class="category-tab intel-user-hidden" data-category-tab="other" data-category-target="community" data-i18n-key="category.other" hidden aria-hidden="true">無</button>
         </div>
         <div class="category-switcher-foot">
           <p id="category-switcher-hint" class="category-switcher-hint">目前顯示：活動。</p>
@@ -225,34 +223,6 @@
           </ul>
         </article>
       </div>
-    </section>
-
-    <section id="pipeline" class="panel observe category-panel category-hidden" data-category-section="pokemon" style="--delay: 40ms;">
-      <div class="section-head">
-        <div>
-          <h2 class="section-title" data-i18n-key="pokemon.title">寶可夢相關資訊 / TCG Pro Pipeline</h2>
-          <p class="section-sub" data-i18n-key="pokemon.sub">這裡整理寶可夢 / TCG 的可讀情報：先看摘要重點，再點開看完整分析與原始連結。</p>
-        </div>
-        <span class="chip"><iconify-icon icon="lucide:factory"></iconify-icon>Production Flow</span>
-      </div>
-
-      <article class="card observe" style="--delay: 66ms; margin-bottom: 0.66rem;">
-        <h3 data-i18n-key="pokemon.postsTitle"><iconify-icon icon="lucide:target"></iconify-icon>寶可夢 / TCG 貼文整理</h3>
-        <div id="intel-pokemon-cards" class="intel-grid"></div>
-        <p id="intel-pokemon-empty" class="source-empty" style="display:none;" data-i18n-key="pokemon.empty">目前沒有寶可夢相關貼文。</p>
-      </article>
-
-      <article class="card observe" style="--delay: 78ms; margin-bottom: 0.66rem;">
-        <div class="pokemon-news-head">
-          <h3 data-i18n-key="pokemon.newsTitle"><iconify-icon icon="lucide:newspaper"></iconify-icon>最新消息</h3>
-          <button id="pokemon-news-refresh-btn" type="button" class="intel-sync-btn" data-i18n-key="pokemon.newsRefresh">更新最新消息</button>
-        </div>
-        <div id="pokemon-news-list" class="pokemon-news-grid">
-          <article class="pokemon-news-card"><p class="pokemon-news-summary" data-i18n-key="pokemon.newsWaiting">等待 AI 最新消息...</p></article>
-        </div>
-        <p id="pokemon-news-meta" class="intel-note" data-i18n-key="pokemon.newsSource">來源：MiniMax NewsAgent</p>
-      </article>
-
     </section>
 
     <section id="collectibles" class="panel observe category-panel category-hidden" data-category-section="collectibles" style="--delay: 40ms;">
@@ -349,26 +319,26 @@
     <section id="timeline" class="panel observe category-panel category-hidden" data-category-section="alpha" style="--delay: 40ms;">
       <div class="section-head">
         <div>
-          <h2 class="section-title" data-i18n-key="alpha.title" data-i18n-html="1">未來規劃 / <span class="text-gradient">Release Timeline</span></h2>
-          <p class="section-sub" data-i18n-key="alpha.sub">這裡只放玩家會在意的未來更新：上線時間、影響範圍、你該提前準備什麼。</p>
+          <h2 class="section-title" data-i18n-key="alpha.title" data-i18n-html="1">產品進度 / <span class="text-gradient">Product Progress</span></h2>
+          <p class="section-sub" data-i18n-key="alpha.sub">只收官方已證明的產品、功能、協議或平台能力狀態變化。</p>
         </div>
         <span class="chip"><iconify-icon icon="lucide:history"></iconify-icon>Player-facing Roadmap</span>
       </div>
 
       <article class="card observe" style="--delay: 66ms; margin-bottom: 0.66rem;">
-        <h3 data-i18n-key="alpha.postsTitle"><iconify-icon icon="lucide:rocket"></iconify-icon>未來規劃貼文整理</h3>
+        <h3 data-i18n-key="alpha.postsTitle"><iconify-icon icon="lucide:rocket"></iconify-icon>產品進度貼文整理</h3>
         <div id="intel-alpha-cards" class="intel-grid"></div>
-        <p id="intel-alpha-empty" class="source-empty" style="display:none;" data-i18n-key="alpha.empty">目前沒有未來功能 / Alpha 相關貼文。</p>
+        <p id="intel-alpha-empty" class="source-empty" style="display:none;" data-i18n-key="alpha.empty">目前沒有符合四問證據的產品進度貼文。</p>
       </article>
 
       <div class="grid-2" style="margin-top: 0.72rem;">
         <article class="card observe" style="--delay: 110ms;">
-          <h3 data-i18n-key="alpha.cardsTitle"><iconify-icon icon="lucide:list-checks"></iconify-icon>Alpha 卡片會顯示什麼</h3>
+          <h3 data-i18n-key="alpha.cardsTitle"><iconify-icon icon="lucide:list-checks"></iconify-icon>產品進度四問</h3>
           <ul>
-            <li data-i18n-key="alpha.cards1" data-i18n-html="1"><strong>預計時間：</strong>預告何時開放，並標示是否接近當前日期。</li>
-            <li data-i18n-key="alpha.cards2" data-i18n-html="1"><strong>內容重點：</strong>一句話說明這次更新改了什麼。</li>
-            <li data-i18n-key="alpha.cards3" data-i18n-html="1"><strong>影響範圍：</strong>誰會受影響（新手、持有 SBT、一般玩家等）。</li>
-            <li data-i18n-key="alpha.cards4" data-i18n-html="1"><strong>行動建議：</strong>要不要提前報名、準備資產或關注公告。</li>
+            <li data-i18n-key="alpha.cards1">能否指出明確的產品、功能、協議或平台能力？</li>
+            <li data-i18n-key="alpha.cards2">相比之前，它的狀態是否真的改變？</li>
+            <li data-i18n-key="alpha.cards3">是否改變了使用者能做的事，或平台實際運作方式？</li>
+            <li data-i18n-key="alpha.cards4">原文是否提供足夠證據支持這次變化？</li>
           </ul>
         </article>
 
@@ -468,21 +438,6 @@
       </div>
     </section>
 
-    <section id="community" class="panel observe category-panel category-hidden intel-user-hidden" data-category-section="other" style="--delay: 40ms;" hidden aria-hidden="true">
-      <div class="section-head">
-        <div>
-          <h2 class="section-title" data-i18n-key="other.title" data-i18n-html="1">無 / <span class="text-gradient">Unclassified</span></h2>
-          <p class="section-sub" data-i18n-key="other.sub" data-i18n-html="1">這裡放無法安全分類、被攻略/寶可夢/社群精選淘汰，或需要管理員再次判斷的貼文。</p>
-        </div>
-        <span class="chip" data-i18n-key="other.focusChip"><iconify-icon icon="lucide:inbox"></iconify-icon>Needs Review</span>
-      </div>
-
-      <article class="card observe" style="--delay: 90ms; margin-bottom: 0.66rem;">
-        <h3 data-i18n-key="other.postsTitle"><iconify-icon icon="lucide:inbox"></iconify-icon>無分類貼文</h3>
-        <div id="intel-other-cards" class="intel-grid intel-user-hidden" hidden aria-hidden="true"></div>
-        <p id="intel-other-empty" class="source-empty intel-user-hidden" hidden aria-hidden="true" style="display:none;" data-i18n-key="other.empty">目前沒有無分類貼文。</p>
-      </article>
-    </section>
   </main>
 
   <div id="intel-detail-modal" class="intel-detail-modal" aria-hidden="true">
@@ -583,15 +538,16 @@
           <div class="intel-admin-label">追蹤 X 用戶</div>
           <form id="intel-admin-x-source-form" class="intel-source-manager">
             <input id="intel-admin-x-source-input" type="text" placeholder="@username 或 x.com/username" autocomplete="off" />
-            <label class="intel-source-option">
-              <input id="intel-admin-x-source-pokemon" type="checkbox" />
-              <span>寶可夢來源</span>
-            </label>
+            <select id="intel-admin-x-source-category" aria-label="來源角色">
+              <option value="other">其他來源</option>
+              <option value="official_community">官方社群</option>
+              <option value="official">官方</option>
+            </select>
             <button type="submit" class="intel-auth-btn">新增追蹤</button>
           </form>
           <div id="intel-admin-x-source-result" class="intel-source-result" role="status" aria-live="polite">等待新增或取消追蹤操作。</div>
           <div id="intel-admin-x-source-list" class="intel-source-pill-list">等待資料...</div>
-          <div id="intel-admin-x-source-meta" class="intel-admin-meta">新增/取消後會影響下一次「立即掃描 / sync」抓取來源；勾選寶可夢來源後，該帳號新貼文會直接進入寶可夢資訊。</div>
+          <div id="intel-admin-x-source-meta" class="intel-admin-meta">新增或取消後會影響下一次「立即掃描 / sync」抓取來源；移除帳號後，同步會一併清除該來源的既有內容。</div>
         </div>
         <div id="intel-admin-public-feedback-section" class="intel-admin-list-wrap">
           <div class="intel-admin-label">使用者回饋</div>
@@ -625,11 +581,11 @@
           <select id="intel-feedback-card-type">
             <option value="">不修改</option>
             <option value="event">活動</option>
-            <option value="feature">功能</option>
+            <option value="product_progress">產品進度</option>
             <option value="announcement">公告</option>
             <option value="market">市場</option>
-            <option value="trend">收藏趨勢</option>
             <option value="report">報告</option>
+            <option value="guide">攻略／指南</option>
             <option value="insight">觀點</option>
           </select>
         </div>
@@ -637,17 +593,10 @@
           <label>分區（可多選，儲存後以勾選結果為準）</label>
           <div id="intel-feedback-section-current" class="intel-feedback-current">目前分區：--</div>
           <div id="intel-feedback-section-options" class="intel-feedback-checks">
-            <label class="intel-feedback-check"><input type="checkbox" value="events" data-intel-feedback-section-option />活動分區</label>
-            <label class="intel-feedback-check"><input type="checkbox" value="official" data-intel-feedback-section-option />官方近期更新</label>
             <label class="intel-feedback-check"><input type="checkbox" value="sbt" data-intel-feedback-section-option />SBT 分區</label>
-            <label class="intel-feedback-check"><input type="checkbox" value="pokemon" data-intel-feedback-section-option />寶可夢分區</label>
             <label class="intel-feedback-check"><input type="checkbox" value="collectibles" data-intel-feedback-section-option />收藏趨勢分區</label>
-            <label class="intel-feedback-check"><input type="checkbox" value="alpha" data-intel-feedback-section-option />未來規劃分區</label>
-            <label class="intel-feedback-check"><input type="checkbox" value="guides" data-intel-feedback-section-option />攻略分區</label>
-            <label class="intel-feedback-check"><input type="checkbox" value="community" data-intel-feedback-section-option />社群精選</label>
-            <label class="intel-feedback-check is-other"><input type="checkbox" value="other" data-intel-feedback-section-option />無</label>
           </div>
-          <div class="intel-feedback-help">選「無」會清除其他分區；選任何其他分區會自動取消「無」。</div>
+          <div class="intel-feedback-help">Topic 可留空；只有收藏品或 SBT 內容才需要勾選。</div>
         </div>
         <div class="intel-auth-field">
           <label for="intel-feedback-reason">原因（可選）</label>

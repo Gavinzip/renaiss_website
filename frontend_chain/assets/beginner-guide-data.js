@@ -270,7 +270,7 @@
   const STATIC_COMMAND_SHOWCASE = {
     images: [
       {
-        src: "./assets/beginner-guide/report_Zekrom_ex_profile.png",
+        src: "./assets/beginner-guide/report_Zekrom_ex_profile.avif",
         caption: {
           "zh-Hant": "分析流程可直接拉取外部市場成交參照，建立價格判讀依據。",
           "zh-Hans": "分析流程可直接拉取外部市场成交参考，建立价格判读依据。",
@@ -279,7 +279,7 @@
         },
       },
       {
-        src: "./assets/beginner-guide/report_Zekrom_ex_data.png",
+        src: "./assets/beginner-guide/report_Zekrom_ex_data.avif",
         caption: {
           "zh-Hant": "同卡跨版本可同步輸出比較視圖，提升估值判斷效率。",
           "zh-Hans": "同卡跨版本可同步输出比较视图，提升估值判断效率。",

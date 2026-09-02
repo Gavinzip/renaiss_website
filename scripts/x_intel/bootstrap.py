@@ -23,6 +23,13 @@ import requests
 
 from website_storage import get_website_data_dir
 
+from .taxonomy import (
+    CARD_TYPES,
+    TOPIC_LABELS,
+    canonical_topic_labels,
+    normalize_product_progress_evidence,
+)
+
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - fallback for minimal environments
@@ -37,20 +44,9 @@ DEFAULT_CURATED_MAX_CARDS = 24
 MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
-ALLOWED_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight"}
-ALLOWED_TOPIC_LABELS = {"events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"}
+ALLOWED_CARD_TYPES = set(CARD_TYPES)
+ALLOWED_TOPIC_LABELS = set(TOPIC_LABELS)
 ALLOWED_FEEDBACK_LABELS = ALLOWED_CARD_TYPES | ALLOWED_TOPIC_LABELS | {"exclude"}
-TOPIC_LABEL_ALIASES = {
-    "tool": "guides",
-    "tools": "guides",
-    "guide": "guides",
-    "community_picks": "community",
-    "community-picks": "community",
-    "none": "other",
-    "uncategorized": "other",
-    "unclassified": "other",
-    "5": "other",
-}
 JINA_HOST = "r.jina.ai"
 JINA_ANON_MIN_INTERVAL_SECONDS = 3.2
 JINA_KEYED_MIN_INTERVAL_SECONDS = 0.2
@@ -113,13 +109,11 @@ REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_
 REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
-AI_CLASSIFICATION_VERSION = "20260901-official-account-roles2"
+AI_CLASSIFICATION_VERSION = "20260902-source-role-product-progress1"
 PLAN_STATUS_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
 EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
 PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
 EVENT_REGION_IDS = {"tw", "kr", "my", "vn", "th", "global", "multi_region", "unknown"}
-PRODUCT_PROGRESS_X_HANDLE = "renaissxyz"
-PRODUCT_PROGRESS_X_HANDLES = set(OFFICIAL_X_HANDLES)
 OFFICIAL_X_ACCOUNT_ROLES = {
     "renaissxyz": "Renaiss 卡牌主業務官方帳號",
     "renaiss_index": "Renaiss Index 卡牌價格指數官方帳號",
@@ -291,6 +285,8 @@ class StoryCard:
     plan_status_checked_at: str = ""
     plan_ai_model: str = ""
     plan_ai_version: str = ""
+    source_role: str = "other"
+    product_progress_evidence: dict[str, str] | None = None
     source_channel_id: str = ""
     source_message_id: str = ""
     source_message_timestamp: str = ""
@@ -368,6 +364,8 @@ class StoryCard:
             "plan_status_checked_at": self.plan_status_checked_at,
             "plan_ai_model": self.plan_ai_model,
             "plan_ai_version": self.plan_ai_version,
+            "source_role": self.source_role,
+            "product_progress_evidence": normalize_product_progress_evidence(self.product_progress_evidence),
             "source_channel_id": self.source_channel_id,
             "source_message_id": self.source_message_id,
             "source_message_timestamp": self.source_message_timestamp,
@@ -1237,7 +1235,8 @@ def choose_template_id(card_type: str) -> str:
         "event": "event_poster",
         "market": "market_signal",
         "announcement": "announcement_timeline",
-        "feature": "announcement_timeline",
+        "product_progress": "announcement_timeline",
+        "guide": "community_brief",
         "report": "community_brief",
         "insight": "community_brief",
     }
@@ -1245,7 +1244,7 @@ def choose_template_id(card_type: str) -> str:
 
 
 def compute_urgency(card_type: str, importance: float, timeline_date: str = "") -> str:
-    if card_type in {"event", "feature", "announcement"} and timeline_date:
+    if card_type in {"event", "product_progress", "announcement"} and timeline_date:
         try:
             dt = datetime.fromisoformat(timeline_date)
             if dt.tzinfo is None:
@@ -1492,7 +1491,7 @@ def parse_status_page(
         ) or ("complete" if article_blocks else "partial" if is_article else ""),
         metrics=metrics,
         reply_to_id=reply_to_id,
-        topic_labels=["other"],
+        topic_labels=[],
         classified_by="ai",
         ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M3").strip(),
         ai_version=AI_CLASSIFICATION_VERSION,
@@ -1622,25 +1621,23 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
 
     # 攻略/經驗分享優先，避免被「開放、活動」字眼誤判。
     if has_guide and not has_event:
-        return "report", "brief", ["分析", "內容"]
+        return "guide", "brief", ["教學", "步驟"]
 
     # 活動需要可辨識時間 + 參與/地點/直播獎勵等語意證據。
     if has_event:
         return "event", "poster", ["活動", "參與"]
 
-    # SBT 門檻/快照/取得條件優先視為功能或公告，不落入市場模板。
+    # 沒有來源角色與四問證據時，規則分類器不得自行產生產品進度。
     if has_sbt_feature or has_sbt_unlock:
-        if has_announce and not has_feature:
-            return "announcement", "timeline", ["更新", "公告"]
-        return "feature", "timeline", ["功能", "即將開放"]
+        return "announcement", "timeline", ["更新", "公告"]
 
     # 市場訊號需搭配數字或明確交易語境。
     if has_market and has_numbers:
         return "market", "data", ["市場", "數據"]
 
-    # 功能進度與公告分流：產品/版本/開放屬 feature，制度公告屬 announcement。
+    # 功能或版本訊號先歸公告；AI 會用四問與官方來源做第二階段判斷。
     if has_feature and not has_guide:
-        return "feature", "timeline", ["功能", "即將開放"]
+        return "announcement", "timeline", ["更新", "公告"]
     if has_announce:
         return "announcement", "timeline", ["更新", "公告"]
 
@@ -1656,9 +1653,10 @@ def classify_story(text: str) -> tuple[str, str, list[str]]:
 def default_style_for_type(card_type: str) -> tuple[str, list[str]]:
     mapping = {
         "event": ("poster", ["活動", "參與"]),
-        "feature": ("timeline", ["功能", "即將開放"]),
+        "product_progress": ("timeline", ["產品進度", "狀態變更"]),
         "market": ("data", ["市場", "數據"]),
         "report": ("brief", ["分析", "內容"]),
+        "guide": ("brief", ["教學", "步驟"]),
         "announcement": ("timeline", ["更新", "公告"]),
         "insight": ("brief", ["觀點"]),
     }
@@ -1671,10 +1669,11 @@ def score_card(card: StoryCard) -> float:
         score += 5.0
     type_weight = {
         "event": 4.5,
-        "feature": 4.2,
+        "product_progress": 4.2,
         "announcement": 3.8,
         "market": 3.4,
         "report": 3.0,
+        "guide": 2.8,
         "insight": 1.5,
     }
     score += type_weight.get(card.card_type, 1.0)
@@ -1729,8 +1728,9 @@ def _headline_prefix(card_type: str) -> str:
         "event": "活動重點",
         "market": "市場訊號",
         "announcement": "官方公告",
-        "feature": "功能進度",
+        "product_progress": "產品進度",
         "report": "重點分析",
+        "guide": "操作指南",
         "insight": "社群觀點",
     }
     return mapping.get(card_type, "情報重點")
@@ -1842,25 +1842,8 @@ def has_guide_topic_evidence(text: Any, card_type: str = "") -> bool:
 
 def normalize_topic_labels(value: Any) -> list[str]:
     if isinstance(value, str):
-        raw_items = re.split(r"[,，/|\\\s]+", value)
-    elif isinstance(value, list):
-        raw_items = [str(x) for x in value]
-    else:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_items:
-        label = str(raw or "").strip().lower()
-        label = TOPIC_LABEL_ALIASES.get(label, label)
-        if not label or label in seen:
-            continue
-        if label not in ALLOWED_TOPIC_LABELS:
-            continue
-        seen.add(label)
-        out.append(label)
-        if len(out) >= 8:
-            break
-    return out
+        value = re.split(r"[,，/|\\\s]+", value)
+    return canonical_topic_labels(value)
 
 
 def normalize_number_facts(value: Any) -> list[dict[str, str]]:

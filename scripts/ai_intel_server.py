@@ -33,18 +33,24 @@ from urllib.parse import unquote
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from minimax_news import fetch_pokemon_latest_news, translate_pokemon_news_payload
 from x_intel_core import (
     ALLOWED_CARD_TYPES,
     ALLOWED_TOPIC_LABELS,
+    AI_CLASSIFICATION_VERSION,
+    OFFICIAL_DISCORD_CHANNEL_IDS,
     add_classification_feedback,
     add_classification_feedback_fields,
     add_manual_tweet,
     attach_product_progress_group_keys,
     apply_manual_selection_to_feed_snapshot,
     feedback_memory_stats,
+    is_retired_source_handle,
     load_environment,
+    migrate_card_taxonomy_payload,
     migrate_official_account_role_copy_v1,
+    migrate_x_source_config,
+    normalize_account_handle,
+    purge_retired_source_data,
     read_editorial_audit,
     read_x_source_config,
     refresh_card_content,
@@ -75,6 +81,7 @@ from website_i18n_runtime import (
     feed_i18n_source_content_hash,
     i18n_state_snapshot,
     localized_feed_from_bundle,
+    purge_i18n_source_references,
     queue_i18n_retranslate,
     resume_pending_i18n_from_feed,
     translate_texts,
@@ -131,18 +138,14 @@ I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 KNOWLEDGE_MEMORY_PATH = DATA_ROOT / "x_intel_knowledge_memory.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
-POKEMON_NEWS_CACHE_PATH = DATA_ROOT / "pokemon_latest_news.json"
 BEGINNER_WIKI_CONTENT_PATH = DATA_ROOT / "beginner_wiki_content.json"
 BEGINNER_WIKI_HISTORY_PATH = DATA_ROOT / "beginner_wiki_history.jsonl"
 PROFILE_STORE = ExpoProfileStore(DATA_ROOT / "expo_profile.sqlite3")
 AUTH_STATE_STORE = AuthStateStore(DATA_ROOT / "community_hub_auth.sqlite3")
 configure_auth_state_store(AUTH_STATE_STORE)
-POKEMON_NEWS_CANONICAL_LANG = "zh-Hant"
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
 PUBLIC_FEEDBACK_LOCK = Lock()
-POKEMON_NEWS_LOCK = Lock()
-POKEMON_NEWS_STATE_LOCK = Lock()
 SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
@@ -208,9 +211,6 @@ MAX_JOB_ITEMS = 120
 MAX_CONTENT_REFRESH_ITEMS = 40
 PUBLIC_FEEDBACK_MAX_ITEMS = 500
 PUBLIC_FEEDBACK_CATEGORIES = {"bug", "suggestion", "data", "translation", "other"}
-POKEMON_NEWS_CACHE_MINUTES = 50
-DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES = 60
-DEFAULT_POKEMON_NEWS_MAX_ITEMS = 8
 DEFAULT_X_SYNC_INTERVAL_HOURS = 0.5
 DEFAULT_X_SYNC_WINDOW_DAYS = 30
 DEFAULT_COMMUNITY_METRICS_INTERVAL_HOURS = 1.0
@@ -252,7 +252,6 @@ CARD_PROFILE_WALLET_MIGRATION_MAP_PATH = Path(
 )
 I18N_BASE_LANG = "zh-Hant"
 I18N_MONITOR_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-POKEMON_NEWS_STATE: dict[str, dict] = {}
 CARD_SCAN_SNKR_HISTORY_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_SNKR_HISTORY_LOCK = Lock()
 CARD_SCAN_EXCHANGE_RATE_CACHE: tuple[float, dict] | None = None
@@ -262,6 +261,19 @@ OPEN_MONITOR_LEADERBOARD_SOURCE_URL = "https://open-monitor-rmrm.pages.dev/leade
 OPEN_MONITOR_LEADERBOARD_TIMEOUT_SECONDS = float(os.getenv("OPEN_MONITOR_LEADERBOARD_TIMEOUT_SECONDS", "12") or 12)
 OPEN_MONITOR_LEADERBOARD_CACHE_SECONDS = float(os.getenv("OPEN_MONITOR_LEADERBOARD_CACHE_SECONDS", "300") or 300)
 OPEN_MONITOR_LEADERBOARD_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _purge_retired_intel_cache_files() -> list[str]:
+    """Remove persisted files owned only by the retired Pokemon news section."""
+    removed: list[str] = []
+    for path in DATA_ROOT.glob("pokemon_latest_news*.json"):
+        if not path.is_file():
+            continue
+        path.unlink()
+        removed.append(path.name)
+    return sorted(removed)
+
+
 OPEN_MONITOR_LEADERBOARD_LOCK = Lock()
 CARD_SCAN_RENAISS_MARKET_CACHE: dict[str, tuple[float, dict]] = {}
 CARD_SCAN_RENAISS_MARKET_LOCK = Lock()
@@ -856,6 +868,40 @@ def _write_jobs_unlocked(jobs: dict) -> None:
     payload = {"updated_at": _now_iso(), "jobs": jobs}
     JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
     JOBS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _purge_runtime_source_references(accounts: list[str], card_ids: list[str]) -> dict[str, int]:
+    normalized_accounts = {
+        normalize_account_handle(account)
+        for account in accounts
+        if normalize_account_handle(account)
+    }
+    normalized_ids = {str(card_id or "").strip().lower() for card_id in card_ids if str(card_id or "").strip()}
+    stats = {"jobs": 0, "content_refresh": 0}
+    if not normalized_accounts and not normalized_ids:
+        return stats
+
+    def matches(value: object) -> bool:
+        text = json.dumps(value, ensure_ascii=False).lower()
+        return any(account in text for account in normalized_accounts) or any(card_id in text for card_id in normalized_ids)
+
+    with JOBS_LOCK:
+        state = _read_jobs_unlocked()
+        jobs = state.get("jobs") if isinstance(state.get("jobs"), dict) else {}
+        next_jobs = {key: value for key, value in jobs.items() if not matches(value)}
+        stats["jobs"] = len(jobs) - len(next_jobs)
+        if stats["jobs"]:
+            _write_jobs_unlocked(next_jobs)
+
+    with CONTENT_REFRESH_LOCK:
+        running = CONTENT_REFRESH_STATE.get("running") if isinstance(CONTENT_REFRESH_STATE.get("running"), dict) else {}
+        history = CONTENT_REFRESH_STATE.get("history") if isinstance(CONTENT_REFRESH_STATE.get("history"), list) else []
+        next_running = {key: value for key, value in running.items() if not matches(value)}
+        next_history = [value for value in history if not matches(value)]
+        stats["content_refresh"] = (len(running) - len(next_running)) + (len(history) - len(next_history))
+        CONTENT_REFRESH_STATE["running"] = next_running
+        CONTENT_REFRESH_STATE["history"] = next_history
+    return stats
 
 
 def _read_beginner_wiki_content() -> dict:
@@ -1465,45 +1511,6 @@ def _normalize_lang_tag(lang: str | None) -> str:
     return "zh-Hant"
 
 
-def _state_for_lang_unlocked(lang: str) -> dict:
-    state = POKEMON_NEWS_STATE.get(lang)
-    if not isinstance(state, dict):
-        state = {
-            "lang": lang,
-            "refreshing": False,
-            "last_refresh_at": "",
-            "last_error": "",
-            "next_refresh_at": "",
-            "interval_minutes": DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES,
-            "updated_at": _now_iso(),
-        }
-        POKEMON_NEWS_STATE[lang] = state
-    return state
-
-
-def _update_news_state(lang: str, **fields: object) -> dict:
-    tag = _normalize_lang_tag(lang)
-    with POKEMON_NEWS_STATE_LOCK:
-        state = _state_for_lang_unlocked(tag)
-        state.update(fields)
-        state["updated_at"] = _now_iso()
-        return dict(state)
-
-
-def _get_news_state(lang: str) -> dict:
-    tag = _normalize_lang_tag(lang)
-    with POKEMON_NEWS_STATE_LOCK:
-        return dict(_state_for_lang_unlocked(tag))
-
-
-def _news_cache_path(lang: str | None) -> Path:
-    tag = _normalize_lang_tag(lang)
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", tag)
-    if not safe:
-        return POKEMON_NEWS_CACHE_PATH
-    return DATA_ROOT / f"pokemon_latest_news_{safe}.json"
-
-
 def _read_feed_snapshot() -> dict:
     if not FEED_PATH.exists():
         return {}
@@ -1607,13 +1614,82 @@ def _attach_x_source_metadata(feed: dict) -> dict:
     account_projects = source_config.get("account_projects")
     if not isinstance(account_projects, dict):
         account_projects = {}
+    account_source_roles = source_config.get("account_categories")
+    if not isinstance(account_source_roles, dict):
+        account_source_roles = {}
+    roles_by_handle = {
+        normalize_account_handle(account): str(role or "other")
+        for account, role in account_source_roles.items()
+        if normalize_account_handle(account)
+    }
     enriched = dict(feed)
     enriched["account_projects"] = {
         str(account): str(project_id)
         for account, project_id in account_projects.items()
         if str(account).strip() and str(project_id).strip()
     }
+    enriched["account_source_roles"] = {
+        str(account): str(role)
+        for account, role in account_source_roles.items()
+        if str(account).strip() and str(role).strip()
+    }
+    cards = feed.get("cards") if isinstance(feed.get("cards"), list) else []
+    canonical_cards: list[dict] = []
+    for raw in cards:
+        if not isinstance(raw, dict) or is_retired_source_handle(raw.get("account")):
+            continue
+        row = dict(raw)
+        account = normalize_account_handle(row.get("account"))
+        source_role = roles_by_handle.get(account, row.get("source_role") or "other")
+        discord_match = re.search(r"discord\.com/channels/[^/]+/(\d+)/\d+", str(row.get("url") or ""), re.I)
+        if discord_match and str(discord_match.group(1) or "") in OFFICIAL_DISCORD_CHANNEL_IDS:
+            source_role = "official"
+        migrate_card_taxonomy_payload(row, source_role)
+        canonical_cards.append(row)
+    enriched["cards"] = canonical_cards
+    enriched["total_cards"] = len(canonical_cards)
+    enriched["accounts"] = [
+        str(account)
+        for account in (feed.get("accounts") or [])
+        if str(account).strip() and not is_retired_source_handle(account)
+    ]
+    for key in ("source_stats", "source_quality"):
+        values = feed.get(key)
+        if isinstance(values, dict):
+            enriched[key] = {
+                account: value
+                for account, value in values.items()
+                if not is_retired_source_handle(account)
+            }
     return enriched
+
+
+def _feed_needs_taxonomy_reclassification() -> bool:
+    if not FEED_PATH.exists():
+        return False
+    try:
+        payload = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    cards = payload.get("cards") if isinstance(payload, dict) and isinstance(payload.get("cards"), list) else []
+    for row in cards:
+        if not isinstance(row, dict):
+            continue
+        card_type = str(row.get("card_type") or "").strip().lower()
+        topics = [str(value or "").strip().lower() for value in (row.get("topic_labels") or [])]
+        source_role = str(row.get("source_role") or "").strip().lower()
+        if card_type not in ALLOWED_CARD_TYPES or any(topic not in ALLOWED_TOPIC_LABELS for topic in topics):
+            return True
+        if source_role not in {"official", "official_community", "other"}:
+            return True
+        if (
+            source_role == "official"
+            and str(row.get("classified_by") or "").strip().lower() != "manual"
+            and str(row.get("review_status") or "").strip() != "admin_overridden"
+            and str(row.get("ai_version") or "").strip() != AI_CLASSIFICATION_VERSION
+        ):
+            return True
+    return False
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -2398,6 +2474,18 @@ def _run_intel_sync(accounts: list[str] | None, days: int, trigger: str) -> dict
             window_days=max(1, int(days)),
             progress_callback=_priority_sync_progress,
         )
+        i18n_cleanup = purge_i18n_source_references(
+            [str(value) for value in (result.get("removed_source_accounts") or []) if str(value).strip()],
+            [str(value) for value in (result.get("removed_source_card_ids") or []) if str(value).strip()],
+        )
+        runtime_cleanup = _purge_runtime_source_references(
+            [str(value) for value in (result.get("removed_source_accounts") or []) if str(value).strip()],
+            [str(value) for value in (result.get("removed_source_card_ids") or []) if str(value).strip()],
+        )
+        removed_state = result.get("removed_source_state") if isinstance(result.get("removed_source_state"), dict) else {}
+        removed_state.update(i18n_cleanup)
+        removed_state.update(runtime_cleanup)
+        result["removed_source_state"] = removed_state
         _yield_for_priority_work("x_sync_i18n_queue")
         build_i18n_feed_bundle_async(result, force=False, target_langs=["en", "ko", "zh-Hans"])
         _finish_sync_state_ok(started_monotonic)
@@ -2741,19 +2829,6 @@ def _collect_jobs_snapshot(limit: int = 12) -> dict:
     }
 
 
-def _collect_news_state_snapshot() -> list[dict]:
-    with POKEMON_NEWS_STATE_LOCK:
-        langs = sorted(POKEMON_NEWS_STATE.keys())
-        rows = [dict(_state_for_lang_unlocked(lang)) for lang in langs]
-    for row in rows:
-        tag = _normalize_lang_tag(row.get("lang"))
-        cache = _read_news_cache(tag)
-        provider = str(cache.get("provider") or os.getenv("NEWS_SEARCH_PROVIDER") or "minimax_cli_search").strip()
-        row["provider"] = provider
-        row["items"] = len(cache.get("items") or []) if isinstance(cache.get("items"), list) else 0
-    return rows
-
-
 def _build_admin_status(limit: int = 10) -> dict:
     feed = _read_feed_snapshot()
     cards_raw = feed.get("cards")
@@ -2762,7 +2837,6 @@ def _build_admin_status(limit: int = 10) -> dict:
     sync_state = _sync_state_snapshot()
     jobs = _collect_jobs_snapshot(limit=limit)
     content_refresh = _content_refresh_snapshot(limit=limit)
-    news_states = _collect_news_state_snapshot()
     i18n_state = i18n_state_snapshot()
     i18n_alignment = _compute_i18n_alignment(feed, i18n_state)
     memory_stats = feedback_memory_stats()
@@ -2907,11 +2981,6 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "detail": f"running={running_refresh} recent={_safe_int(content_refresh.get('total'), 0)}",
             },
             {
-                "name": "pokemon_news_agent",
-                "status": "running" if any(bool(x.get("refreshing")) for x in news_states) else "idle",
-                "detail": f"langs={len(news_states)}",
-            },
-            {
                 "name": "i18n_feed_agent",
                 "status": str(i18n_effective_status or i18n_state.get("status") or "idle"),
                 "detail": f"langs={','.join([str(x) for x in (i18n_state.get('langs') or [])]) or '--'} source={str(i18n_state.get('source_generated_at') or '--')}",
@@ -2932,7 +3001,6 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "accounts": [str(x) for x in (x_source_config.get("x_accounts") or []) if str(x).strip()],
                 "account_categories": x_source_config.get("account_categories") if isinstance(x_source_config.get("account_categories"), dict) else {},
                 "account_projects": x_source_config.get("account_projects") if isinstance(x_source_config.get("account_projects"), dict) else {},
-                "pokemon_accounts": [str(x) for x in (x_source_config.get("pokemon_accounts") or []) if str(x).strip()],
                 "default_accounts": [str(x) for x in (x_source_config.get("default_x_accounts") or []) if str(x).strip()],
                 "using_default": bool(x_source_config.get("using_default")),
                 "updated_at": str(x_source_config.get("updated_at") or ""),
@@ -2951,9 +3019,6 @@ def _build_admin_status(limit: int = 10) -> dict:
                 "errors": [str(x) for x in (discord_info.get("errors") or []) if str(x).strip()][:6],
             }
         },
-        "news": {
-            "langs": news_states,
-        },
         "i18n": i18n_payload,
         "storage": {
             **STORAGE_STATE,
@@ -2969,166 +3034,6 @@ def _build_admin_status(limit: int = 10) -> dict:
         },
         "public_feedback": public_feedback,
     }
-
-
-def _read_news_cache_unlocked(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _read_news_cache(lang: str | None) -> dict:
-    path = _news_cache_path(lang)
-    with POKEMON_NEWS_LOCK:
-        raw = _read_news_cache_unlocked(path)
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
-def _write_news_cache_unlocked(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _is_news_cache_fresh(cache: dict, max_age_minutes: int = POKEMON_NEWS_CACHE_MINUTES) -> bool:
-    updated = str(cache.get("generated_at") or "").strip()
-    if not updated:
-        return False
-    try:
-        dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
-    except Exception:
-        return False
-    now = datetime.now(timezone.utc)
-    age = now - dt.astimezone(timezone.utc)
-    return age <= timedelta(minutes=max(1, int(max_age_minutes)))
-
-
-def _compose_news_payload(cache: dict, lang: str, *, pending: bool = False, refresh_started: bool = False) -> dict:
-    base = dict(cache) if isinstance(cache, dict) else {}
-    if not base:
-        base = {
-            "generated_at": "",
-            "provider": str(os.getenv("NEWS_SEARCH_PROVIDER") or "minimax_cli_search"),
-            "lang": _normalize_lang_tag(lang),
-            "summary_mode": "pending",
-            "items": [],
-            "cached": False,
-        }
-    state = _get_news_state(lang)
-    base["refreshing"] = bool(state.get("refreshing"))
-    base["refresh_started"] = bool(refresh_started)
-    base["pending"] = bool(pending)
-    base["last_refresh_at"] = str(state.get("last_refresh_at") or "")
-    base["next_refresh_at"] = str(state.get("next_refresh_at") or "")
-    base["auto_interval_minutes"] = int(state.get("interval_minutes") or DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES)
-    state_error = str(state.get("last_error") or "").strip()
-    if state_error and not str(base.get("warning") or "").strip():
-        base["warning"] = f"背景更新最近失敗：{state_error}"
-    return base
-
-
-def _get_pokemon_news(force: bool = False, max_items: int = 8, lang: str | None = None) -> dict:
-    lang_tag = _normalize_lang_tag(lang)
-    cache_path = _news_cache_path(lang_tag)
-    with POKEMON_NEWS_LOCK:
-        cache = _read_news_cache_unlocked(cache_path)
-    if not force and cache and _is_news_cache_fresh(cache):
-        payload = dict(cache)
-        payload["cached"] = True
-        return payload
-    if lang_tag != POKEMON_NEWS_CANONICAL_LANG:
-        base_path = _news_cache_path(POKEMON_NEWS_CANONICAL_LANG)
-        with POKEMON_NEWS_LOCK:
-            base_cache = _read_news_cache_unlocked(base_path)
-        if force or not base_cache or not _is_news_cache_fresh(base_cache):
-            base_cache = _get_pokemon_news(force=True, max_items=max_items, lang=POKEMON_NEWS_CANONICAL_LANG)
-            base_cache.pop("cached", None)
-        try:
-            translated = translate_pokemon_news_payload(base_cache, lang_tag)
-            with POKEMON_NEWS_LOCK:
-                _write_news_cache_unlocked(cache_path, translated)
-            translated["cached"] = False
-            return translated
-        except Exception as exc:
-            if cache:
-                payload = dict(cache)
-                payload["cached"] = True
-                payload["warning"] = f"新聞翻譯失敗，已回退快取：{exc}"
-                return payload
-            raise
-    try:
-        fresh = fetch_pokemon_latest_news(
-            max_items=max(3, min(int(max_items), 16)),
-            lang=POKEMON_NEWS_CANONICAL_LANG,
-        )
-        with POKEMON_NEWS_LOCK:
-            _write_news_cache_unlocked(cache_path, fresh)
-        fresh["cached"] = False
-        return fresh
-    except Exception as exc:
-        if cache:
-            payload = dict(cache)
-            payload["cached"] = True
-            payload["warning"] = f"最新抓取失敗，已回退快取：{exc}"
-            return payload
-        raise
-
-
-def _refresh_pokemon_news_worker(lang: str, max_items: int, reason: str, delay_seconds: float = 0) -> None:
-    tag = _normalize_lang_tag(lang)
-    if delay_seconds > 0:
-        time.sleep(float(delay_seconds))
-    try:
-        _yield_for_priority_work(f"pokemon_news:{reason}:{tag}")
-        news = _get_pokemon_news(force=True, max_items=max_items, lang=tag)
-        warning = str(news.get("warning") or "").strip()
-        refresh_at = str(news.get("generated_at") or _now_iso()).strip() or _now_iso()
-        _update_news_state(tag, refreshing=False, last_refresh_at=refresh_at, last_error=warning, last_reason=reason)
-    except Exception as exc:
-        _update_news_state(tag, refreshing=False, last_error=str(exc), last_reason=reason)
-
-
-def _spawn_pokemon_news_refresh(lang: str, max_items: int, reason: str, delay_seconds: float = 0) -> bool:
-    tag = _normalize_lang_tag(lang)
-    with POKEMON_NEWS_STATE_LOCK:
-        state = _state_for_lang_unlocked(tag)
-        if bool(state.get("refreshing")):
-            return False
-        state["refreshing"] = True
-        state["last_reason"] = reason
-        state["updated_at"] = _now_iso()
-    Thread(target=_refresh_pokemon_news_worker, args=(tag, max_items, reason, float(delay_seconds or 0)), daemon=True).start()
-    return True
-
-
-def _start_pokemon_news_scheduler(interval_minutes: int, langs: list[str], max_items: int = DEFAULT_POKEMON_NEWS_MAX_ITEMS) -> None:
-    safe_interval_min = max(1, int(interval_minutes))
-    interval_seconds = safe_interval_min * 60
-    normalized_langs = []
-    for lang in langs:
-        tag = _normalize_lang_tag(lang)
-        if tag and tag not in normalized_langs:
-            normalized_langs.append(tag)
-    if not normalized_langs:
-        normalized_langs = ["zh-Hant"]
-
-    first_next = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
-    for idx, lang in enumerate(normalized_langs):
-        _update_news_state(lang, interval_minutes=safe_interval_min, next_refresh_at=first_next)
-        _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="startup", delay_seconds=idx * 20)
-
-    def _loop() -> None:
-        while True:
-            time.sleep(interval_seconds)
-            next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)).isoformat()
-            for idx, lang in enumerate(normalized_langs):
-                _update_news_state(lang, interval_minutes=safe_interval_min, next_refresh_at=next_run)
-                _spawn_pokemon_news_refresh(lang, max_items=max_items, reason="scheduled", delay_seconds=idx * 20)
-
-    Thread(target=_loop, daemon=True).start()
 
 
 def _create_job(url: str) -> dict:
@@ -5613,7 +5518,7 @@ class Handler(SimpleHTTPRequestHandler):
             base_public_cards = [item for item in base_cards if _card_is_public(item)]
             hidden_event_duplicate_ids = public_event_duplicate_ids(base_public_cards)
             localized_feed = _public_feed_snapshot(
-                localized_feed_from_bundle(feed, request_lang),
+                _attach_x_source_metadata(localized_feed_from_bundle(feed, request_lang)),
                 hidden_event_duplicate_ids=hidden_event_duplicate_ids,
             )
             attach_product_progress_group_keys(localized_feed)
@@ -5675,7 +5580,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/backup",
             "/api/intel/restore",
             "/api/intel/retranslate",
-            "/api/intel/pokemon-news",
             "/api/intel/agent",
             "/api/intel/translate-texts",
             "/api/intel/public-feedback",
@@ -6152,23 +6056,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "retranslate": result, "i18n": i18n_state_snapshot()})
                 return
 
-            if path == "/api/intel/pokemon-news":
-                force = bool(payload.get("force"))
-                max_items = int(payload.get("max_items", 8) or 8)
-                lang = str(payload.get("lang") or "").strip() or "zh-Hant"
-                cache = _read_news_cache(lang)
-                needs_refresh = force or (not cache) or (not _is_news_cache_fresh(cache))
-                started = _spawn_pokemon_news_refresh(lang, max_items=max(3, min(max_items, 16)), reason="manual" if force else "on-demand") if needs_refresh else False
-                if cache:
-                    cache_payload = dict(cache)
-                    cache_payload["cached"] = True
-                    news = _compose_news_payload(cache_payload, lang, pending=False, refresh_started=started)
-                else:
-                    news = _compose_news_payload({}, lang, pending=True, refresh_started=started)
-                    news["message"] = "背景更新中，稍後會自動顯示最新消息。"
-                self._send_json({"ok": True, "news": news})
-                return
-
             url = str(payload.get("url") or "").strip()
             if not url:
                 self._send_json({"ok": False, "error": "url is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -6183,8 +6070,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run local website AI intel server")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, default=8787, help="Bind port")
-    parser.add_argument("--news-interval-minutes", type=int, default=DEFAULT_POKEMON_NEWS_INTERVAL_MINUTES, help="Pokemon news auto refresh interval in minutes")
-    parser.add_argument("--news-langs", default="zh-Hant", help="Comma separated language tags for background news cache")
     parser.add_argument(
         "--sync-interval-hours",
         type=float,
@@ -6222,9 +6107,19 @@ def main() -> int:
         help="Disable automatic regional community metric backfill",
     )
     args = parser.parse_args()
+    retired_cache_files = _purge_retired_intel_cache_files()
+    source_config = migrate_x_source_config()
+    retired_source_cleanup = purge_retired_source_data()
+    i18n_retired_cleanup = purge_i18n_source_references(
+        retired_source_cleanup.get("removed_source_accounts") or [],
+        retired_source_cleanup.get("removed_source_card_ids") or [],
+    )
+    runtime_retired_cleanup = _purge_runtime_source_references(
+        retired_source_cleanup.get("removed_source_accounts") or [],
+        retired_source_cleanup.get("removed_source_card_ids") or [],
+    )
+    taxonomy_reclassify_on_startup = _feed_needs_taxonomy_reclassification()
 
-    langs = [str(x).strip() for x in str(args.news_langs or "").split(",") if str(x).strip()]
-    _start_pokemon_news_scheduler(interval_minutes=max(1, int(args.news_interval_minutes)), langs=langs, max_items=DEFAULT_POKEMON_NEWS_MAX_ITEMS)
     if args.no_sync_scheduler:
         _mark_sync_schedule(
             enabled=False,
@@ -6235,7 +6130,7 @@ def main() -> int:
         _start_x_sync_scheduler(
             interval_hours=max(0.25, float(args.sync_interval_hours)),
             window_days=max(1, int(args.sync_window_days)),
-            run_on_startup=bool(args.sync_run_on_startup),
+            run_on_startup=bool(args.sync_run_on_startup or taxonomy_reclassify_on_startup),
         )
     if I18N_WARM_ON_STARTUP:
         _warm_i18n_bundle_from_feed()
@@ -6257,12 +6152,25 @@ def main() -> int:
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[ai-intel] serving api={ROOT} static={STATIC_ROOT} at http://{args.host}:{args.port}")
+    if retired_cache_files:
+        print(f"[ai-intel] removed retired intel cache files: {','.join(retired_cache_files)}")
+    retired_source_counts = {
+        **(retired_source_cleanup.get("removed_source_state") or {}),
+        **i18n_retired_cleanup,
+        **runtime_retired_cleanup,
+    }
+    if bool(source_config.get("migrated")) or int(retired_source_cleanup.get("feed_cards_removed") or 0) or any(retired_source_counts.values()):
+        print(
+            "[ai-intel] retired source cleanup "
+            f"config_migrated={bool(source_config.get('migrated'))} "
+            f"feed_cards={int(retired_source_cleanup.get('feed_cards_removed') or 0)} "
+            f"state={json.dumps(retired_source_counts, ensure_ascii=False, sort_keys=True)}"
+        )
     print(
         "[ai-intel] storage "
         f"data_root={DATA_ROOT} symlink={bool(STORAGE_STATE.get('using_symlink'))} "
         f"migrated={bool(STORAGE_STATE.get('migrated'))}"
     )
-    print(f"[ai-intel] pokemon news auto refresh every {max(1, int(args.news_interval_minutes))} minutes; langs={langs or ['zh-Hant']}")
     if args.no_sync_scheduler:
         print("[ai-intel] X/Discord auto sync disabled")
     else:
@@ -6270,14 +6178,15 @@ def main() -> int:
             "[ai-intel] X/Discord auto sync "
             f"every {max(0.25, float(args.sync_interval_hours)):g} hours; "
             f"window_days={max(1, int(args.sync_window_days))}; "
-            f"startup={bool(args.sync_run_on_startup)}"
+            f"startup={bool(args.sync_run_on_startup or taxonomy_reclassify_on_startup)} "
+            f"taxonomy_reclass={bool(taxonomy_reclassify_on_startup)}"
         )
     print(
         "[ai-intel] API endpoints: "
         "GET /api/auth/me, GET /api/auth/renaiss/start, GET /auth/callback, POST /api/auth/login, POST /api/auth/logout, GET /api/intel/feed, GET /api/intel/admin-feed, GET /api/intel/admin-status, GET /api/intel/editorial-history, GET /api/open-monitor/leaderboard, "
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
-        "POST /api/intel/feedback, POST /api/intel/editorial, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/pokemon-news, POST /api/intel/agent, "
+        "POST /api/intel/feedback, POST /api/intel/editorial, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/agent, "
         "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/wiki/directus/translate, POST /api/card-scan/recognize, "
         "POST /api/card-scan/recognize-cards, "
         "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market, "

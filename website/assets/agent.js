@@ -201,16 +201,19 @@
   }
 
   function primaryCategory(source, card) {
-    const labels = [
-      ...(Array.isArray(card?.route_labels) ? card.route_labels : []),
+    const cardType = String(card?.card_type || source?.card_type || "").trim().toLowerCase();
+    const sourceRole = String(card?.source_role || source?.source_role || "").trim().toLowerCase();
+    const topics = [
       ...(Array.isArray(card?.topic_labels) ? card.topic_labels : []),
       ...(Array.isArray(source?.topic_labels) ? source.topic_labels : []),
     ].map((x) => String(x || "").trim().toLowerCase());
-    const allowed = ["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"];
-    const hit = labels.find((x) => allowed.includes(x));
-    if (hit) return hit;
-    if (String(card?.account || source?.account || "").trim().toLowerCase() === "renaissxyz") return "official";
-    return "official";
+    if (cardType === "event") return "events";
+    if (sourceRole === "official" && cardType === "product_progress") return "alpha";
+    if (sourceRole === "official") return "official";
+    if (cardType === "guide") return "guides";
+    if (topics.includes("sbt")) return "sbt";
+    if (topics.includes("collectibles")) return "collectibles";
+    return "community";
   }
 
   function aggregatorCardLink(source, card) {

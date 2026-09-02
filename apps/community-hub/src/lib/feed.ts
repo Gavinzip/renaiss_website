@@ -1,10 +1,8 @@
 import type { EventStatus, FeedCard, IntelFeed, Language, PlanStatus } from "@/types";
 import { isRegionalCommunitySource } from "@/lib/regions";
 import { projectIdForCard, type AccountProjectMap } from "@/lib/projects";
+import { cardType, storedSourceRole, topicLabels, type SourceRole } from "@/lib/taxonomy";
 
-const OFFICIAL_X_HANDLES = new Set(["renaissxyz"]);
-const PRODUCT_PROGRESS_X_HANDLE = "renaissxyz";
-const REMOVED_SOURCE_HANDLES = new Set(["pokegetinfomain"]);
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
 const UPCOMING_EVENT_DISPLAY_DAYS = 14;
 const PAST_EVENT_DISPLAY_DAYS = 14;
@@ -83,26 +81,31 @@ export function formatUpdate(value: unknown, lang: Language): string {
 export function normalizeCards(feed: IntelFeed | null, lang: Language): FeedCard[] {
   return (feed?.cards ?? [])
     .filter((card) => card && card.dedupe_status !== "dropped")
-    .filter((card) => !REMOVED_SOURCE_HANDLES.has(String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase()))
     .filter((card) => lang === "zh-Hant" || card._i18n_status?.status === "translated")
     .sort((a, b) => Number(toDate(b.published_at) ?? 0) - Number(toDate(a.published_at) ?? 0));
 }
 
 export function topics(card: FeedCard): string[] {
-  return (card.topic_labels ?? []).map((value) => String(value).toLowerCase());
+  return topicLabels(card);
+}
+
+export function sourceRole(card: FeedCard, accountProjects: AccountProjectMap = {}): SourceRole {
+  const stored = storedSourceRole(card);
+  if (stored) return stored;
+  const source = safeUrl(card.url);
+  if (projectIdForCard(card, accountProjects) || /(?:x|twitter)\.com\/(?:renaissxyz|renaiss_index|renaiss_fi|vinciwld|tastedotmd|renaisscltb)(?:\/|$)/i.test(source)) return "official";
+  const guildMatch = source.match(/^https:\/\/discord\.com\/channels\/(?:@me\/)?(\d+)\//i);
+  if (guildMatch && OFFICIAL_DISCORD_GUILD_IDS.has(guildMatch[1])) return "official";
+  if (isRegionalCommunitySource(card)) return "official_community";
+  return "other";
 }
 
 export function isOfficial(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
-  const account = String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase();
-  const source = safeUrl(card.url);
-  if (projectIdForCard(card, accountProjects) || OFFICIAL_X_HANDLES.has(account) || /(?:x|twitter)\.com\/renaissxyz(?:\/|$)/i.test(source)) return true;
-  const guildMatch = source.match(/^https:\/\/discord\.com\/channels\/(?:@me\/)?(\d+)\//i);
-  return Boolean(guildMatch && OFFICIAL_DISCORD_GUILD_IDS.has(guildMatch[1]));
+  return sourceRole(card, accountProjects) === "official";
 }
 
 export function isProductProgressSource(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
-  const account = String(card.account ?? "").trim().replace(/^@+/, "").toLowerCase();
-  return Boolean(projectIdForCard(card, accountProjects)) || account === PRODUCT_PROGRESS_X_HANDLE;
+  return sourceRole(card, accountProjects) === "official";
 }
 
 export function isTaggedRenaiss(card: FeedCard): boolean {
@@ -111,7 +114,7 @@ export function isTaggedRenaiss(card: FeedCard): boolean {
 }
 
 export function isCommunity(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
-  return topics(card).includes("community") || (!isOfficial(card, accountProjects) && isTaggedRenaiss(card));
+  return sourceRole(card, accountProjects) !== "official";
 }
 
 export function planStatus(card: FeedCard): PlanStatus | "" {
@@ -122,12 +125,11 @@ export function planStatus(card: FeedCard): PlanStatus | "" {
 }
 
 export function isEvent(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
-  return card.event_wall === true && (isOfficial(card, accountProjects) || isRegionalCommunitySource(card));
+  return cardType(card) === "event";
 }
 
 export function isGuideArticle(card: FeedCard): boolean {
-  const labels = topics(card);
-  return labels.some((label) => ["guide", "guides", "tool", "tools", "tutorial", "tutorials"].includes(label));
+  return cardType(card) === "guide";
 }
 
 export function isSbt(card: FeedCard): boolean {
@@ -136,7 +138,7 @@ export function isSbt(card: FeedCard): boolean {
 }
 
 export function isMedia(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
-  return isOfficial(card, accountProjects) || topics(card).includes("collectibles") || ["announcement", "market", "report", "trend"].includes(String(card.card_type ?? "").toLowerCase());
+  return isOfficial(card, accountProjects) || topics(card).includes("collectibles") || ["announcement", "market", "report"].includes(cardType(card));
 }
 
 export function isVerifiedResult(card: FeedCard): boolean {
@@ -181,7 +183,7 @@ export function isRecentOfficialUpdate(card: FeedCard, referenceDate = new Date(
 }
 
 export function isVisibleProductProgress(card: FeedCard, referenceDate = new Date()): boolean {
-  if (card.event_wall === true || ["event", "report", "market"].includes(String(card.card_type ?? "").toLowerCase())) return false;
+  if (cardType(card) !== "product_progress" || !isOfficial(card)) return false;
   const status = planStatus(card);
   if (status === "upcoming") {
     const startDay = toCalendarDay(card.timeline_date);

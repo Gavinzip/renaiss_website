@@ -1,9 +1,9 @@
 import { intelApiUrl } from "@/lib/api";
 import type { ProjectId } from "@/lib/projects";
 import type { FeedCard, IntelFeed, PlanStatus } from "@/types";
+import { CARD_TYPES, TOPIC_LABELS } from "@/lib/taxonomy";
 
-export const CARD_TYPES = ["event", "announcement", "feature", "market", "report", "insight"] as const;
-export const TOPIC_LABELS = ["events", "official", "sbt", "collectibles", "alpha", "guides", "community", "other"] as const;
+export { CARD_TYPES, TOPIC_LABELS };
 
 export interface AdminStatus {
   server_time?: string;
@@ -53,7 +53,7 @@ export interface AdminStatus {
   monitors?: {
     x?: {
       accounts?: string[];
-      account_categories?: Record<string, "official" | "official_community" | "ambassador">;
+      account_categories?: Record<string, "official" | "official_community" | "other">;
       account_projects?: Record<string, string>;
       default_accounts?: string[];
       source_quality?: Record<string, string>;
@@ -66,7 +66,6 @@ export interface AdminStatus {
 
 export interface CardEditorialDraft {
   cardType: string;
-  eventWall: boolean;
   eventRegion: string;
   planStatus: PlanStatus;
   reason: string;
@@ -117,7 +116,6 @@ function post(path: string, body: Record<string, unknown>): Promise<JsonResponse
 export function cardDraft(card: FeedCard): CardEditorialDraft {
   return {
     cardType: String(card.card_type ?? "insight"),
-    eventWall: card.event_wall === true,
     eventRegion: String(card.event_region ?? "unknown"),
     planStatus: (String(card.plan_status ?? "needs_review") as PlanStatus),
     reason: "",
@@ -149,7 +147,7 @@ export async function readEditorialHistory(signal?: AbortSignal): Promise<Editor
 export async function saveCardEditorial(card: FeedCard, draft: CardEditorialDraft): Promise<boolean> {
   const id = String(card.id || "").trim();
   if (!id) throw new Error("找不到貼文 ID");
-  if (!draft.cardType || !draft.topicLabels.length) throw new Error("請保留卡片類型與至少一個分區");
+  if (!draft.cardType) throw new Error("請保留卡片類型");
   if (draft.timelineDate && draft.timelineEndDate && draft.timelineEndDate < draft.timelineDate) throw new Error("結束日期不得早於開始日期");
   const original = cardDraft(card);
   const sameTopics = [...original.topicLabels].sort().join("|") === [...draft.topicLabels].sort().join("|");
@@ -157,7 +155,6 @@ export async function saveCardEditorial(card: FeedCard, draft: CardEditorialDraf
     || !sameTopics
     || original.timelineDate !== draft.timelineDate
     || original.timelineEndDate !== draft.timelineEndDate
-    || original.eventWall !== draft.eventWall
     || original.eventRegion !== draft.eventRegion
     || original.planStatus !== draft.planStatus
     || original.sbtNames !== draft.sbtNames
@@ -172,7 +169,6 @@ export async function saveCardEditorial(card: FeedCard, draft: CardEditorialDraf
       topic_labels: draft.topicLabels,
       timeline_date: draft.timelineDate,
       timeline_end_date: draft.timelineEndDate,
-      event_wall: draft.eventWall,
       event_region: draft.eventRegion,
       plan_status: draft.planStatus,
       sbt_names: draft.sbtNames,
@@ -187,7 +183,7 @@ export async function updateCardSelection(cardId: string, action: "bottom" | "cl
   await post("/api/intel/pick", { id: cardId, action, reason });
 }
 
-export async function updateTrackedAccount(action: "add" | "remove" | "set_category" | "set_project", account: string, category?: "official" | "official_community" | "ambassador", projectId?: ProjectId): Promise<void> {
+export async function updateTrackedAccount(action: "add" | "remove" | "set_category" | "set_project", account: string, category?: "official" | "official_community" | "other", projectId?: ProjectId): Promise<void> {
   const value = String(account || "").trim().replace(/^@+/, "");
   if (!value) throw new Error("請輸入帳號");
   await post("/api/intel/source-config", { action, account: value, ...(category ? { category } : {}), ...(projectId ? { project_id: projectId } : {}) });

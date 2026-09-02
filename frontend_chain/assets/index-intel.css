@@ -6041,125 +6041,6 @@
       line-height: 1.45;
     }
 
-    .pokemon-news-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.52rem;
-      flex-wrap: wrap;
-    }
-
-    .pokemon-news-grid {
-      margin-top: 0.52rem;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.56rem;
-    }
-
-    .pokemon-news-card {
-      border: 1px solid rgba(207, 226, 246, 0.92);
-      border-radius: 14px;
-      background: linear-gradient(152deg, rgba(255, 255, 255, 0.9), rgba(244, 251, 255, 0.78));
-      box-shadow: 0 10px 22px rgba(62, 93, 130, 0.11);
-      padding: 0.62rem 0.68rem;
-      display: grid;
-      gap: 0.36rem;
-      min-height: 190px;
-    }
-
-    .pokemon-news-card[data-pokemon-news-index] {
-      cursor: pointer;
-      transition: transform 180ms cubic-bezier(0.2, 0.75, 0.24, 1), box-shadow 180ms ease, border-color 180ms ease;
-    }
-
-    .pokemon-news-card[data-pokemon-news-index]:hover {
-      transform: translateY(-2px);
-      border-color: rgba(90, 150, 223, 0.72);
-      box-shadow: 0 14px 24px rgba(58, 92, 129, 0.16);
-    }
-
-    .pokemon-news-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 0.28rem;
-    }
-
-    .pokemon-news-source {
-      color: #2f5f8f;
-      font-size: 0.7rem;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .pokemon-news-date {
-      color: #6485a8;
-      font-size: 0.7rem;
-      font-weight: 700;
-    }
-
-    .pokemon-news-title {
-      color: #224665;
-      font-size: 0.93rem;
-      line-height: 1.45;
-      font-weight: 900;
-      text-decoration: none;
-    }
-
-    .pokemon-news-title:hover {
-      text-decoration: underline;
-      color: #184f84;
-    }
-
-    .pokemon-news-summary {
-      color: #2e577d;
-      font-size: 0.82rem;
-      line-height: 1.6;
-    }
-
-    .pokemon-news-points {
-      list-style: none;
-      display: grid;
-      gap: 0.24rem;
-      margin-top: 0.06rem;
-    }
-
-    .pokemon-news-points li {
-      color: #4b6a89;
-      font-size: 0.77rem;
-      line-height: 1.5;
-      padding-left: 0.8rem;
-      position: relative;
-    }
-
-    .pokemon-news-points li::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 0.54em;
-      width: 4px;
-      height: 4px;
-      border-radius: 50%;
-      background: linear-gradient(140deg, #2f79f6, #2ec9ab);
-      box-shadow: 0 0 8px rgba(45, 143, 255, 0.35);
-    }
-
-    .pokemon-news-link {
-      margin-top: auto;
-      color: #2a5a91;
-      font-size: 0.75rem;
-      font-weight: 800;
-      text-decoration: none;
-      width: fit-content;
-    }
-
-    .pokemon-news-link:hover {
-      color: #17497d;
-      text-decoration: underline;
-    }
-
     .intel-grid {
       margin-top: 0.72rem;
       display: grid;
@@ -6962,12 +6843,6 @@
       font-size: 0.75rem;
       font-weight: 800;
       padding: 0.34rem 0.42rem 0.34rem 0.58rem;
-    }
-
-    .intel-source-pill.is-pokemon-source {
-      border-color: rgba(91, 178, 126, 0.82);
-      background: rgba(243, 255, 248, 0.92);
-      color: #1e6841;
     }
 
     .intel-source-badge {

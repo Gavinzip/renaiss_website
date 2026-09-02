@@ -108,6 +108,7 @@ I18N_SKIP_KEYS = {
     "provider",
     "template_id",
     "card_type",
+    "source_role",
     "layout",
     "type",
     "urgency",
@@ -326,6 +327,70 @@ def _load_translation_cache_unlocked() -> None:
         if k and v:
             out[k] = v
     TRANSLATION_CACHE = out
+
+
+def purge_i18n_source_references(accounts: list[str], card_ids: list[str]) -> dict[str, int]:
+    """Remove a retired source from in-memory and on-disk translation state."""
+    global TRANSLATION_CACHE, TRANSLATION_CACHE_DIRTY
+    normalized_accounts = {
+        str(account or "").strip().lower().lstrip("@")
+        for account in accounts
+        if str(account or "").strip()
+    }
+    normalized_ids = {str(card_id or "").strip() for card_id in card_ids if str(card_id or "").strip()}
+    stats = {"translation_cache": 0, "translation_trace": 0, "localized_bundle_invalidated": 0}
+    if not normalized_accounts and not normalized_ids:
+        return stats
+
+    def matches(value: object) -> bool:
+        text = str(value or "").lower()
+        return any(account in text for account in normalized_accounts) or any(card_id in text for card_id in normalized_ids)
+
+    with TRANSLATION_LOCK:
+        _load_translation_cache_unlocked()
+        next_cache = {
+            key: value
+            for key, value in TRANSLATION_CACHE.items()
+            if not matches(key) and not matches(value)
+        }
+        stats["translation_cache"] = len(TRANSLATION_CACHE) - len(next_cache)
+        if stats["translation_cache"]:
+            TRANSLATION_CACHE = next_cache
+            TRANSLATION_CACHE_DIRTY = True
+            _flush_translation_cache_unlocked(force=True)
+
+    with I18N_TRACE_LOCK:
+        for trace_path in (I18N_TRANSLATE_TRACE_PATH, I18N_TRANSLATE_TRACE_PATH.with_suffix(I18N_TRANSLATE_TRACE_PATH.suffix + ".previous")):
+            if not trace_path.exists():
+                continue
+            before_lines = trace_path.read_text(encoding="utf-8").splitlines()
+            after_lines = [line for line in before_lines if not matches(line)]
+            removed = len(before_lines) - len(after_lines)
+            stats["translation_trace"] += removed
+            if removed:
+                trace_path.write_text(("\n".join(after_lines) + "\n") if after_lines else "", encoding="utf-8")
+
+    with I18N_LOCK:
+        if I18N_FEED_PATH.exists():
+            try:
+                bundle = json.loads(I18N_FEED_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                bundle = {}
+            if isinstance(bundle, dict) and matches(json.dumps(bundle, ensure_ascii=False)):
+                invalidated = {
+                    "version": bundle.get("version"),
+                    "generated_at": _now_iso(),
+                    "source_generated_at": "",
+                    "source_content_hash": "",
+                    "langs": {},
+                    "qa": {},
+                    "card_progress": {},
+                    "targets_count": 0,
+                    "invalidated_reason": "retired_source_removed",
+                }
+                I18N_FEED_PATH.write_text(json.dumps(invalidated, ensure_ascii=False, indent=2), encoding="utf-8")
+                stats["localized_bundle_invalidated"] = 1
+    return stats
 
 
 def _flush_translation_cache_unlocked(force: bool = False) -> None:

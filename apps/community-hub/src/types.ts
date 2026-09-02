@@ -4,6 +4,7 @@ export type Language = (typeof LANGUAGES)[number];
 export type HubView = "overview" | "official" | "feed" | "events" | "future" | "sbt" | "profile" | "guide" | "article" | "records" | "media" | "knowledge" | "manage";
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
 export type PlanStatus = "upcoming" | "in_progress" | "completed" | "cancelled" | "not_plan" | "needs_review";
+export type SourceRole = "official" | "official_community" | "other";
 
 export interface ArticleBlock {
   alt?: string;
@@ -57,8 +58,15 @@ export interface FeedCard {
   plan_status_checked_at?: string;
   plan_status_reason?: string;
   product_progress_group_key?: string;
+  product_progress_evidence?: {
+    product_or_capability?: string;
+    source_evidence?: string;
+    state_change?: string;
+    user_or_platform_impact?: string;
+  };
   raw_text?: string;
   review_status?: string;
+  source_role?: SourceRole;
   semantic_text?: string;
   sbt_acquisition?: string;
   sbt_name?: string;
@@ -89,6 +97,7 @@ export interface OfficialOverview {
 
 export interface IntelFeed {
   account_projects?: Record<string, string>;
+  account_source_roles?: Record<string, SourceRole>;
   cards?: FeedCard[];
   community_metrics?: {
     accounts?: Record<string, CommunityMetric>;

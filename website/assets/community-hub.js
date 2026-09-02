@@ -244,6 +244,8 @@
   }
 
   function isOfficial(card) {
+    const role = String(card.source_role || "").trim().toLowerCase();
+    if (role) return role === "official";
     const account = String(card.account || "").trim().replace(/^@+/, "").toLowerCase();
     const source = safeUrl(card.url);
     if (OFFICIAL_X_HANDLES.has(account) || /(?:x|twitter)\.com\/renaissxyz(?:\/|$)/i.test(source)) return true;
@@ -257,11 +259,12 @@
   }
 
   function isCommunity(card) {
-    return card.topics.includes("community") || (!isOfficial(card) && isTaggedRenaiss(card));
+    const role = String(card.source_role || "").trim().toLowerCase();
+    return role ? role !== "official" : !isOfficial(card);
   }
 
   function isEvent(card) {
-    return isOfficial(card) && card.event_wall === true;
+    return String(card.card_type || "").trim().toLowerCase() === "event";
   }
 
   function isSbt(card) {
@@ -276,7 +279,7 @@
   }
 
   function isMedia(card) {
-    return isOfficial(card) || card.topics.includes("collectibles") || card.topics.includes("pokemon") || ["announcement", "market", "report", "trend"].includes(String(card.card_type || "").toLowerCase());
+    return isOfficial(card) || card.topics.includes("collectibles") || ["announcement", "market", "report"].includes(String(card.card_type || "").toLowerCase());
   }
 
   function temporalStatus(card) {
@@ -775,7 +778,7 @@
     if (!target) return;
     let cards = currentCards().filter(isMedia);
     if (state.filters.media === "official") cards = cards.filter(isOfficial);
-    if (state.filters.media === "market") cards = cards.filter((card) => card.topics.includes("collectibles") || card.topics.includes("pokemon") || ["market", "trend", "report"].includes(String(card.card_type || "").toLowerCase()));
+    if (state.filters.media === "market") cards = cards.filter((card) => card.topics.includes("collectibles") || ["market", "report"].includes(String(card.card_type || "").toLowerCase()));
     target.innerHTML = cards.length ? cards.slice(0, MAX_ROWS).map(cardHtml).join("") : emptyHtml();
   }
 

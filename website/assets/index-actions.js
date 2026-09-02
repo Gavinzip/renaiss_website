@@ -24,7 +24,7 @@
       const adminRestoreRunBtn = document.getElementById("intel-admin-restore-run");
       const xSourceForm = document.getElementById("intel-admin-x-source-form");
       const xSourceInput = document.getElementById("intel-admin-x-source-input");
-      const xSourcePokemonInput = document.getElementById("intel-admin-x-source-pokemon");
+      const xSourceCategory = document.getElementById("intel-admin-x-source-category");
       const xSourceList = document.getElementById("intel-admin-x-source-list");
       const xSourceResult = document.getElementById("intel-admin-x-source-result");
 
@@ -56,8 +56,6 @@
       const masterStage = document.getElementById("intel-master-stage");
       const masterRail = document.getElementById("intel-master-rail");
       const detailModal = document.getElementById("intel-detail-modal");
-      const pokemonNewsRefreshBtn = document.getElementById("pokemon-news-refresh-btn");
-      const pokemonNewsList = document.getElementById("pokemon-news-list");
       if (!analyzeBtn || !syncBtn || !input) return;
 
       const disableApiActions = location.protocol === "file:";
@@ -65,7 +63,6 @@
       if (disableApiActions) {
         analyzeBtn.disabled = true;
         syncBtn.disabled = true;
-        if (pokemonNewsRefreshBtn) pokemonNewsRefreshBtn.disabled = true;
         setIntelMessage("目前是 file:// 模式。請改用 `python scripts/ai_intel_server.py --port 8787` 後從 http://127.0.0.1:8787 開啟。", "error");
       }
 
@@ -313,18 +310,14 @@
             closeIntelFeedbackModal({ mode: "exclude", reason });
             return;
           }
-          const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
-          const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"]);
-          if (!cardType && !topicLabels.length) {
-            setIntelMessage("請至少選擇卡片類型，並保留至少一個分區；若無法分類請選「無」。", "error");
+          const cardTypeLabels = new Set(["event", "product_progress", "announcement", "market", "report", "guide", "insight"]);
+          const sectionLabels = new Set(["sbt", "collectibles"]);
+          if (!cardType) {
+            setIntelMessage("請選擇卡片類型。", "error");
             return;
           }
           if (cardType && !cardTypeLabels.has(cardType)) {
             setIntelMessage("卡片類型無效，請重新選擇。", "error");
-            return;
-          }
-          if (!topicLabels.length) {
-            setIntelMessage("分區至少要保留一個；若不屬於任何分區請選「無」。", "error");
             return;
           }
           if (topicLabels.some((label) => !sectionLabels.has(label))) {
@@ -468,21 +461,16 @@
           const submitBtn = xSourceForm.querySelector('button[type="submit"]');
           if (submitBtn) submitBtn.disabled = true;
           try {
-            const action = xSourcePokemonInput?.checked ? "add_pokemon" : "add";
-            setXSourceResult(action === "add_pokemon" ? `送出中：正在新增 ${account} 並標記為寶可夢來源...` : `送出中：正在新增 ${account} 到一般 X 追蹤清單...`, "pending");
-            const source = await updateIntelXSource(action, account);
+            setXSourceResult(`送出中：正在新增 ${account} 到 X 追蹤清單...`, "pending");
+            const category = String(xSourceCategory?.value || "other").trim().toLowerCase();
+            const source = await updateIntelXSource("add", account, category);
             const normalizedAccount = String(source?.account || account).trim();
             const label = normalizedAccount ? `@${normalizedAccount}` : account;
             const changed = source?.changed === true;
             if (xSourceInput) xSourceInput.value = "";
-            if (xSourcePokemonInput) xSourcePokemonInput.checked = false;
             const okMessage = changed
-              ? (action === "add_pokemon"
-                ? `新增成功：${label} 已加入追蹤清單，並設為寶可夢來源。`
-                : `新增成功：${label} 已加入一般 X 追蹤清單，之後會進完整分析流程。`)
-              : (action === "add_pokemon"
-                ? `沒有變更：${label} 已在追蹤清單，且已是寶可夢來源。`
-                : `沒有變更：${label} 已在一般 X 追蹤清單。`);
+              ? `新增成功：${label} 已加入 X 追蹤清單，之後會進完整分析流程。`
+              : `沒有變更：${label} 已在 X 追蹤清單。`;
             setXSourceResult(okMessage, "ok");
             setIntelMessage(okMessage, "ok");
             await refreshIntelAdminStatus();
@@ -499,37 +487,6 @@
       if (xSourceList && !xSourceList.dataset.boundXSourceRemove) {
         xSourceList.dataset.boundXSourceRemove = "1";
         xSourceList.addEventListener("click", async (event) => {
-          const pokemonBtn = event.target.closest("[data-intel-source-pokemon-action]");
-          if (pokemonBtn) {
-            if (!intelCanEdit()) {
-              openIntelAuthModal();
-              setXSourceResult("更新失敗：請先登入管理員帳號。", "error");
-              setIntelMessage("請先登入管理員帳號後再更新來源分區。", "error");
-              return;
-            }
-            const account = String(pokemonBtn.dataset.intelSourceAccount || "").trim();
-            const action = String(pokemonBtn.dataset.intelSourcePokemonAction || "").trim();
-            if (!account || !action) return;
-            pokemonBtn.disabled = true;
-            try {
-              setXSourceResult(`送出中：正在更新 @${account} 的寶可夢來源設定...`, "pending");
-              const source = await updateIntelXSource(action, account);
-              const changed = source?.changed === true;
-              const okMessage = changed
-                ? (action === "add_pokemon" ? `更新成功：@${account} 已設為寶可夢來源。` : `更新成功：@${account} 已取消寶可夢來源。`)
-                : (action === "add_pokemon" ? `沒有變更：@${account} 已是寶可夢來源。` : `沒有變更：@${account} 原本就不是寶可夢來源。`);
-              setXSourceResult(okMessage, "ok");
-              setIntelMessage(okMessage, "ok");
-              await refreshIntelAdminStatus();
-            } catch (error) {
-              const failMessage = `更新來源分區失敗：${error.message}`;
-              setXSourceResult(failMessage, "error");
-              setIntelMessage(failMessage, "error");
-            } finally {
-              pokemonBtn.disabled = false;
-            }
-            return;
-          }
           const btn = event.target.closest("[data-intel-source-remove]");
           if (!btn) return;
           if (!intelCanEdit()) {
@@ -645,33 +602,6 @@
             return;
           }
           await runIntelSyncNow();
-        });
-      }
-
-      if (pokemonNewsRefreshBtn) {
-        pokemonNewsRefreshBtn.addEventListener("click", async () => {
-          pokemonNewsRefreshBtn.disabled = true;
-          try {
-            await refreshPokemonNews(true);
-          } catch (error) {
-            const metaEl = document.getElementById("pokemon-news-meta");
-            if (metaEl) metaEl.textContent = `來源：MiniMax NewsAgent · 更新失敗：${error.message}`;
-          } finally {
-            pokemonNewsRefreshBtn.disabled = false;
-          }
-        });
-      }
-
-      if (pokemonNewsList && !pokemonNewsList.dataset.boundOpen) {
-        pokemonNewsList.dataset.boundOpen = "1";
-        pokemonNewsList.addEventListener("click", (event) => {
-          const interactive = event.target.closest("a,button,input,textarea,label");
-          if (interactive) return;
-          const card = event.target.closest(".pokemon-news-card[data-pokemon-news-index]");
-          if (!card) return;
-          const idx = Number(card.dataset.pokemonNewsIndex || "-1");
-          if (!Number.isInteger(idx) || idx < 0) return;
-          openPokemonNewsDetailModal(idx);
         });
       }
 
@@ -886,12 +816,10 @@
       events: "活動",
       official: "官方近期更新",
       sbt: "SBT",
-      pokemon: "寶可夢相關資訊",
       collectibles: "收藏趨勢",
-      alpha: "未來規劃",
+      alpha: "產品進度",
       guides: "攻略",
       community: "社群精選",
-      other: "無",
     };
 
     function normalizeLangTag(raw) {
@@ -922,12 +850,10 @@
         events: "category.events",
         official: "category.official",
         sbt: "category.sbt",
-        pokemon: "category.pokemon",
         collectibles: "category.collectibles",
         alpha: "category.alpha",
         guides: "category.guides",
         community: "category.community",
-        other: "category.other",
       };
       const prefix = getStaticI18nByKey("category.hintPrefix", "目前顯示：");
       const suffix = getStaticI18nByKey("category.hintSuffix", "。");
@@ -942,12 +868,10 @@
       events: "events",
       official: "intel",
       sbt: "sbt",
-      pokemon: "pipeline",
       collectibles: "collectibles",
       alpha: "timeline",
       guides: "ops",
       community: "world",
-      other: "community",
     };
 
     const legacySectionToCategory = {
@@ -955,20 +879,20 @@
       versions: "events",
       intel: "official",
       sbt: "sbt",
-      pipeline: "pokemon",
+      pipeline: "collectibles",
       collectibles: "collectibles",
       timeline: "alpha",
       ops: "guides",
       tools: "guides",
       world: "community",
-      community: "other",
+      community: "community",
     };
 
     const categoryTabs = Array.from(document.querySelectorAll("[data-category-tab]"));
     const categorySections = Array.from(document.querySelectorAll("[data-category-section]"));
     const categoryHint = document.getElementById("category-switcher-hint");
     const navCategoryLinks = Array.from(document.querySelectorAll("a[data-nav-category]"));
-    const adminOnlyCategories = new Set(["other"]);
+    const adminOnlyCategories = new Set();
     let activeCategory = "events";
 
     function isAdminOnlyCategory(category) {
@@ -1063,9 +987,6 @@
       markActiveCategoryFullyRendered(nextCategory);
       if (typeof scheduleIntelDeferredCategoryRender === "function") {
         scheduleIntelDeferredCategoryRender(5200);
-      }
-      if (typeof maybeRefreshPokemonNewsForCategory === "function") {
-        maybeRefreshPokemonNewsForCategory(nextCategory);
       }
       const updateHintAfterLanguage = () => {
         if (typeof scheduleUiLanguageApply === "function") {

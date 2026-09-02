@@ -14,6 +14,13 @@ from .knowledge_memory import (
     resolve_openai_embedding_key,
     write_knowledge_memory,
 )
+from .taxonomy import (
+    RETIRED_X_SOURCE_HANDLES,
+    canonical_card_type,
+    canonical_source_role,
+    migrate_card_taxonomy_payload,
+    normalize_product_progress_evidence,
+)
 
 globals().update(vars(_bootstrap))
 globals().update(vars(_editorial))
@@ -83,13 +90,12 @@ def _env_positive_int(name: str, default: int) -> int:
 
 DEFAULT_MEMORY_RULES = [
     "只有明確有參與行為、時間、地點、直播、報名或 join/register 等訊號，才把 card_type 判成 event。",
-    "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；這類內容通常應放入 sbt 與 alpha/topic label。",
-    "同一篇內容可以同時有多個 topic_labels；例如活動獎勵包含 SBT 時，要同時標 events 與 sbt，但不同區塊摘要重點不同。",
+    "產品進度必須是官方來源，並同時具備明確產品或能力、狀態改變、使用者或平台影響、原文證據；任一不足就是 announcement。",
+    "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；SBT 是 topic，不是 card type。",
     "官方來源與社群轉述重複時，優先保留官方來源；社群版本只在提供額外攻略或經驗時保留。",
-    "寶可夢相關分區只收明確寶可夢/Pokemon/PoGo/PTCG 或寶可夢角色、寶可夢卡牌市場；純 Renaiss 卡包、One Piece、泛 TCG、PSA 或抽卡不要只靠關鍵字放入 pokemon。",
-    "攻略分區使用 guides；只收教學、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊。一般心得、市場觀點、公告、活動不放 guides。",
-    "社群精選分區使用 community；只能收 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文。Discord 與官方帳號不放 community。",
-    "other 代表無/待人工分類，不是社群精選，也不是 5。",
+    "寶可夢不是獨立 topic；寶可夢卡牌或收藏品內容可標 collectibles，並依貼文實際用途選擇 card type。",
+    "教學、操作步驟、參與流程、工具用法、集運、查價或套利等可照做資訊使用 card_type=guide。",
+    "topic_labels 可以是空陣列，且只允許 collectibles 與 sbt；來源身分與頁面分區不得寫入 topic。",
 ]
 
 
@@ -241,18 +247,6 @@ def _is_forced_collectibles_channel_card(card: StoryCard) -> bool:
     return _extract_discord_channel_id_from_card(card) == FORCED_COLLECTIBLES_CHANNEL_ID
 
 
-def _forced_pokemon_account_handles() -> set[str]:
-    return {
-        normalize_account_handle(account)
-        for account in resolve_pokemon_x_accounts()
-        if normalize_account_handle(account)
-    }
-
-
-def _is_forced_pokemon_account(account: Any) -> bool:
-    return normalize_account_handle(account) in _forced_pokemon_account_handles()
-
-
 def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
     for card in cards:
         if str(card.classified_by or "").strip().lower() in {"ai", "manual"}:
@@ -262,20 +256,12 @@ def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
             labels = normalize_topic_labels([*labels, "collectibles"])
         else:
             labels = [label for label in labels if label != "collectibles"]
-        if _is_forced_pokemon_account(card.account):
-            labels = ["pokemon"]
-            card.event_wall = False
-        card.topic_labels = labels if labels else ["other"]
+        card.topic_labels = labels
 
 
 def _enforce_fixed_channel_payload_fields(item: dict[str, Any]) -> None:
-    if not isinstance(item, dict):
-        return
-    if str(item.get("classified_by") or "").strip().lower() in {"ai", "manual"}:
-        return
-    if _is_forced_pokemon_account(item.get("account")):
-        item["topic_labels"] = ["pokemon"]
-        item["event_wall"] = False
+    if isinstance(item, dict):
+        item["topic_labels"] = normalize_topic_labels(item.get("topic_labels"))
 
 
 def _ensure_forced_collectibles_cards_in_curated(
@@ -338,6 +324,93 @@ def write_feedback_state(state: dict[str, Any]) -> None:
     write_json(feedback_path(), payload)
 
 
+def migrate_feedback_taxonomy_state() -> int:
+    """Rewrite durable overrides so retired labels cannot return on refresh."""
+    state = read_feedback_state()
+    source_config = read_x_source_config()
+    account_categories = source_config.get("account_categories") if isinstance(source_config.get("account_categories"), dict) else {}
+    roles_by_handle = {
+        normalize_account_handle(account): canonical_source_role(role)
+        for account, role in account_categories.items()
+        if normalize_account_handle(account)
+    }
+    changed = 0
+    overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
+    for override in overrides.values():
+        if not isinstance(override, dict):
+            continue
+        legacy_topics = override.get("topic_labels") if isinstance(override.get("topic_labels"), list) else []
+        account = normalize_account_handle(override.get("source_account"))
+        role = roles_by_handle.get(
+            account,
+            "official" if account in OFFICIAL_X_HANDLES else "official_community" if account in REGIONAL_COMMUNITY_X_HANDLES else "other",
+        )
+        old_type = str(override.get("card_type") or "").strip().lower()
+        next_type = canonical_card_type(
+            old_type,
+            source_role=role,
+            legacy_topics=legacy_topics,
+            plan_status=override.get("plan_status"),
+            classified_by="manual",
+        ) if old_type or any(str(x).strip().lower() in {"alpha", "guides", "guide"} for x in legacy_topics) else ""
+        next_topics = normalize_topic_labels(legacy_topics)
+        if next_type and next_type != old_type:
+            override["card_type"] = next_type
+            changed += 1
+        if "topic_labels" in override and next_topics != legacy_topics:
+            override["topic_labels"] = next_topics
+            changed += 1
+        if "event_wall" in override:
+            override.pop("event_wall", None)
+            changed += 1
+
+    items = state.get("items") if isinstance(state.get("items"), dict) else {}
+    for card_id, item in list(items.items()):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip().lower()
+        mapped = {
+            "feature": "announcement",
+            "guides": "guide",
+            "guide": "guide",
+            "trend": "market",
+            "events": "event",
+            "pokemon": "collectibles",
+        }.get(label, label)
+        if mapped in ALLOWED_FEEDBACK_LABELS:
+            if mapped != label:
+                item["label"] = mapped
+                item["label_kind"] = _feedback_label_kind(mapped)
+                changed += 1
+        else:
+            del items[card_id]
+            changed += 1
+
+    rules = state.get("rules") if isinstance(state.get("rules"), dict) else {}
+    for key, rule in list(rules.items()):
+        if not isinstance(rule, dict):
+            continue
+        label = str(rule.get("label") or "").strip().lower()
+        mapped = {
+            "feature": "announcement",
+            "guides": "guide",
+            "guide": "guide",
+            "trend": "market",
+            "events": "event",
+            "pokemon": "collectibles",
+        }.get(label, label)
+        if mapped not in ALLOWED_FEEDBACK_LABELS:
+            del rules[key]
+            changed += 1
+        elif mapped != label:
+            rule["label"] = mapped
+            rule["label_kind"] = _feedback_label_kind(mapped)
+            changed += 1
+    if changed:
+        write_feedback_state(state)
+    return changed
+
+
 def _feedback_label_kind(label: str) -> str:
     row = str(label or "").strip().lower()
     if row == "exclude":
@@ -365,8 +438,22 @@ def _read_current_feed_card(tweet_id: str) -> dict[str, Any]:
     return {}
 
 
+def _source_role_for_payload(item: dict[str, Any]) -> str:
+    account = normalize_account_handle(item.get("account"))
+    source_url = str(item.get("url") or "")
+    if account in OFFICIAL_X_HANDLES or extract_discord_channel_id_from_url(source_url) in OFFICIAL_DISCORD_CHANNEL_IDS:
+        return "official"
+    if account in REGIONAL_COMMUNITY_X_HANDLES:
+        return "official_community"
+    return canonical_source_role(item.get("source_role"))
+
+
 def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "", default_provider: str = "cache") -> StoryCard:
-    published = str(item.get("published_at") or "")
+    row = dict(item)
+    if not row.get("account") and default_account:
+        row["account"] = default_account
+    migrate_card_taxonomy_payload(row, _source_role_for_payload(row))
+    published = str(row.get("published_at") or "")
     try:
         published_dt = datetime.fromisoformat(published) if published else datetime.now(timezone.utc)
         if published_dt.tzinfo is None:
@@ -375,79 +462,81 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
     except Exception:
         published = datetime.now(timezone.utc).isoformat()
     return StoryCard(
-        id=str(item.get("id") or ""),
-        account=str(item.get("account") or default_account),
-        url=str(item.get("url") or ""),
-        title=str(item.get("title") or ""),
-        summary=str(item.get("summary") or ""),
-        bullets=[str(x) for x in item.get("bullets", []) if str(x).strip()][:3],
+        id=str(row.get("id") or ""),
+        account=str(row.get("account") or default_account),
+        url=str(row.get("url") or ""),
+        title=str(row.get("title") or ""),
+        summary=str(row.get("summary") or ""),
+        bullets=[str(x) for x in row.get("bullets", []) if str(x).strip()][:3],
         published_at=published,
-        confidence=float(item.get("confidence") or 0.55),
-        card_type=str(item.get("card_type") or "insight"),
-        layout=str(item.get("layout") or "brief"),
-        tags=[str(x) for x in item.get("tags", []) if str(x).strip()][:3],
-        raw_text=str(item.get("raw_text") or ""),
-        provider=str(item.get("provider") or default_provider),
-        cover_image=str(item.get("cover_image") or ""),
-        media_images=normalize_media_images(item.get("media_images")),
-        article_id=str(item.get("article_id") or ""),
-        article_title=str(item.get("article_title") or ""),
-        article_preview=str(item.get("article_preview") or ""),
-        article_blocks=normalize_article_blocks(item.get("article_blocks")),
-        article_fetch_status=str(item.get("article_fetch_status") or ""),
-        metrics=item.get("metrics") if isinstance(item.get("metrics"), dict) else {},
-        importance=float(item.get("importance") or 0.0),
-        template_id=str(item.get("template_id") or "community_brief"),
-        glance=str(item.get("glance") or ""),
-        timeline_date=str(item.get("timeline_date") or ""),
-        timeline_end_date=str(item.get("timeline_end_date") or ""),
-        event_wall=bool(item.get("event_wall") is True),
-        urgency=str(item.get("urgency") or "normal"),
-        manual_pick=bool(item.get("manual_pick") or False),
-        manual_pin=bool(item.get("manual_pin") or False),
-        manual_bottom=bool(item.get("manual_bottom") or False),
-        official_update_kind=str(item.get("official_update_kind") or ""),
-        partner_names=[str(x) for x in item.get("partner_names", []) if str(x).strip()][:8] if isinstance(item.get("partner_names"), list) else [],
-        event_facts=normalize_event_facts(item.get("event_facts")),
-        event_region=str(item.get("event_region") or ""),
-        event_region_reason=str(item.get("event_region_reason") or ""),
-        event_region_model=str(item.get("event_region_model") or ""),
-        event_region_version=str(item.get("event_region_version") or ""),
-        topic_labels=normalize_topic_labels(item.get("topic_labels")),
-        detail_summary=str(item.get("detail_summary") or ""),
-        detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
-        sbt_name=str(item.get("sbt_name") or ""),
-        sbt_names=[str(x) for x in item.get("sbt_names", []) if str(x).strip()][:8] if isinstance(item.get("sbt_names"), list) else [],
-        sbt_acquisition=str(item.get("sbt_acquisition") or ""),
-        reply_to_id=str(item.get("reply_to_id") or ""),
-        dedupe_status=str(item.get("dedupe_status") or ""),
-        dedupe_checked=bool(item.get("dedupe_checked") is True),
-        dedupe_checked_at=str(item.get("dedupe_checked_at") or ""),
-        dedupe_version=str(item.get("dedupe_version") or ""),
-        dedupe_reason_code=str(item.get("dedupe_reason_code") or ""),
-        dedupe_reason=str(item.get("dedupe_reason") or ""),
-        dedupe_winner_post_id=str(item.get("dedupe_winner_post_id") or ""),
-        dedupe_winner_url=str(item.get("dedupe_winner_url") or ""),
-        dedupe_winner_title=str(item.get("dedupe_winner_title") or ""),
-        dedupe_similarity=float(item.get("dedupe_similarity") or 0.0),
-        dedupe_basis=[str(x) for x in item.get("dedupe_basis", []) if str(x).strip()][:10] if isinstance(item.get("dedupe_basis"), list) else [],
-        number_facts=normalize_number_facts(item.get("number_facts")),
-        classified_by=str(item.get("classified_by") or "legacy"),
-        ai_model=str(item.get("ai_model") or ""),
-        ai_version=str(item.get("ai_version") or ""),
-        ai_confidence=float(item.get("ai_confidence") or 0.0),
-        ai_status=str(item.get("ai_status") or "legacy_unverified"),
-        review_status=str(item.get("review_status") or ""),
-        classification_reason=str(item.get("classification_reason") or ""),
-        classification_error=str(item.get("classification_error") or ""),
-        plan_status=str(item.get("plan_status") or ""),
-        plan_status_reason=str(item.get("plan_status_reason") or ""),
-        plan_status_checked_at=str(item.get("plan_status_checked_at") or ""),
-        plan_ai_model=str(item.get("plan_ai_model") or ""),
-        plan_ai_version=str(item.get("plan_ai_version") or ""),
-        source_channel_id=str(item.get("source_channel_id") or ""),
-        source_message_id=str(item.get("source_message_id") or ""),
-        source_message_timestamp=str(item.get("source_message_timestamp") or ""),
+        confidence=float(row.get("confidence") or 0.55),
+        card_type=str(row.get("card_type") or "insight"),
+        layout=str(row.get("layout") or "brief"),
+        tags=[str(x) for x in row.get("tags", []) if str(x).strip()][:3],
+        raw_text=str(row.get("raw_text") or ""),
+        provider=str(row.get("provider") or default_provider),
+        cover_image=str(row.get("cover_image") or ""),
+        media_images=normalize_media_images(row.get("media_images")),
+        article_id=str(row.get("article_id") or ""),
+        article_title=str(row.get("article_title") or ""),
+        article_preview=str(row.get("article_preview") or ""),
+        article_blocks=normalize_article_blocks(row.get("article_blocks")),
+        article_fetch_status=str(row.get("article_fetch_status") or ""),
+        metrics=row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
+        importance=float(row.get("importance") or 0.0),
+        template_id=str(row.get("template_id") or "community_brief"),
+        glance=str(row.get("glance") or ""),
+        timeline_date=str(row.get("timeline_date") or ""),
+        timeline_end_date=str(row.get("timeline_end_date") or ""),
+        event_wall=bool(row.get("event_wall") is True),
+        urgency=str(row.get("urgency") or "normal"),
+        manual_pick=bool(row.get("manual_pick") or False),
+        manual_pin=bool(row.get("manual_pin") or False),
+        manual_bottom=bool(row.get("manual_bottom") or False),
+        official_update_kind=str(row.get("official_update_kind") or ""),
+        partner_names=[str(x) for x in row.get("partner_names", []) if str(x).strip()][:8] if isinstance(row.get("partner_names"), list) else [],
+        event_facts=normalize_event_facts(row.get("event_facts")),
+        event_region=str(row.get("event_region") or ""),
+        event_region_reason=str(row.get("event_region_reason") or ""),
+        event_region_model=str(row.get("event_region_model") or ""),
+        event_region_version=str(row.get("event_region_version") or ""),
+        topic_labels=normalize_topic_labels(row.get("topic_labels")),
+        detail_summary=str(row.get("detail_summary") or ""),
+        detail_lines=normalize_detail_lines(row.get("detail_lines"), limit=6),
+        sbt_name=str(row.get("sbt_name") or ""),
+        sbt_names=[str(x) for x in row.get("sbt_names", []) if str(x).strip()][:8] if isinstance(row.get("sbt_names"), list) else [],
+        sbt_acquisition=str(row.get("sbt_acquisition") or ""),
+        reply_to_id=str(row.get("reply_to_id") or ""),
+        dedupe_status=str(row.get("dedupe_status") or ""),
+        dedupe_checked=bool(row.get("dedupe_checked") is True),
+        dedupe_checked_at=str(row.get("dedupe_checked_at") or ""),
+        dedupe_version=str(row.get("dedupe_version") or ""),
+        dedupe_reason_code=str(row.get("dedupe_reason_code") or ""),
+        dedupe_reason=str(row.get("dedupe_reason") or ""),
+        dedupe_winner_post_id=str(row.get("dedupe_winner_post_id") or ""),
+        dedupe_winner_url=str(row.get("dedupe_winner_url") or ""),
+        dedupe_winner_title=str(row.get("dedupe_winner_title") or ""),
+        dedupe_similarity=float(row.get("dedupe_similarity") or 0.0),
+        dedupe_basis=[str(x) for x in row.get("dedupe_basis", []) if str(x).strip()][:10] if isinstance(row.get("dedupe_basis"), list) else [],
+        number_facts=normalize_number_facts(row.get("number_facts")),
+        classified_by=str(row.get("classified_by") or "legacy"),
+        ai_model=str(row.get("ai_model") or ""),
+        ai_version=str(row.get("ai_version") or ""),
+        ai_confidence=float(row.get("ai_confidence") or 0.0),
+        ai_status=str(row.get("ai_status") or "legacy_unverified"),
+        review_status=str(row.get("review_status") or ""),
+        classification_reason=str(row.get("classification_reason") or ""),
+        classification_error=str(row.get("classification_error") or ""),
+        plan_status=str(row.get("plan_status") or ""),
+        plan_status_reason=str(row.get("plan_status_reason") or ""),
+        plan_status_checked_at=str(row.get("plan_status_checked_at") or ""),
+        plan_ai_model=str(row.get("plan_ai_model") or ""),
+        plan_ai_version=str(row.get("plan_ai_version") or ""),
+        source_role=str(row.get("source_role") or "other"),
+        product_progress_evidence=normalize_product_progress_evidence(row.get("product_progress_evidence")),
+        source_channel_id=str(row.get("source_channel_id") or ""),
+        source_message_id=str(row.get("source_message_id") or ""),
+        source_message_timestamp=str(row.get("source_message_timestamp") or ""),
     )
 
 
@@ -516,6 +605,216 @@ def _remove_cards_from_deleted_x_sources(
     return kept, removed_accounts, {card_id for card_id in removed_ids if card_id}
 
 
+def _assign_source_roles(cards: list[StoryCard], source_config: dict[str, Any]) -> int:
+    categories = source_config.get("account_categories") if isinstance(source_config.get("account_categories"), dict) else {}
+    roles_by_handle = {
+        normalize_account_handle(account): canonical_source_role(role)
+        for account, role in categories.items()
+        if normalize_account_handle(account)
+    }
+    changed = 0
+    for card in cards:
+        handle = normalize_account_handle(card.account)
+        if is_official_source_card(card):
+            role = "official"
+        elif handle in REGIONAL_COMMUNITY_X_HANDLES:
+            role = "official_community"
+        else:
+            role = roles_by_handle.get(handle, "other")
+        if card.source_role != role:
+            card.source_role = role
+            changed += 1
+        if card.card_type == "product_progress" and role != "official":
+            card.card_type = "announcement"
+            card.product_progress_evidence = {}
+            changed += 1
+    return changed
+
+
+def _source_state_card_ids(accounts: set[str]) -> set[str]:
+    normalized_accounts = {
+        normalize_account_handle(account)
+        for account in accounts
+        if normalize_account_handle(account)
+    }
+    if not normalized_accounts:
+        return set()
+    state = read_feedback_state()
+    ids: set[str] = set()
+    for key in ("items", "card_field_overrides"):
+        rows = state.get(key) if isinstance(state.get(key), dict) else {}
+        ids.update(
+            str(card_id)
+            for card_id, value in rows.items()
+            if isinstance(value, dict) and normalize_account_handle(value.get("source_account")) in normalized_accounts
+        )
+    return {card_id for card_id in ids if card_id}
+
+
+def _purge_removed_source_state(removed_accounts: set[str], removed_card_ids: set[str]) -> dict[str, int]:
+    """Delete retired-source references from active state and derived caches."""
+    accounts = {normalize_account_handle(account) for account in removed_accounts if normalize_account_handle(account)}
+    ids = {str(card_id or "").strip() for card_id in removed_card_ids if str(card_id or "").strip()}
+    stats = {
+        "feedback": 0,
+        "field_overrides": 0,
+        "profiles": 0,
+        "rules": 0,
+        "manual_picks": 0,
+        "manual_entries": 0,
+        "editorial_audit": 0,
+        "knowledge_items": 0,
+        "embedding_entries": 0,
+    }
+    if not accounts and not ids:
+        return stats
+
+    state = read_feedback_state()
+    items = state.get("items") if isinstance(state.get("items"), dict) else {}
+    overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
+    profiles = state.get("source_profiles") if isinstance(state.get("source_profiles"), dict) else {}
+    rules = state.get("rules") if isinstance(state.get("rules"), dict) else {}
+    # A retired account can already be absent from the current feed. Recover its
+    # historical card ids from durable feedback state before clearing pins and
+    # other id-only stores.
+    ids.update(_source_state_card_ids(accounts))
+    next_items = {
+        key: value for key, value in items.items()
+        if key not in ids and normalize_account_handle(value.get("source_account") if isinstance(value, dict) else "") not in accounts
+    }
+    next_overrides = {
+        key: value for key, value in overrides.items()
+        if key not in ids and normalize_account_handle(value.get("source_account") if isinstance(value, dict) else "") not in accounts
+    }
+    next_profiles = {key: value for key, value in profiles.items() if normalize_account_handle(key) not in accounts}
+    next_rules: dict[str, Any] = {}
+    for key, value in rules.items():
+        if not isinstance(value, dict):
+            next_rules[key] = value
+            continue
+        examples = [str(x) for x in (value.get("examples") or []) if str(x) not in ids]
+        if normalize_account_handle(value.get("account")) in accounts or (value.get("examples") and not examples):
+            continue
+        next_rules[key] = {**value, "examples": examples}
+    stats.update({
+        "feedback": len(items) - len(next_items),
+        "field_overrides": len(overrides) - len(next_overrides),
+        "profiles": len(profiles) - len(next_profiles),
+        "rules": len(rules) - len(next_rules),
+    })
+    if any(stats[key] for key in ("feedback", "field_overrides", "profiles", "rules")):
+        state.update({"items": next_items, "card_field_overrides": next_overrides, "source_profiles": next_profiles, "rules": next_rules})
+        write_feedback_state(state)
+
+    picks_path = manual_picks_path()
+    raw_picks = read_json(picks_path, {})
+    if isinstance(raw_picks, dict):
+        next_picks = dict(raw_picks)
+        for key in ("include_ids", "exclude_ids", "pin_ids", "bottom_ids"):
+            before = [str(x) for x in raw_picks.get(key, []) if str(x).strip()]
+            after = [x for x in before if x not in ids]
+            stats["manual_picks"] += len(before) - len(after)
+            next_picks[key] = after
+        if stats["manual_picks"]:
+            write_json(picks_path, next_picks)
+
+    manual_path = data_dir() / "x_intel_manual_entries.json"
+    manual_rows = read_json(manual_path, [])
+    if isinstance(manual_rows, list):
+        next_manual_rows = [
+            row for row in manual_rows
+            if not isinstance(row, dict)
+            or (
+                str(row.get("id") or "").strip() not in ids
+                and normalize_account_handle(row.get("account")) not in accounts
+            )
+        ]
+        stats["manual_entries"] = len(manual_rows) - len(next_manual_rows)
+        if stats["manual_entries"]:
+            write_json(manual_path, next_manual_rows)
+
+    def _matches_reference(value: Any) -> bool:
+        text = str(value or "").lower()
+        return any(account in text for account in accounts) or any(card_id in text for card_id in ids)
+
+    audit_path = data_dir() / "x_intel_editorial_audit.jsonl"
+    with EDITORIAL_DATA_LOCK:
+        if audit_path.exists():
+            before_lines = audit_path.read_text(encoding="utf-8").splitlines()
+            after_lines = [line for line in before_lines if not _matches_reference(line)]
+            stats["editorial_audit"] = len(before_lines) - len(after_lines)
+            if stats["editorial_audit"]:
+                audit_path.write_text(("\n".join(after_lines) + "\n") if after_lines else "", encoding="utf-8")
+
+    knowledge_path = data_dir() / "x_intel_knowledge_memory.json"
+    knowledge = read_json(knowledge_path, {})
+    knowledge_items = knowledge.get("items") if isinstance(knowledge, dict) else []
+    if isinstance(knowledge_items, list):
+        next_knowledge_items = [item for item in knowledge_items if not _matches_reference(json.dumps(item, ensure_ascii=False))]
+        stats["knowledge_items"] = len(knowledge_items) - len(next_knowledge_items)
+        if stats["knowledge_items"]:
+            write_json(knowledge_path, {**knowledge, "generated_at": _now_iso(), "total_items": len(next_knowledge_items), "items": next_knowledge_items})
+
+    embedding_path = data_dir() / "x_intel_embedding_cache.json"
+    embedding_cache = read_json(embedding_path, {})
+    embedding_entries = embedding_cache.get("entries") if isinstance(embedding_cache, dict) else {}
+    if isinstance(embedding_entries, dict):
+        next_embedding_entries = {
+            key: value
+            for key, value in embedding_entries.items()
+            if not _matches_reference(json.dumps(value, ensure_ascii=False))
+        }
+        stats["embedding_entries"] = len(embedding_entries) - len(next_embedding_entries)
+        if stats["embedding_entries"]:
+            write_json(embedding_path, {**embedding_cache, "updated_at": _now_iso(), "entries": next_embedding_entries})
+    return stats
+
+
+def purge_retired_source_data() -> dict[str, Any]:
+    """Remove fixed retired sources immediately, without waiting for a feed scan."""
+    accounts = set(RETIRED_X_SOURCE_HANDLES)
+    feed_path = data_dir() / "x_intel_feed.json"
+    payload = read_json(feed_path, {})
+    rows = payload.get("cards") if isinstance(payload, dict) and isinstance(payload.get("cards"), list) else []
+    removed_ids = {
+        str(row.get("id") or "").strip()
+        for row in rows
+        if isinstance(row, dict) and is_retired_source_handle(row.get("account")) and str(row.get("id") or "").strip()
+    }
+    removed_ids.update(_source_state_card_ids(accounts))
+    kept_rows = [
+        row
+        for row in rows
+        if not isinstance(row, dict) or not is_retired_source_handle(row.get("account"))
+    ]
+    feed_changed = len(kept_rows) != len(rows)
+    if isinstance(payload, dict) and feed_changed:
+        payload["cards"] = kept_rows
+        payload["total_cards"] = len(kept_rows)
+        payload["accounts"] = [
+            account for account in (payload.get("accounts") or [])
+            if not is_retired_source_handle(account)
+        ]
+        for key in ("source_stats", "source_quality", "account_source_roles", "account_projects"):
+            values = payload.get(key)
+            if isinstance(values, dict):
+                payload[key] = {
+                    account: value
+                    for account, value in values.items()
+                    if not is_retired_source_handle(account)
+                }
+        payload["removed_source_accounts"] = sorted(accounts)
+        payload["removed_source_card_ids"] = sorted(removed_ids)
+        write_json(feed_path, payload)
+    stats = _purge_removed_source_state(accounts, removed_ids)
+    return {
+        "removed_source_accounts": sorted(accounts),
+        "removed_source_card_ids": sorted(removed_ids),
+        "removed_source_state": stats,
+        "feed_cards_removed": len(rows) - len(kept_rows),
+    }
+
+
 def _feedback_rule_key(label: str, reason: str, account: str = "") -> str:
     body = clean_text(reason or "")
     body = re.sub(r"\s+", " ", body).strip().lower()[:120]
@@ -571,7 +870,7 @@ def _distill_feedback_rule(
         "  \"rule\": \"一條繁中規則，60 字以內\",\n"
         "  \"scope\": \"適用範圍，30 字以內\",\n"
         "  \"rationale\": \"你如何理解這次修正，80 字以內\",\n"
-        "  \"target_label\": \"event/feature/announcement/market/report/insight/events/official/sbt/pokemon/collectibles/alpha/guides/community/other/exclude\",\n"
+        "  \"target_label\": \"event/product_progress/announcement/market/report/guide/insight/collectibles/sbt/exclude\",\n"
         "  \"label_kind\": \"card_type/topic_label/exclude\"\n"
         "}"
     )
@@ -736,16 +1035,14 @@ def add_classification_feedback_fields(
     if not raw_topic_labels and str(topic_label or "").strip():
         raw_topic_labels = [topic_label]
     next_topic_labels = normalize_topic_labels(raw_topic_labels)
-    if "other" in next_topic_labels:
-        next_topic_labels = ["other"]
     fb_reason = clean_text(reason or "")
     if not tid:
         raise ValueError("tweet id is required")
     if next_card_type and next_card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
-    if (has_topic_labels_payload or str(topic_label or "").strip()) and not next_topic_labels:
+    if str(topic_label or "").strip() and not next_topic_labels:
         raise ValueError("invalid topic_label")
-    if not next_card_type and not next_topic_labels:
+    if not next_card_type and not has_topic_labels_payload and not next_topic_labels:
         raise ValueError("card_type or topic_label is required")
 
     state = read_feedback_state()
@@ -759,7 +1056,7 @@ def add_classification_feedback_fields(
     next_override = dict(prev)
     if next_card_type:
         next_override["card_type"] = next_card_type
-    if next_topic_labels:
+    if has_topic_labels_payload or next_topic_labels:
         # A section correction stores the final section state, including multi-section cards.
         next_override["topic_labels"] = next_topic_labels
     next_override["reason"] = fb_reason[:420]
@@ -809,7 +1106,6 @@ def _read_feed_payload() -> dict[str, Any]:
 EDITORIAL_OVERRIDE_FIELDS = {
     "timeline_date",
     "timeline_end_date",
-    "event_wall",
     "sbt_name",
     "sbt_names",
     "sbt_acquisition",
@@ -856,11 +1152,10 @@ def _apply_editorial_override(card: StoryCard, field_info: dict[str, Any]) -> in
         if getattr(card, key) != value:
             setattr(card, key, value)
             changed += 1
-    if "event_wall" in field_info:
-        value = bool(field_info.get("event_wall"))
-        if card.event_wall != value:
-            card.event_wall = value
-            changed += 1
+    derived_event_wall = card.card_type == "event"
+    if card.event_wall != derived_event_wall:
+        card.event_wall = derived_event_wall
+        changed += 1
     if "sbt_names" in field_info:
         value = [clean_text(str(item)) for item in (field_info.get("sbt_names") or []) if clean_text(str(item))][:8]
         if (card.sbt_names or []) != value:
@@ -931,10 +1226,13 @@ def update_card_timeline_fields(tweet_id: str, timeline_date: str = "", timeline
 
 
 def update_card_event_wall_field(tweet_id: str, event_wall: bool) -> dict[str, Any]:
+    current = _read_current_feed_card(tweet_id)
+    if not current:
+        raise ValueError("card not found")
     return _update_feed_card_fields(
         tweet_id,
         {
-            "event_wall": bool(event_wall),
+            "event_wall": str(current.get("card_type") or "").strip().lower() == "event",
         },
         persist_editorial=True,
     )
@@ -1010,8 +1308,6 @@ def update_card_editorial_fields(
         if start and end and end < start:
             raise ValueError("timeline_end_date cannot be earlier than timeline_date")
         editorial_patch.update({"timeline_date": start, "timeline_end_date": end})
-    if "event_wall" in patch:
-        editorial_patch["event_wall"] = bool(patch.get("event_wall"))
     if "sbt_names" in patch or "sbt_acquisition" in patch:
         raw_names = patch.get("sbt_names") or []
         if isinstance(raw_names, list):
@@ -1042,13 +1338,14 @@ def update_card_editorial_fields(
     has_classification = bool(card_type or isinstance(raw_topics, list))
     if card_type and card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
-    if isinstance(raw_topics, list) and not topic_labels:
-        raise ValueError("invalid topic_labels")
-
     with EDITORIAL_DATA_LOCK:
         before = _read_current_feed_card(tid)
         if not before:
             raise ValueError("card not found")
+        if card_type == "product_progress" and _source_role_for_payload(before) != "official":
+            raise ValueError("product_progress requires an official source")
+        effective_card_type = card_type or str(before.get("card_type") or "").strip().lower()
+        editorial_patch["event_wall"] = effective_card_type == "event"
         state = read_feedback_state()
         overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
         current_override = overrides.get(tid, {}) if isinstance(overrides.get(tid), dict) else {}
@@ -1121,15 +1418,13 @@ def update_card_classification_fields(
     if not raw_topic_labels and str(topic_label or "").strip():
         raw_topic_labels = [topic_label]
     next_topic_labels = normalize_topic_labels(raw_topic_labels)
-    if "other" in next_topic_labels:
-        next_topic_labels = ["other"]
     if not tid:
         raise ValueError("tweet id is required")
     if next_card_type and next_card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
-    if (has_topic_labels_payload or str(topic_label or "").strip()) and not next_topic_labels:
+    if str(topic_label or "").strip() and not next_topic_labels:
         raise ValueError("invalid topic_label")
-    if not next_card_type and not next_topic_labels:
+    if not next_card_type and not has_topic_labels_payload and not next_topic_labels:
         raise ValueError("card_type or topic_label is required")
 
     payload = _read_feed_payload()
@@ -1144,9 +1439,11 @@ def update_card_classification_fields(
         if str(item.get("id") or "").strip() != tid:
             continue
         card = _story_card_from_payload(item)
+        if next_card_type == "product_progress" and card.source_role != "official":
+            raise ValueError("product_progress requires an official source")
         if next_card_type:
             _apply_card_type_override(card, next_card_type)
-        if next_topic_labels:
+        if has_topic_labels_payload or next_topic_labels:
             _apply_topic_label_override(card, next_topic_labels, exact=True)
         item.update(
             {
@@ -1446,16 +1743,21 @@ def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
     label = str(card_type or "").strip().lower()
     if label not in ALLOWED_CARD_TYPES:
         return False
+    if label == "product_progress" and card.source_role != "official":
+        return False
     changed = card.card_type != label
     card.card_type = label
     card.layout, default_tags = default_style_for_type(label)
     if not card.tags:
         card.tags = default_tags[:]
     card.template_id = choose_template_id(label)
+    card.event_wall = label == "event"
     if label == "event":
         card.event_facts = normalize_event_facts(card.event_facts) or build_event_facts(card.raw_text or card.title)
     else:
         card.event_facts = {}
+    if label != "product_progress":
+        card.product_progress_evidence = {}
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
     _mark_feedback_tag(card)
     _mark_manual_classification(card)
@@ -1464,7 +1766,7 @@ def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
 
 def _apply_topic_label_override(card: StoryCard, labels: list[str], *, exact: bool) -> None:
     normalized = normalize_topic_labels(labels)
-    if not normalized:
+    if not normalized and not exact:
         return
     card.topic_labels = normalized if exact else normalize_topic_labels([*(card.topic_labels or []), *normalized])
     _mark_feedback_tag(card)
@@ -1507,7 +1809,7 @@ def apply_feedback_overrides(cards: list[StoryCard]) -> dict[str, Any]:
             if card_type in ALLOWED_CARD_TYPES and _apply_card_type_override(card, card_type):
                 override_count += 1
             labels = normalize_topic_labels(field_info.get("topic_labels"))
-            if labels:
+            if "topic_labels" in field_info:
                 if labels != normalize_topic_labels(card.topic_labels):
                     override_count += 1
                 _apply_topic_label_override(card, labels, exact=True)
@@ -1574,7 +1876,7 @@ def _merge_latest_admin_state(payload: dict[str, Any]) -> dict[str, Any]:
             if card_type in ALLOWED_CARD_TYPES:
                 _apply_card_type_override(card, card_type)
             labels = normalize_topic_labels(field_info.get("topic_labels"))
-            if labels:
+            if "topic_labels" in field_info:
                 _apply_topic_label_override(card, labels, exact=True)
             _apply_editorial_override(card, field_info)
             item.update(card.to_dict())
@@ -1790,12 +2092,8 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
         card.review_status = AI_REVIEW_AUTO_APPROVED
         if str(card.ai_status or "").strip().lower() in {"needs_review", "pending", "failed"}:
             card.ai_status = "ok"
-        labels = normalize_topic_labels(card.topic_labels)
-        labels = [label for label in labels if label != "other"]
-        if "official" not in labels:
-            labels.insert(0, "official")
-        card.topic_labels = labels or ["official"]
-        card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+        card.topic_labels = normalize_topic_labels(card.topic_labels)
+        card.event_wall = card.card_type == "event"
         card.classification_error = clean_text(card.classification_error or reason_key or "official_x_kept_public")[:220]
         return card
     label_map = {
@@ -1808,7 +2106,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
         "curation": "篩選淘汰",
     }
     label = label_map.get(reason_key, "待審核")
-    card.topic_labels = ["other"]
+    card.topic_labels = []
     card.event_wall = False  # type: ignore[attr-defined]
     card.review_status = AI_REVIEW_ADMIN_QUEUE
     card.ai_status = "needs_review"
@@ -1840,8 +2138,7 @@ def _is_admin_queue_card(card: StoryCard) -> bool:
     ai_status = str(card.ai_status or "").strip().lower()
     if review_status == AI_REVIEW_ADMIN_QUEUE or ai_status in {"needs_review", "pending", "failed"}:
         return True
-    labels = normalize_topic_labels(card.topic_labels)
-    return labels == ["other"]
+    return False
 
 
 def _public_cards(cards: list[StoryCard]) -> list[StoryCard]:
@@ -1852,7 +2149,7 @@ def _refresh_runtime_fields(card: StoryCard) -> None:
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or " ".join(card.bullets or []) or card.title, 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    card.event_wall = card.card_type == "event" and "events" in normalize_topic_labels(card.topic_labels)
+    card.event_wall = card.card_type == "event"
     card.importance = score_card(card)
 
 
@@ -2599,7 +2896,7 @@ def _event_date_hint(card: StoryCard) -> str:
 
 
 def _dedupe_signature(card: StoryCard) -> str:
-    if card.card_type not in {"event", "feature", "announcement"}:
+    if card.card_type not in {"event", "product_progress", "announcement"}:
         return ""
     topic_key = _dedupe_topic_key(card)
     if not topic_key:
@@ -2827,8 +3124,8 @@ def make_section_items(cards: list[StoryCard], limit: int = 4) -> list[dict[str,
 
 
 def build_intel_sections(cards: list[StoryCard]) -> dict[str, list[dict[str, Any]]]:
-    official = [c for c in cards if c.account.lower() == "renaissxyz"]
-    community = [c for c in cards if is_community_pick_source_card(c)]
+    official = [c for c in cards if c.source_role == "official"]
+    community = [c for c in cards if c.source_role in {"official_community", "other"}]
     official.sort(key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance), reverse=True)
     community.sort(key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance), reverse=True)
 
@@ -2839,16 +3136,16 @@ def build_intel_sections(cards: list[StoryCard]) -> dict[str, list[dict[str, Any
         return (1, datetime.max.replace(tzinfo=timezone.utc))
 
     events = [c for c in cards if c.card_type == "event" and _parse_iso_safe(c.timeline_date)]
-    features = [c for c in cards if c.card_type == "feature" and _parse_iso_safe(c.timeline_date)]
+    product_progress = [c for c in cards if c.card_type == "product_progress" and _parse_iso_safe(c.timeline_date)]
     events.sort(key=event_key)
-    features.sort(key=event_key)
+    product_progress.sort(key=event_key)
 
     sections = {
         "official_updates": make_section_items(
-            [c for c in official if c.card_type in {"announcement", "report", "market", "feature", "event"}], 5
+            [c for c in official if c.card_type in {"announcement", "report", "market", "product_progress", "event"}], 5
         ),
         "upcoming_events": make_section_items(events, 5),
-        "upcoming_features": make_section_items(features, 5),
+        "product_progress": make_section_items(product_progress, 5),
         "community_highlights": make_section_items(
             [c for c in community if c.card_type in {"market", "report", "insight", "event"}], 5
         ),
@@ -2900,7 +3197,7 @@ def build_intel_agenda(cards: list[StoryCard]) -> dict[str, Any]:
 
     for card in cards:
         pub_dt = _parse_iso_safe(card.published_at) or now
-        if card.account.lower() == "renaissxyz" and (now - pub_dt).days <= 7:
+        if card.source_role == "official" and (now - pub_dt).days <= 7:
             recent_updates.append(card)
         if card.card_type in {"market", "report"}:
             growth_signals.append(card)
@@ -2917,7 +3214,7 @@ def build_intel_agenda(cards: list[StoryCard]) -> dict[str, Any]:
             else:
                 event_past.append((event_dt, card))
             continue
-        if card.card_type in {"feature", "announcement"}:
+        if card.card_type in {"product_progress", "announcement"}:
             future_watch.append(card)
 
     event_future.sort(key=lambda x: x[0])
@@ -2946,7 +3243,7 @@ def _official_impact_line(card: StoryCard) -> str:
         if reward:
             return f"直接提高參與動機，獎勵重點在 {reward}。"
         return "可直接影響活動參與率與社群互動熱度。"
-    if card.card_type in {"feature", "announcement"}:
+    if card.card_type in {"product_progress", "announcement"}:
         return "會影響玩家後續操作節奏，需提早確認開放條件與時間。"
     if card.card_type == "market":
         if re.search(r"\$|成交|record|交易量|volume", source, re.I):
@@ -2999,7 +3296,8 @@ def _official_overview_fallback(recent: list[StoryCard]) -> dict[str, Any]:
     top_topics = [name for name, _ in ordered_topics[:3]]
     type_label_map = {
         "event": "活動",
-        "feature": "功能",
+        "product_progress": "產品進度",
+        "guide": "指南",
         "announcement": "公告",
         "market": "市場",
         "report": "報告",
@@ -3043,7 +3341,7 @@ def _official_overview_fallback(recent: list[StoryCard]) -> dict[str, Any]:
 
 
 def build_official_overview(cards: list[StoryCard], api_key: str | None = None) -> dict[str, Any]:
-    official = [c for c in cards if is_official_account_handle(c.account)]
+    official = [c for c in cards if c.source_role == "official"]
     if not official:
         return {
             "title": "近 7 天官方重點整理",
@@ -3128,6 +3426,8 @@ AI_METADATA_PRESERVED_FIELDS = {
     "plan_ai_version",
     "event_region_model",
     "event_region_version",
+    "source_role",
+    "product_progress_evidence",
 }
 
 ARTICLE_SOURCE_REFRESH_FIELDS = {
@@ -3256,6 +3556,7 @@ def build_feed_payload(
         "window_days": window_days,
         "accounts": accounts,
         "account_projects": source_config.get("account_projects") if isinstance(source_config.get("account_projects"), dict) else {},
+        "account_source_roles": source_config.get("account_categories") if isinstance(source_config.get("account_categories"), dict) else {},
         "total_cards": len(cards),
         "layout_counts": {
             "poster": sum(1 for c in cards if c.layout == "poster"),
@@ -3327,24 +3628,42 @@ def sync_accounts(
     twitter_cli_ready = bool(shutil_which("twitter"))
 
     uses_configured_accounts = accounts is None
-    target_accounts = normalize_x_accounts(accounts) if accounts is not None else resolve_tracked_x_accounts()
+    source_config = migrate_x_source_config() if uses_configured_accounts else read_x_source_config()
+    feedback_taxonomy_migrated = migrate_feedback_taxonomy_state()
+    target_accounts = (
+        [account for account in normalize_x_accounts(accounts) if not is_retired_source_handle(account)]
+        if accounts is not None
+        else list(source_config.get("x_accounts") or [])
+    )
     since_dt = datetime.now(timezone.utc) - timedelta(days=window_days)
     preserved_raw_by_id = _read_existing_feed_card_payloads()
     existing_cards = _read_existing_feed_cards()
-    removed_source_accounts: set[str] = set()
+    # Retired handles are always included so stale translation/history caches
+    # are cleaned even after their cards have already aged out of the feed.
+    removed_source_accounts: set[str] = set(RETIRED_X_SOURCE_HANDLES)
     removed_source_card_ids: set[str] = set()
+    retired_cards = [card for card in existing_cards if is_retired_source_handle(card.account)]
+    if retired_cards:
+        existing_cards = [card for card in existing_cards if not is_retired_source_handle(card.account)]
+        removed_source_accounts.update(normalize_account_handle(card.account) for card in retired_cards)
+        removed_source_card_ids.update(str(card.id or "").strip() for card in retired_cards if str(card.id or "").strip())
     if uses_configured_accounts:
-        existing_cards, removed_source_accounts, removed_source_card_ids = _remove_cards_from_deleted_x_sources(
+        existing_cards, deleted_accounts, deleted_card_ids = _remove_cards_from_deleted_x_sources(
             existing_cards,
             previous_accounts=_read_existing_feed_accounts(),
             current_accounts=target_accounts,
         )
-        if removed_source_card_ids:
-            preserved_raw_by_id = {
-                card_id: row
-                for card_id, row in preserved_raw_by_id.items()
-                if card_id not in removed_source_card_ids
-            }
+        removed_source_accounts.update(deleted_accounts)
+        removed_source_card_ids.update(deleted_card_ids)
+    if removed_source_card_ids:
+        preserved_raw_by_id = {
+            card_id: row
+            for card_id, row in preserved_raw_by_id.items()
+            if card_id not in removed_source_card_ids
+        }
+    removed_source_card_ids.update(_source_state_card_ids(removed_source_accounts))
+    removed_source_purge_stats = _purge_removed_source_state(removed_source_accounts, removed_source_card_ids)
+    _assign_source_roles(existing_cards, source_config)
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
@@ -3528,6 +3847,10 @@ def sync_accounts(
         except Exception:
             continue
 
+    _assign_source_roles(account_cards, source_config)
+    _assign_source_roles(discord_cards, source_config)
+    _assign_source_roles(manual_cards, source_config)
+
     def _only_new(cards: list[StoryCard]) -> list[StoryCard]:
         out: list[StoryCard] = []
         seen: set[str] = set()
@@ -3549,8 +3872,28 @@ def sync_accounts(
     feedback_result = apply_feedback_overrides(existing_cards)
     _enforce_fixed_channel_topic_labels(existing_cards)
     reclassified_existing_count = 0
+    reclassify_limit = _env_positive_int("INTEL_TAXONOMY_RECLASSIFY_LIMIT", 200)
+    taxonomy_review_cards = [
+        card
+        for card in existing_cards
+        if card.source_role == "official"
+        and str(card.classified_by or "").strip().lower() != "manual"
+        and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
+        and str(card.ai_version or "").strip() != AI_CLASSIFICATION_VERSION
+    ][:reclassify_limit]
     plan_status_reclassified_count = 0
     event_region_reclassified_count = 0
+    if api_key and taxonomy_review_cards:
+        apply_minimax_story_refine(
+            taxonomy_review_cards,
+            api_key,
+            feedback_context=feedback_context,
+            progress_callback=progress_callback,
+        )
+        reclassified_existing_count = len(taxonomy_review_cards)
+        refreshed_feedback_result = apply_feedback_overrides(taxonomy_review_cards)
+        feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(refreshed_feedback_result.get("override_count", 0) or 0)
+        _enforce_fixed_channel_topic_labels(taxonomy_review_cards)
     plan_review_limit = _env_positive_int("INTEL_PLAN_STATUS_REVIEW_LIMIT", 80)
     plan_review_cards = [card for card in existing_cards if plan_status_review_due(card)][:plan_review_limit]
     event_region_review_limit = _env_positive_int("INTEL_EVENT_REGION_REVIEW_LIMIT", 80)
@@ -3870,17 +4213,17 @@ def sync_accounts(
     )
     if not api_key:
         event_count = sum(1 for c in public_cards if c.card_type == "event")
-        feature_count = sum(1 for c in public_cards if c.card_type == "feature")
+        product_progress_count = sum(1 for c in public_cards if c.card_type == "product_progress")
         announcement_count = sum(1 for c in public_cards if c.card_type == "announcement")
         growth_count = len(agenda.get("growth_signals", []))
         future_count = len(agenda.get("future_watch", []))
-        digest["headline"] = f"Spring AI 主時間軸：活動 {event_count} / 功能 {feature_count} / 公告 {announcement_count}"
+        digest["headline"] = f"Spring AI 主時間軸：活動 {event_count} / 產品進度 {product_progress_count} / 公告 {announcement_count}"
         digest["conclusion"] = (
-            f"已整理出活動 {event_count} 件、功能 {feature_count} 件、公告 {announcement_count} 件、增長訊號 {growth_count} 件、未來觀察 {future_count} 件，"
+            f"已整理出活動 {event_count} 件、產品進度 {product_progress_count} 件、公告 {announcement_count} 件、增長訊號 {growth_count} 件、未來觀察 {future_count} 件，"
             "可直接用於社群公告與行動排程。"
         )
         digest["takeaways"] = [
-            "先看主時間軸，把活動與功能安排到行事曆。",
+            "先看主時間軸，把活動與產品進度安排到行事曆。",
             "活動類優先確認時間、地點與參與方式。",
             "再看「增長訊號」確認社群熱度與市場脈動。",
         ]
@@ -3959,6 +4302,7 @@ def sync_accounts(
         "preserved_total": int(len(existing_cards)),
         "preserved_visible_total": int(len(preserved_cards)),
         "existing_ai_reclassified": int(reclassified_existing_count),
+        "existing_ai_reclass_pending": int(len(taxonomy_review_cards) if not api_key else 0),
         "plan_status_ai_reclassified": int(plan_status_reclassified_count),
         "event_region_ai_reclassified": int(event_region_reclassified_count),
         "new_candidate_total": int(len(merged_new_cards)),
@@ -3987,6 +4331,9 @@ def sync_accounts(
         "existing_article_refreshed": int(existing_article_refresh_count),
     }
     payload["removed_source_accounts"] = sorted(removed_source_accounts)
+    payload["removed_source_card_ids"] = sorted(removed_source_card_ids)
+    payload["removed_source_state"] = removed_source_purge_stats
+    payload["feedback_taxonomy_migrated"] = feedback_taxonomy_migrated
     payload["source_stats"] = account_stats
     payload["source_scan"] = {
         "accounts": account_scan_meta,

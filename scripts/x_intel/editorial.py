@@ -210,8 +210,9 @@ def infer_topic_phrase(text: str, card_type: str) -> str:
             "event": "社群活動更新",
             "market": "市場訊號更新",
             "announcement": "官方公告更新",
-            "feature": "功能進度更新",
+            "product_progress": "產品進度更新",
             "report": "分析整理更新",
+            "guide": "操作指南更新",
             "insight": "社群互動更新",
         }
         return fallback.get(card_type, _headline_prefix(card_type))
@@ -286,7 +287,7 @@ def _infer_why_line(source: str, card_type: str) -> str:
         if re.search(r"join us|community|gathering|ama|session|discord|live|直播", src, re.I):
             return "這是社群動員型資訊，重點是把人導向直播或現場互動。"
         return "這則主要用來通知參與資訊，關鍵在時間、地點與參加方式。"
-    if card_type in {"feature", "announcement"}:
+    if card_type in {"product_progress", "announcement"}:
         if re.search(r"\bmfa\b|2fa|multi[-\s]*factor|authenticator|authentication|security|帳號安全|账号安全|setting page|設定頁|设置页", src, re.I):
             return "這會直接改變登入流程並提升帳號安全門檻。"
         if re.search(r"(sbt|points?).{0,36}(threshold|top\s*\d+%|snapshot)|threshold update", src, re.I):
@@ -318,7 +319,7 @@ def build_fivew_brief(
     where = _clean_fact_value(str(event_facts.get("location") or ""), max_len=56)
     if not when and schedule:
         schedule_joined = _clean_fact_value("、".join(schedule[:2]), max_len=56)
-        if card_type in {"event", "feature", "announcement"}:
+        if card_type in {"event", "product_progress", "announcement"}:
             when = schedule_joined
         elif card_type == "insight" and _contains_calendar_date(schedule_joined):
             when = schedule_joined
@@ -448,7 +449,7 @@ def build_universal_digest_frame(
             detail_lines.insert(3, sbt_how)
         return _finish(summary, bullets, detail_summary, detail_lines)
 
-    if card_type in {"feature", "announcement"}:
+    if card_type in {"product_progress", "announcement"}:
         threshold_facts = extract_sbt_threshold_facts(source)
         tiers = [str(x) for x in threshold_facts.get("tiers", []) if str(x).strip()]
         snapshot = _clean_fact_value(str(threshold_facts.get("snapshot") or ""), max_len=72)
@@ -667,7 +668,7 @@ def _english_focus_hint(text: str, card_type: str, topic: str) -> str:
             return _clean_fact_value(label, max_len=84)
     if card_type == "market":
         return _clean_fact_value(f"{topic}（英文原文）", max_len=84)
-    if card_type in {"feature", "announcement"}:
+    if card_type in {"product_progress", "announcement"}:
         return _clean_fact_value("功能規則已更新，請依貼文列出的時間與條件操作", max_len=84)
     if card_type == "event":
         return _clean_fact_value("活動資訊已釋出，請先確認時間地點", max_len=84)
@@ -945,7 +946,8 @@ def build_editorial_copy(text: str, card_type: str, account: str) -> dict[str, A
         "event": ["建議動作：先看原文確認時間、地點與參與方式。"],
         "market": ["影響：這則內容會影響社群對市場價格與熱度的判讀。"],
         "announcement": ["下一步：留意官方後續公告。"],
-        "feature": ["下一步：確認正式開放條件與時間。"],
+        "product_progress": ["下一步：確認正式開放條件與時間。"],
+        "guide": ["使用方式：依原文步驟操作並核對必要條件。"],
         "report": ["使用建議：先比較方案差異再採用。"],
         "insight": ["延伸追蹤：觀察後續是否出現明確規則。"],
     }
@@ -1087,10 +1089,10 @@ def enrich_detail_view(card: StoryCard) -> None:
         or bool(GENERIC_DETAIL_RE.search(existing_summary))
     )
     weak_lines = len(existing_lines) < 3 or generic_line_hits >= max(1, len(existing_lines) - 1)
-    if card.card_type in {"event", "insight", "feature", "announcement"} and has_generic_detail:
+    if card.card_type in {"event", "insight", "product_progress", "announcement"} and has_generic_detail:
         weak_summary = True
         weak_lines = True
-    if card.card_type in {"feature", "announcement"}:
+    if card.card_type in {"product_progress", "announcement"}:
         leaked_event_frame = any(
             re.search(r"(活動主軸|時間與地點|獎勵重點|參與方式)", clean_text(x), re.I)
             for x in existing_lines
@@ -1132,7 +1134,7 @@ def build_glance_line(card: StoryCard) -> str:
         if schedule:
             return f"活動 {topic}，時間 {schedule[0]}，建議提前安排參與。"
         return f"活動 {topic}，建議追蹤報名與地點資訊。"
-    if card.card_type == "feature":
+    if card.card_type == "product_progress":
         threshold = extract_sbt_threshold_facts(raw)
         tiers = [str(x) for x in threshold.get("tiers", []) if str(x).strip()]
         snapshot = str(threshold.get("snapshot") or "").strip()
@@ -1178,21 +1180,7 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
         if label not in labels and label in ALLOWED_TOPIC_LABELS:
             labels.append(label)
 
-    account = normalize_account_handle(card.account)
-    if is_official_source_card(card):
-        add("official")
-
-    strict_event_call = bool(STRICT_EVENT_CALL_RE.search(source))
-    has_threshold_notice = bool(SBT_THRESHOLD_NOTICE_RE.search(source))
-    has_event_signal = card.card_type == "event" or _has_event_evidence(source, timeline_iso=str(card.timeline_date or ""))
     facts = normalize_event_facts(card.event_facts)
-    if card.card_type == "event" and (facts.get("schedule") or facts.get("participation") or facts.get("location")):
-        has_event_signal = True
-    if has_threshold_notice and not strict_event_call:
-        # 門檻/快照資訊本身不等於活動；除非同文具備明確參與語意。
-        has_event_signal = _has_event_evidence(source, timeline_iso=str(card.timeline_date or ""))
-    if has_event_signal:
-        add("events")
 
     def _has_sbt_evidence(text: str, card_type: str, facts_map: dict[str, str]) -> bool:
         src = clean_text(text)
@@ -1207,7 +1195,7 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
             return True
         if re.search(r"(points?|積分|分).{0,28}(threshold|snapshot|top\s*\d+%|快照|門檻)", src, re.I):
             return True
-        if card_type in {"event", "feature", "announcement"}:
+        if card_type in {"event", "product_progress", "announcement"}:
             if re.search(r"(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边).{0,24}(sbt|積分|积分|points?)", src, re.I):
                 return True
             if re.search(r"(sbt|積分|积分|points?).{0,24}(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边)", src, re.I):
@@ -1217,24 +1205,8 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
     if _has_sbt_evidence(source, card.card_type, facts):
         add("sbt")
 
-    if has_pokemon_topic_evidence(source):
-        add("pokemon")
-
-    if card.card_type in {"feature", "announcement"} or re.search(
-        r"coming|upcoming|roadmap|launch|release|版本|上線|上线|開放|开放|即將|预告|progress",
-        source,
-        re.I,
-    ):
-        add("alpha")
-
-    if has_guide_topic_evidence(source, card.card_type):
-        add("guides")
-
-    if is_community_pick_source_card(card):
-        add("community")
-
-    if not labels:
-        add("other")
+    if has_pokemon_topic_evidence(source) or re.search(r"collectible|collectibles|收藏品|集換式卡牌|集换式卡牌", source, re.I):
+        add("collectibles")
     return labels
 
 
@@ -1252,26 +1224,6 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
             " ".join(str(x) for x in (normalize_event_facts(card.event_facts).values())),
         ]
     ))
-    account = normalize_account_handle(card.account)
-
-    if "events" in merged:
-        strict_event_call = bool(STRICT_EVENT_CALL_RE.search(source))
-        has_threshold_notice = bool(SBT_THRESHOLD_NOTICE_RE.search(source))
-        if card.card_type in {"feature", "announcement"} and not _has_event_evidence(source, timeline_iso=str(card.timeline_date or "")):
-            merged = [x for x in merged if x != "events"]
-        if has_threshold_notice and not strict_event_call and not _has_event_evidence(source, timeline_iso=str(card.timeline_date or "")):
-            merged = [x for x in merged if x != "events"]
-
-    if "guides" in merged:
-        if not has_guide_topic_evidence(source, card.card_type):
-            merged = [x for x in merged if x != "guides"]
-
-    if "pokemon" in merged and not has_pokemon_topic_evidence(source):
-        merged = [x for x in merged if x != "pokemon"]
-
-    if "community" in merged and not is_community_pick_source_card(card):
-        merged = [x for x in merged if x != "community"]
-
     if "sbt" in merged:
         facts = normalize_event_facts(card.event_facts)
         sbt_ok = False
@@ -1288,13 +1240,13 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
         if not sbt_ok:
             merged = [x for x in merged if x != "sbt"]
 
-    if "official" in merged and not is_official_source_card(card):
-        merged = [x for x in merged if x != "official"]
+    if "collectibles" in merged and not (
+        has_pokemon_topic_evidence(source)
+        or re.search(r"collectible|collectibles|收藏品|集換式卡牌|集换式卡牌", source, re.I)
+    ):
+        merged = [x for x in merged if x != "collectibles"]
 
-    if is_official_source_card(card) and "official" not in merged:
-        merged.append("official")
-
-    card.topic_labels = merged if merged else ["other"]
+    card.topic_labels = normalize_topic_labels(merged)
 
 
 def infer_timeline_range_dates(text: str, base_dt: datetime | None = None) -> tuple[str, str]:
@@ -1374,8 +1326,7 @@ def infer_timeline_range_dates(text: str, base_dt: datetime | None = None) -> tu
 
 
 def infer_event_wall(card: StoryCard) -> bool:
-    labels = normalize_topic_labels(card.topic_labels)
-    if labels == ["other"] or "events" not in labels:
+    if card.card_type != "event":
         return False
     if not str(card.timeline_date or "").strip():
         return False

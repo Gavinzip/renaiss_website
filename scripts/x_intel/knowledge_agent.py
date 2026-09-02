@@ -500,7 +500,7 @@ def _answer_curated_sbt_matrix(question: str, *, lang: str) -> dict[str, Any] | 
         "detail_summary": detail,
         "raw_hint": "Source: website/assets/index-data.js sbtRows",
         "card_type": "guide",
-        "topic_labels": ["sbt", "guides"],
+        "topic_labels": ["sbt"],
         "tags": ["sbt", "curated"],
         "event_facts": {},
         "date_role": "",
@@ -535,6 +535,7 @@ def _score_memory_item(base_score: float, item: dict[str, Any], question: str, n
     labels = {str(x).lower() for x in (item.get("topic_labels") or []) if x}
     tags = {str(x).lower() for x in (item.get("tags") or []) if x}
     card_type = str(item.get("card_type") or "").lower()
+    source_role = str(item.get("source_role") or "").strip().lower()
     account = str(item.get("account") or "").lower()
     date_role = str(item.get("date_role") or "").strip().lower()
     blob = _item_blob(item)
@@ -545,20 +546,14 @@ def _score_memory_item(base_score: float, item: dict[str, Any], question: str, n
         if card_type == "event":
             score += 0.13
             reasons.append("event_card")
-        if "events" in labels or "events" in tags:
-            score += 0.1
-            reasons.append("event_label")
         if any(term in blob for term in ("直播", "ama", "discord", "plaza", "graduation", "tonight")):
             score += 0.06
             reasons.append("event_text")
 
     if intent["official"]:
-        if account == "renaissxyz":
+        if source_role == "official" or account == "renaissxyz":
             score += 0.1
-            reasons.append("official_x")
-        if "official" in labels or "official" in tags:
-            score += 0.08
-            reasons.append("official_label")
+            reasons.append("official_source")
 
     if intent["sbt"] and ("sbt" in labels or "sbt" in tags or "sbt" in blob):
         score += 0.12
@@ -652,6 +647,7 @@ def _source_from_item(
         "detail_summary": _compact(item.get("detail_summary"), 700),
         "raw_hint": _compact(item.get("raw_hint"), 600),
         "card_type": str(item.get("card_type") or ""),
+        "source_role": str(item.get("source_role") or ""),
         "topic_labels": [str(x) for x in (item.get("topic_labels") or []) if x],
         "tags": [str(x) for x in (item.get("tags") or []) if x],
         "event_facts": {str(k): _compact(v, 220) for k, v in facts.items() if str(v or "").strip()},
@@ -676,6 +672,7 @@ def _context_line(source: dict[str, Any], index: int) -> str:
     parts = [
         f"[{index}] @{source.get('account') or 'source'}",
         f"type={source.get('card_type') or ''}",
+        f"source_role={source.get('source_role') or ''}",
         f"date_role={source.get('date_role') or ''}",
         f"event_group={source.get('event_group_key') or ''}",
         f"labels={','.join(source.get('topic_labels') or [])}",

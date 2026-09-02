@@ -7,9 +7,9 @@ entrypoints keep behavior while each domain lives in a real importable module.
 
 from __future__ import annotations
 
-from . import bootstrap, editorial, sources, feedback_feed, product_progress
+from . import taxonomy, bootstrap, editorial, sources, feedback_feed, product_progress
 
-_MODULES = (bootstrap, editorial, sources, feedback_feed, product_progress)
+_MODULES = (taxonomy, bootstrap, editorial, sources, feedback_feed, product_progress)
 
 
 def _public_namespace() -> dict[str, object]:

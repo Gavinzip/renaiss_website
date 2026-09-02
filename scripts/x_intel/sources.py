@@ -4,6 +4,13 @@ import hashlib
 
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
+from .taxonomy import (
+    CARD_TYPES,
+    canonical_source_role,
+    has_complete_product_progress_evidence,
+    is_retired_source_handle,
+    normalize_product_progress_evidence,
+)
 
 globals().update(vars(_bootstrap))
 globals().update(vars(_editorial))
@@ -11,7 +18,7 @@ globals().update(vars(_editorial))
 # Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
 
 X_SOURCE_CONFIG_FILE = "x_intel_sources.json"
-X_ACCOUNT_CATEGORIES = {"official", "official_community", "ambassador"}
+X_ACCOUNT_CATEGORIES = {"official", "official_community", "other"}
 X_PROJECT_IDS = {"tcg", "index", "defi", "game", "hackathon", "outreach"}
 DEFAULT_X_ACCOUNT_PROJECTS = {
     "renaissxyz": "tcg",
@@ -30,12 +37,29 @@ DISCORD_COVER_EXT_BY_TYPE = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
-AI_CARD_TYPES = {"event", "market", "report", "announcement", "feature", "insight"}
+AI_CARD_TYPES = set(CARD_TYPES)
 AI_LAYOUTS = {"poster", "brief", "data", "timeline"}
 AI_MIN_CONFIDENCE_DEFAULT = 0.58
 AI_SPECULATION_RE = re.compile(
     r"推測|可能|通常|大概|也許|有待|待官方|待確認|尚未公布|尚未揭露|未指定|未於原文|原文未|未提供|以官方公布為準"
 )
+AI_RESERVED_DISPLAY_TAGS = {
+    "official", "official_community", "community", "other", "events", "event",
+    "product_progress", "feature", "alpha", "guides", "guide", "pokemon",
+    "collectibles", "sbt", "官方", "官方社群", "社群", "其他", "無", "宝可梦", "寶可夢",
+}
+
+
+def _normalize_ai_display_tags(values: Any) -> list[str]:
+    rows = values if isinstance(values, list) else []
+    out: list[str] = []
+    for value in rows:
+        tag = clean_text(str(value))[:16]
+        if not tag or tag.lower() in AI_RESERVED_DISPLAY_TAGS or tag in {"待審核", "去重淘汰", "篩選淘汰"}:
+            continue
+        if tag not in out:
+            out.append(tag)
+    return out[:3]
 AI_UNSUPPORTED_TOPIC_TERMS = {
     "Discord": re.compile(r"discord", re.I),
     "直播": re.compile(r"直播|live\s*stream|livestream", re.I),
@@ -70,11 +94,11 @@ AI_CARD_TYPE_ALIASES = {
     "raffle": "event",
     "competition": "event",
     "tournament": "event",
-    "card_info": "feature",
-    "card info": "feature",
-    "card": "feature",
-    "illustration": "feature",
-    "profile": "feature",
+    "card_info": "insight",
+    "card info": "insight",
+    "card": "insight",
+    "illustration": "insight",
+    "profile": "insight",
     "opinion": "insight",
     "discussion": "insight",
     "comment": "insight",
@@ -313,22 +337,15 @@ def _publish_official_x_public_fallback(
     final_type = AI_CARD_TYPE_ALIASES.get(str(card_type or card.card_type or "").strip().lower(), str(card_type or card.card_type or "").strip().lower())
     if final_type not in AI_CARD_TYPES:
         final_type = "announcement"
+    if final_type == "product_progress":
+        final_type = "announcement"
     final_layout = str(layout or card.layout or "").strip().lower()
     if final_layout not in AI_LAYOUTS:
         final_layout = "brief" if final_type != "event" else "timeline"
     labels = normalize_topic_labels(topic_labels or card.topic_labels or [])
-    labels = [label for label in labels if label not in {"other", "community"}]
-    if final_type == "event":
-        if "events" not in labels:
-            labels.append("events")
-    else:
-        labels = [label for label in labels if label != "events"]
-    if "official" not in labels:
-        labels.insert(0, "official")
-    cleaned_tags = [clean_text(str(x))[:16] for x in (tags or card.tags or []) if clean_text(str(x))]
-    cleaned_tags = [tag for tag in cleaned_tags if tag not in {"待審核", "去重淘汰", "篩選淘汰"}]
-    if "official" not in [x.lower() for x in cleaned_tags]:
-        cleaned_tags.insert(0, "official")
+    cleaned_tags = _normalize_ai_display_tags(tags or card.tags or [])
+    if not cleaned_tags:
+        cleaned_tags = default_style_for_type(final_type)[1]
     valid_timeline_date = "" if timeline_date == "__INVALID_DATE__" else str(timeline_date or card.timeline_date or "")
     valid_timeline_end_date = "" if timeline_end_date == "__INVALID_DATE__" else str(timeline_end_date or card.timeline_end_date or "")
     try:
@@ -346,7 +363,8 @@ def _publish_official_x_public_fallback(
     card.event_facts = normalize_event_facts(event_facts or card.event_facts) if final_type == "event" else {}
     if final_type != "event":
         _clear_event_region(card)
-    card.topic_labels = labels or ["official"]
+    card.topic_labels = labels
+    card.product_progress_evidence = {}
     card.timeline_date = valid_timeline_date
     card.timeline_end_date = valid_timeline_end_date
     card.number_facts = number_facts or card.number_facts or []
@@ -372,7 +390,7 @@ def _publish_official_x_public_fallback(
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+    card.event_wall = card.card_type == "event"
     card.importance = score_card(card)
 
 
@@ -394,7 +412,7 @@ def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> Non
     )
     if not card.classification_reason:
         card.classification_reason = "AI 未產生可安全公開的完整分類，需管理員確認。"
-    card.topic_labels = ["other"]
+    card.topic_labels = []
     card.tags = ["待審核"]
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or card.title or card.raw_text, 120)
@@ -438,21 +456,7 @@ def _raw_needs_number_facts(raw_text: str) -> bool:
 
 
 def _normalize_ai_topic_labels(card: StoryCard, labels: list[str], card_type: str, ai_title: str) -> list[str]:
-    normalized = normalize_topic_labels(labels)
-    if "other" in normalized and len(normalized) > 1:
-        normalized = [label for label in normalized if label != "other"]
-    if card_type == "event":
-        if "events" not in normalized:
-            normalized.append("events")
-    else:
-        normalized = [label for label in normalized if label != "events"]
-    if "official" in normalized and not is_official_source_card(card):
-        normalized = [label for label in normalized if label != "official"]
-    if is_official_source_card(card) and "official" not in normalized:
-        normalized.append("official")
-    if "community" in normalized and not is_community_pick_source_card(card):
-        normalized = [label for label in normalized if label != "community"]
-    return normalized or ["other"]
+    return normalize_topic_labels(labels)
 
 
 def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
@@ -493,10 +497,10 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
     detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
     reason = clean_text(str(parsed.get("classification_reason") or parsed.get("reasoning_note") or ""))[:360]
+    product_progress_evidence = normalize_product_progress_evidence(parsed.get("product_progress_evidence"))
     plan_status = _valid_plan_status(parsed.get("plan_status"))
     plan_status_reason = clean_text(str(parsed.get("plan_status_reason") or ""))[:360]
-    tags_raw = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
-    tags = [clean_text(str(x))[:16] for x in tags_raw if clean_text(str(x))][:3]
+    tags = _normalize_ai_display_tags(parsed.get("tags"))
     confidence_raw = parsed.get("confidence")
     try:
         confidence = float(confidence_raw)
@@ -507,8 +511,11 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         errors.append("invalid_card_type")
     if layout not in AI_LAYOUTS:
         errors.append("invalid_layout")
-    if not topic_labels:
-        errors.append("missing_topic_labels")
+    if card_type == "product_progress":
+        if card.source_role != "official":
+            errors.append("product_progress_requires_official_source")
+        if not has_complete_product_progress_evidence(product_progress_evidence):
+            errors.append("incomplete_product_progress_evidence")
     if timeline_date == "__INVALID_DATE__" or timeline_end_date == "__INVALID_DATE__":
         errors.append("invalid_timeline_date")
     if confidence < ai_min_confidence():
@@ -573,12 +580,13 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     card.bullets = bullets
     card.card_type = card_type
     card.layout = layout
-    card.tags = tags or card.tags
+    card.tags = tags or default_style_for_type(card_type)[1]
     card.confidence = max(0.0, min(1.0, confidence))
     card.event_facts = event_facts if card_type == "event" else {}
     if card_type != "event":
         _clear_event_region(card)
     card.topic_labels = topic_labels
+    card.product_progress_evidence = product_progress_evidence if card_type == "product_progress" else {}
     card.timeline_date = timeline_date
     card.timeline_end_date = timeline_end_date
     card.number_facts = number_facts
@@ -601,7 +609,7 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    card.event_wall = card.card_type == "event" and "events" in card.topic_labels
+    card.event_wall = card.card_type == "event"
     card.importance = score_card(card)
     return True
 
@@ -637,7 +645,7 @@ def build_ai_pending_card(
         cover_image=cover_image,
         metrics=metrics or {},
         reply_to_id=reply_to_id,
-        topic_labels=["other"],
+        topic_labels=[],
         classified_by="ai",
         ai_model=minimax_model_name(),
         ai_version=AI_CLASSIFICATION_VERSION,
@@ -682,7 +690,11 @@ def normalize_x_accounts(values: Any) -> list[str]:
 
 
 def ensure_required_x_accounts(accounts: list[str]) -> list[str]:
-    return normalize_x_accounts([*(accounts or []), *REQUIRED_X_ACCOUNT_LABELS])
+    return [
+        account
+        for account in normalize_x_accounts([*(accounts or []), *REQUIRED_X_ACCOUNT_LABELS])
+        if not is_retired_source_handle(account)
+    ]
 
 
 def default_x_account_category(account: str) -> str:
@@ -691,15 +703,15 @@ def default_x_account_category(account: str) -> str:
         return "official"
     if normalized in REGIONAL_COMMUNITY_X_HANDLES:
         return "official_community"
-    return "ambassador"
+    return "other"
 
 
 def normalize_x_account_categories(values: Any, accounts: list[str]) -> dict[str, str]:
     rows = values if isinstance(values, dict) else {}
     normalized_rows = {
-        normalize_x_account(key).lower(): str(value or "").strip().lower()
+        normalize_x_account(key).lower(): canonical_source_role(value)
         for key, value in rows.items()
-        if normalize_x_account(key) and str(value or "").strip().lower() in X_ACCOUNT_CATEGORIES
+        if normalize_x_account(key)
     }
     return {
         account: normalized_rows.get(account.lower(), default_x_account_category(account))
@@ -732,9 +744,6 @@ def read_x_source_config() -> dict[str, Any]:
     raw = read_json(path, {}) if path.exists() else {}
     configured = isinstance(raw, dict) and isinstance(raw.get("x_accounts"), list)
     accounts = ensure_required_x_accounts(normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS))
-    pokemon_accounts = normalize_x_accounts(raw.get("pokemon_accounts") if isinstance(raw, dict) else [])
-    account_keys = {x.lower() for x in accounts}
-    pokemon_accounts = [x for x in pokemon_accounts if x.lower() in account_keys]
     account_categories = normalize_x_account_categories(
         raw.get("account_categories") if isinstance(raw, dict) else {},
         accounts,
@@ -748,7 +757,6 @@ def read_x_source_config() -> dict[str, Any]:
         "x_accounts": accounts,
         "account_categories": account_categories,
         "account_projects": account_projects,
-        "pokemon_accounts": pokemon_accounts,
         "default_x_accounts": list(DEFAULT_ACCOUNTS),
         "required_x_accounts": list(REQUIRED_X_ACCOUNT_LABELS),
         "using_default": not configured,
@@ -759,21 +767,16 @@ def read_x_source_config() -> dict[str, Any]:
 
 def write_x_source_config(
     accounts: list[str],
-    pokemon_accounts: list[str] | None = None,
     account_categories: dict[str, str] | None = None,
     account_projects: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     normalized = ensure_required_x_accounts(normalize_x_accounts(accounts))
-    pokemon_normalized = normalize_x_accounts(pokemon_accounts if pokemon_accounts is not None else [])
-    account_keys = {x.lower() for x in normalized}
-    pokemon_normalized = [x for x in pokemon_normalized if x.lower() in account_keys]
     normalized_categories = normalize_x_account_categories(account_categories, normalized)
     normalized_projects = normalize_x_account_projects(account_projects, normalized)
     payload = {
         "x_accounts": normalized,
         "account_categories": normalized_categories,
         "account_projects": normalized_projects,
-        "pokemon_accounts": pokemon_normalized,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     path = x_source_config_path()
@@ -783,12 +786,36 @@ def write_x_source_config(
     return result
 
 
+def migrate_x_source_config() -> dict[str, Any]:
+    """Persist the canonical source-role schema and remove retired sources."""
+    path = x_source_config_path()
+    raw = read_json(path, {}) if path.exists() else {}
+    current = read_x_source_config()
+    raw_accounts = normalize_x_accounts(raw.get("x_accounts") if isinstance(raw, dict) else [])
+    raw_categories = raw.get("account_categories") if isinstance(raw, dict) else {}
+    raw_projects = raw.get("account_projects") if isinstance(raw, dict) else {}
+    needs_write = bool(
+        not isinstance(raw, dict)
+        or "pokemon_accounts" in raw
+        or any(is_retired_source_handle(account) for account in raw_accounts)
+        or any(str(value or "").strip().lower() == "ambassador" for value in (raw_categories or {}).values())
+        or raw_accounts != list(current.get("x_accounts") or [])
+        or raw_categories != current.get("account_categories")
+        or raw_projects != current.get("account_projects")
+    )
+    if not needs_write:
+        return current
+    migrated = write_x_source_config(
+        list(current.get("x_accounts") or []),
+        account_categories=dict(current.get("account_categories") or {}),
+        account_projects=dict(current.get("account_projects") or {}),
+    )
+    migrated["migrated"] = True
+    return migrated
+
+
 def resolve_tracked_x_accounts() -> list[str]:
-    return list(read_x_source_config().get("x_accounts") or [])
-
-
-def resolve_pokemon_x_accounts() -> list[str]:
-    return list(read_x_source_config().get("pokemon_accounts") or [])
+    return list(migrate_x_source_config().get("x_accounts") or [])
 
 
 def update_x_source_accounts(
@@ -801,7 +828,6 @@ def update_x_source_accounts(
     op = str(action or "").strip().lower()
     source_config = read_x_source_config()
     current = list(source_config.get("x_accounts") or [])
-    pokemon_current = list(source_config.get("pokemon_accounts") or [])
     category_current = dict(source_config.get("account_categories") or {})
     project_current = dict(source_config.get("account_projects") or {})
     changed = False
@@ -810,6 +836,8 @@ def update_x_source_accounts(
     if op == "add":
         if not normalized_account:
             raise ValueError("invalid X username")
+        if is_retired_source_handle(normalized_account):
+            raise ValueError("retired X source cannot be added")
         if normalized_account.lower() not in {x.lower() for x in current}:
             current.append(normalized_account)
             changed = True
@@ -832,23 +860,12 @@ def update_x_source_accounts(
             }
             changed = changed or len(next_projects) != len(project_current)
             project_current = next_projects
-    elif op in {"add_pokemon", "add-pokemon", "pokemon_add"}:
-        if not normalized_account:
-            raise ValueError("invalid X username")
-        if normalized_account.lower() not in {x.lower() for x in current}:
-            current.append(normalized_account)
-            changed = True
-        if normalized_account.lower() not in {x.lower() for x in pokemon_current}:
-            pokemon_current.append(normalized_account)
-            changed = True
     elif op in {"remove", "delete", "cancel"}:
         if not normalized_account:
             raise ValueError("invalid X username")
         next_rows = [x for x in current if x.lower() != normalized_account.lower()]
-        next_pokemon_rows = [x for x in pokemon_current if x.lower() != normalized_account.lower()]
-        changed = len(next_rows) != len(current) or len(next_pokemon_rows) != len(pokemon_current)
+        changed = len(next_rows) != len(current)
         current = next_rows
-        pokemon_current = next_pokemon_rows
         category_current = {
             key: value
             for key, value in category_current.items()
@@ -859,23 +876,15 @@ def update_x_source_accounts(
             for key, value in project_current.items()
             if normalize_x_account(key).lower() != normalized_account.lower()
         }
-    elif op in {"remove_pokemon", "remove-pokemon", "pokemon_remove"}:
-        if not normalized_account:
-            raise ValueError("invalid X username")
-        next_pokemon_rows = [x for x in pokemon_current if x.lower() != normalized_account.lower()]
-        changed = len(next_pokemon_rows) != len(pokemon_current)
-        pokemon_current = next_pokemon_rows
     elif op == "replace":
-        current = normalize_x_accounts(accounts or [])
-        current_keys = {x.lower() for x in current}
-        pokemon_current = [x for x in pokemon_current if x.lower() in current_keys]
+        current = [x for x in normalize_x_accounts(accounts or []) if not is_retired_source_handle(x)]
         changed = True
     elif op in {"set_category", "set-category", "categorize"}:
         if not normalized_account or normalized_account.lower() not in {x.lower() for x in current}:
             raise ValueError("tracked X username is required")
         normalized_category = str(category or "").strip().lower()
         if normalized_category not in X_ACCOUNT_CATEGORIES:
-            raise ValueError("category must be official, official_community, or ambassador")
+            raise ValueError("category must be official, official_community, or other")
         current_account = next(x for x in current if x.lower() == normalized_account.lower())
         changed = category_current.get(current_account) != normalized_category
         category_current[current_account] = normalized_category
@@ -908,7 +917,6 @@ def update_x_source_accounts(
 
     config = write_x_source_config(
         current,
-        pokemon_accounts=pokemon_current,
         account_categories=category_current,
         account_projects=project_current,
     )
@@ -1193,10 +1201,11 @@ def apply_minimax_story_refine(
         prompt = (
             "你是TCG社群編輯與分類員。請先完整讀懂內容，再一次完成語意分類、日期解析、數字解讀與公開文案。"
             "輸出必須是單一 JSON 物件，必須包含以下所有欄位："
-            "{\"title\":\"\",\"summary\":\"\",\"bullets\":[\"\",\"\",\"\"],\"card_type\":\"event|feature|announcement|market|report|insight\","
+            "{\"title\":\"\",\"summary\":\"\",\"bullets\":[\"\",\"\",\"\"],\"card_type\":\"event|product_progress|announcement|market|report|guide|insight\","
             "\"layout\":\"poster|brief|data|timeline\",\"confidence\":0.0,\"tags\":[\"\"],"
             "\"event_facts\":{\"participation\":\"\",\"audience\":\"\",\"location\":\"\",\"schedule\":\"\"},"
-            "\"topic_labels\":[\"events|official|sbt|pokemon|collectibles|alpha|guides|community|other\"],"
+            "\"topic_labels\":[\"collectibles|sbt\"],"
+            "\"product_progress_evidence\":{\"product_or_capability\":\"\",\"state_change\":\"\",\"user_or_platform_impact\":\"\",\"source_evidence\":\"\"},"
             "\"timeline_date\":\"YYYY-MM-DD或空字串\",\"timeline_end_date\":\"YYYY-MM-DD或空字串\","
             "\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\","
             "\"number_facts\":[{\"text\":\"原文數字\",\"meaning\":\"這個數字代表什麼\"}],"
@@ -1205,14 +1214,13 @@ def apply_minimax_story_refine(
             "1) 不可逐句複製原文；"
             "2) summary 要用第三人稱重述；"
             "3) bullets 每條都要是可行動或可追蹤的資訊；"
-            "4) card_type 只能是 event/feature/announcement/market/report/insight；"
+            "4) card_type 只能是 event/product_progress/announcement/market/report/guide/insight；"
             "5) 必須用語意判斷分類，不可只用關鍵字；"
             "6) 只有含明確活動訊號（時間/地點/報名/參與方式）才可標為 event；"
-            "7) 產品進度、版本更新、開放計畫優先標為 feature 或 announcement，不算 event；"
+            "7) product_progress 只給官方來源，而且必須同時回答四問：明確產品或能力、相較之前的狀態改變、使用者或平台影響、原文證據；任一不足就標 announcement；"
             "8) 單句互動、祝賀、表情、聊天回覆通常是 insight；"
-            "9) topic_labels 可以多選，允許同時屬於 events 與 sbt（例如活動獎勵包含 SBT）；"
-            "9a) other 只能單獨出現；如果已經有 official/pokemon/sbt/events 等有效分區，不可同時輸出 other；"
-            "9b) events 分區只在 card_type=event 時使用；一般商品發售、預購、抽選銷售、結果公布、店鋪公告不可只因為有日期就加 events；"
+            "9) topic_labels 是可空的陣列，只能使用 collectibles 與 sbt；來源身分、活動、教學、產品進度都不是 topic；"
+            "9c) tags 只能是內容關鍵詞，不可填 official/community/event/product_progress/alpha/pokemon/collectibles/sbt/guide/other 等分類詞；"
             "10) 繁體中文，不可捏造；"
             "11) 禁止使用『核心訊號/關鍵數字/決策建議/判讀建議/分析主題/文中數據/使用方式』這種模板詞；"
             "12) 若出現數字，必須說明它代表什麼（單位/情境/用途），不能只列數字；"
@@ -1224,15 +1232,15 @@ def apply_minimax_story_refine(
             "18) 不可使用 Markdown code fence（```）；"
             "19) 長度限制：title<=40字、summary<=150字、每條bullet<=34字；"
             "20) 若使用者回饋記憶與原始推斷衝突，以使用者回饋記憶優先；"
-            "21) pokemon 只放寶可夢/Pokemon/PoGo/PTCG 或明確寶可夢角色與卡牌市場，不能只因為出現 TCG、pack、卡包、PSA 就標 pokemon；"
-            "22) guides 只放教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊；一般心得、行情、公告、活動不能標 guides；"
-            "23) community 只給 X/Twitter 原始內容含 #renaiss 或 @renaissxyz 的非官方社群貼文；不要把官方帳號或 Discord 貼文標 community；"
-            "24) official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord 公告來源；Pokemon Center、零售商、媒體或一般情報帳號不算 official；不要因為內文提到 @renaissxyz 就標 official；"
-            f"24b) 以下是官方產品帳號的固定身分：{official_product_accounts}。必須依這份對照理解來源，不可從帳號尾碼猜國家或地區；"
+            "21) 寶可夢/Pokemon/PTCG 不是獨立 topic；若內容屬收藏卡或收藏品，可標 collectibles；"
+            "22) 教學、攻略、操作步驟、參與流程、工具用法、集運/查價/套利等可照做資訊使用 card_type=guide；"
+            "23) 來源身分由系統的 source_role 決定，不可輸出 official/community topic；"
+            "24) 只有系統已標為 source_role=official 的來源可判為 product_progress；一般情報、媒體、零售商與 official_community/other 來源不可使用 product_progress；"
+            f"24b) 以下是目前已知官方帳號的產品身分對照：{official_product_accounts}。這份對照只協助理解產品線，來源身分仍以系統 source_role 為準，不可從帳號尾碼猜國家或地區；"
             f"24a) {regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X；除非原文有 #renaiss 或 @renaissxyz，否則不要標 community，也永遠不要因帳號名標 official；"
-            "25) 若不符合任何分區，使用 other，other 代表無/待人工分類；"
-            "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
-            "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；官方來源要加 official，限量/發售/alpha 測試相關可加 alpha；"
+            "25) 若不符合 collectibles 或 sbt，topic_labels 輸出空陣列；"
+            "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，若沒有四問完整證據，card_type 用 announcement；"
+            "若原文出現 SBT/badge/unlock/claim 才加 sbt；寶可夢卡牌內容可加 collectibles；"
             "這類有發售日期但沒有 join/register/直播/聚會參與流程時，不要標 event；"
             "26) 活動貼文的 title 必須優先抓活動名稱、參與方式、獎勵或截止條件；不要把主辦/主持身份（例如 Ambassador、hosted by）當成主題；"
             "27) 活動摘要要保留關鍵獎勵、名額、報名限制與操作提醒，例如 Top 100、SBT、booster box、merch、chip bonus、late registration；"
@@ -1244,16 +1252,16 @@ def apply_minimax_story_refine(
             "33) 相對日期（例如 This Friday）必須以發布時間推算成 YYYY-MM-DD；無法確認就留空；"
             "33a) 發售日、開賣日、claim/unlock 日期也要填 timeline_date；欄位只輸出 YYYY-MM-DD，不要輸出時間或時區；"
             "34) 不可把 t.co 或其他短網址尾碼、Discord ID、tweet id、雜湊片段當成 number_facts；"
-            "35) classification_reason 要說明為什麼是該 card_type 與 topic_labels；"
+            "35) classification_reason 要說明為什麼是該 card_type 與可選的 topic_labels；product_progress_evidence 四欄必須各自引用或緊貼原文證據；"
             "36) number_facts.text 必須是原文中實際出現的數字字串；只收價格、數量、名額、比例、成交價、積分門檻等有解讀價值的數字，不要放發布日期、發售日、推算日期、時間、時區或純年份；"
             "37) 原文沒有 Discord、直播、線上、報名連結、獎勵或限制時，不可自行補這些資訊；"
             "38) detail_lines 只列原文有根據的活動名稱、時間、參與方式、獎勵、限制與下一步；缺少的項目直接省略，不要寫未公布/未提供；"
             "39) number_facts 每項都必須有 meaning，說明該數字在原文的對象與意義；"
-            f"40) 規劃狀態以 {classification_date} 為判斷日；alpha 只是主題標籤，不等於未來；"
+            f"40) 規劃狀態以 {classification_date} 為判斷日；plan_status 不會單獨使貼文成為 product_progress；"
             "upcoming 只給判斷日之後尚未發生的明確計畫，in_progress 給已開始且仍持續的測試/開放/開發，"
             "completed 給已上線、售罄、完售、認領完畢、已結束，或原文所述單日發售/啟動日期已過的項目，"
             "cancelled 給明確取消或終止，not_plan 給教學、回顧、一般資訊與沒有後續行動的公告，證據不足才用 needs_review；"
-            "41) plan_status_reason 必須引用原文中的狀態訊號或日期，不可只說因為有 alpha 標籤；"
+            "41) plan_status_reason 必須引用原文中的狀態訊號或日期，不可只說因為是產品進度；"
             "42) 整份 JSON 請控制在約 1500 字元內。\n\n"
             + (f"[使用者回饋記憶]\n{feedback_context}\n\n" if feedback_context else "")
             + f"來源帳號: @{card.account}\n"
@@ -1269,7 +1277,7 @@ def apply_minimax_story_refine(
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,product_progress_evidence,"
                     "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
                     "detail_summary 與 detail_lines 必須重新整理詳情，不可沿用模板句。"
@@ -1277,11 +1285,11 @@ def apply_minimax_story_refine(
                     "活動標題要抓活動名稱與主要獎勵/參與條件，不要把 Ambassador、hosted by 這種主辦身份當主題。"
                     "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
                     "number_facts.text 只能放原文實際出現的價格、數量、名額、比例、成交價、積分門檻，不要放日期/時間/時區/純年份；原文沒有 Discord、直播、線上或獎勵時不可補。"
-                    "official 只給 Renaiss 官方來源；other 只能單獨出現；events 只在 card_type=event 時使用。"
+                    "topic_labels 只能是 collectibles/sbt 或空陣列；來源身分不是 topic。"
                     f"官方產品帳號固定身分：{official_product_accounts}。不可從帳號尾碼猜國家或地區。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
-                    f"規劃狀態以 {classification_date} 為判斷日；alpha 不是未來狀態。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
+                    f"規劃狀態以 {classification_date} 為判斷日；product_progress 必須是官方來源且四問證據完整。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
                     "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
                     "不可捏造，需依據提供內容。\n\n"
                     f"帳號:@{card.account}\n"
@@ -1314,16 +1322,15 @@ def apply_minimax_story_refine(
                 strict_retry_prompt = (
                     "上一版 JSON 未通過資料驗證，原因："
                     f"{retry_reason}。請重新輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,"
+                    "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,product_progress_evidence,"
                     "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
-                    "topic_labels 必須是陣列，event 類活動至少包含 events；官方帳號 @renaissxyz 至少包含 official。"
-                    "other 只能單獨出現；events 只在 card_type=event 時使用；official 只給 Renaiss 官方 X 或 Renaiss 官方 Discord。"
+                    "topic_labels 必須是陣列，只能包含 collectibles/sbt，也可以是空陣列。"
                     "Pokemon Center、零售商、媒體或一般情報帳號不算 official。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
-                    f"規劃狀態以 {classification_date} 為判斷日；alpha 不是未來狀態。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
+                    f"規劃狀態以 {classification_date} 為判斷日；product_progress 必須是官方來源且四問證據完整。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
                     "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
-                    "若原文出現 Pikachu/Pokemon/Cosplay Pikachu 才加 pokemon；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
+                    "寶可夢卡牌可加 collectibles；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
                     "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"
                     "layout 只能是 poster/brief/data/timeline，不可輸出 event_poster 等 template 名稱。"
                     "只能依原文，不可補 Discord、直播、線上、報名連結、獎勵或限制；"
@@ -1369,8 +1376,9 @@ def apply_minimax_story_refine(
 
 
 def plan_status_review_due(card: StoryCard, *, now: datetime | None = None) -> bool:
-    account = str(card.account or "").strip().lower().lstrip("@")
-    if account not in PRODUCT_PROGRESS_X_HANDLES:
+    if str(card.card_type or "").strip().lower() != "product_progress":
+        return False
+    if str(card.source_role or "").strip().lower() != "official":
         return False
     status = _valid_plan_status(card.plan_status)
     if card.plan_ai_version != PLAN_STATUS_CLASSIFICATION_VERSION or not status or status == "needs_review":
@@ -1488,11 +1496,11 @@ def apply_minimax_plan_status_review(
             "請輸出單一合法 JSON："
             "{\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\"}。"
             f"判斷基準日：{as_of}。"
-            "規則：主帳號貼文與 alpha 都不必然是產品進度；upcoming 只給基準日之後尚未發生的明確產品計畫；"
+            "規則：官方來源與 plan_status 都不必然代表產品進度；upcoming 只給基準日之後尚未發生的明確產品計畫；"
             "in_progress 給已開始且原文證明仍持續的測試、開放或開發；"
             "completed 給已上線、售罄、完售、認領完畢、已結束，或原文所述單日發售/啟動日期已經過去的項目；"
             "cancelled 只給明確取消或終止；not_plan 給教學、回顧、一般資訊及沒有剩餘行動的公告；"
-            "只有原文與日期仍不足以判斷時才用 needs_review。理由必須引用原文狀態訊號或日期，不可只說有 alpha 標籤。\n\n"
+            "只有原文與日期仍不足以判斷時才用 needs_review。理由必須引用原文狀態訊號或日期。\n\n"
             f"來源帳號：@{card.account}\n"
             f"來源帳號固定身分：{account_role}\n"
             f"發布時間：{card.published_at}\n"
@@ -1595,8 +1603,8 @@ def aggregate_digest(
         + "\n".join(f"- {x['headline']}" for x in sections.get("official_updates", [])[:4])
         + "\n\n[upcoming_events]\n"
         + "\n".join(f"- {x['headline']}" for x in sections.get("upcoming_events", [])[:4])
-        + "\n\n[upcoming_features]\n"
-        + "\n".join(f"- {x['headline']}" for x in sections.get("upcoming_features", [])[:4])
+        + "\n\n[product_progress]\n"
+        + "\n".join(f"- {x['headline']}" for x in sections.get("product_progress", [])[:4])
     )
     try:
         raw = minimax_chat(prompt, api_key)
@@ -2498,7 +2506,7 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         article_fetch_status=next((c.article_fetch_status for c in rows if c.article_fetch_status), ""),
         metrics=_sum_metrics(rows),
         reply_to_id=str(first.reply_to_id or ""),
-        topic_labels=["other"],
+        topic_labels=[],
         classified_by="ai",
         ai_model=last.ai_model or first.ai_model or minimax_model_name(),
         ai_version=AI_CLASSIFICATION_VERSION,

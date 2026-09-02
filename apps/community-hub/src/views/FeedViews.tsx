@@ -11,7 +11,7 @@ import { ViewHeader } from "@/components/AppShell";
 import { collapseProductMilestones, eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isProductProgressSource, isRecentOfficialUpdate, isUpcomingEventWithinDisplayWindow, isVisibleProductProgress, planStatus, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
-import { indexPartnershipNames, isIndexPartnershipUpdate } from "@/lib/partnerships";
+import { isIndexPartnershipUpdate } from "@/lib/partnerships";
 import { projectIdForCard, type AccountProjectMap, type ProjectId } from "@/lib/projects";
 import { regionIdForAccount, regionLabel, regionLabelForAccount, type EventRegionId } from "@/lib/regions";
 import type { FeedCard, HubView, IntelFeed, Language } from "@/types";
@@ -70,7 +70,7 @@ function selectCommunityCards(cards: FeedCard[], accountProjects: AccountProject
 }
 
 function selectOfficialCards(cards: FeedCard[], accountProjects: AccountProjectMap): FeedCard[] {
-  return cards.filter((card) => Boolean(projectIdForCard(card, accountProjects))).filter((card) => !isEvent(card, accountProjects));
+  return cards.filter((card) => isOfficial(card, accountProjects)).filter((card) => !isEvent(card, accountProjects));
 }
 
 export function CommunityView(props: SharedViewProps) {
@@ -144,28 +144,27 @@ interface FutureViewProps extends SharedViewProps {
 
 export function FutureView(props: FutureViewProps) {
   const { accountProjects, cards, lang, loading, onNavigate, onOpenArticle, onRefresh, translationPending } = props;
-  type ProgressFilter = "partnership" | "upcoming" | "in_progress" | "completed";
+  type ProgressFilter = "upcoming" | "in_progress" | "completed";
   const [filter, setFilter] = useState<ProgressFilter>("in_progress");
   const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
   const productSourceCards = useMemo(() => cards
     .filter((card) => isProductProgressSource(card, accountProjects)), [accountProjects, cards]);
+  const productProgressCards = useMemo(() => productSourceCards
+    .filter((card) => String(card.card_type ?? "").toLowerCase() === "product_progress"), [productSourceCards]);
   const recentProductUpdates = useMemo(() => productSourceCards
     .filter((card) => isRecentOfficialUpdate(card)), [productSourceCards]);
-  const projectCards = useMemo(() => productSourceCards.filter((card) => (
+  const projectCards = useMemo(() => productProgressCards.filter((card) => (
     projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
-  )), [accountProjects, productSourceCards, projectFilter]);
+  )), [accountProjects, productProgressCards, projectFilter]);
   const milestoneCards = useMemo(() => collapseProductMilestones(projectCards.filter((card) => isVisibleProductProgress(card))), [projectCards]);
   const recentProjectCards = useMemo(() => recentProductUpdates.filter((card) => (
     projectFilter === "all" || projectIdForCard(card, accountProjects) === projectFilter
   )), [accountProjects, projectFilter, recentProductUpdates]);
-  const partnershipCards = useMemo(() => projectFilter === "index" ? recentProjectCards
-    .filter(isIndexPartnershipUpdate)
-    .sort((left, right) => new Date(right.published_at || 0).valueOf() - new Date(left.published_at || 0).valueOf()) : [], [projectFilter, recentProjectCards]);
-  const projectCounts = useMemo(() => recentProductUpdates.reduce((counts, card) => {
+  const projectCounts = useMemo(() => productProgressCards.reduce((counts, card) => {
     const projectId = projectIdForCard(card, accountProjects);
     if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
     return counts;
-  }, new Map<ProjectId, number>()), [accountProjects, recentProductUpdates]);
+  }, new Map<ProjectId, number>()), [accountProjects, productProgressCards]);
   const statusCounts = useMemo(() => milestoneCards.reduce((counts, card) => {
     const status = planStatus(card);
     if (status === "upcoming" || status === "in_progress" || status === "completed") counts.set(status, (counts.get(status) ?? 0) + 1);
@@ -174,23 +173,22 @@ export function FutureView(props: FutureViewProps) {
   const filters = [["upcoming", "filter.planUpcoming"], ["in_progress", "filter.planActive"], ["completed", "filter.planCompleted"]] as const;
   const availableFilters = useMemo<Array<readonly [ProgressFilter, string, number]>>(() => {
     const rows: Array<readonly [ProgressFilter, string, number]> = [];
-    if (projectFilter === "index" && partnershipCards.length) rows.push(["partnership", "future.partnership", partnershipCards.length]);
     filters.forEach(([value, label]) => {
       const count = statusCounts.get(value) ?? 0;
       if (count > 0) rows.push([value, label, count]);
     });
     return rows;
-  }, [partnershipCards.length, projectFilter, statusCounts]);
+  }, [statusCounts]);
   useEffect(() => {
     if (availableFilters.length && !availableFilters.some(([value]) => value === filter)) setFilter(availableFilters[0][0]);
   }, [availableFilters, filter]);
-  const rows = useMemo(() => filter === "partnership" ? partnershipCards : milestoneCards
+  const rows = useMemo(() => milestoneCards
     .filter((card) => planStatus(card) === filter)
     .sort((left, right) => {
       const leftDate = new Date(left.timeline_date || left.published_at || 0).valueOf();
       const rightDate = new Date(right.timeline_date || right.published_at || 0).valueOf();
       return filter === "upcoming" ? leftDate - rightDate : rightDate - leftDate;
-    }), [filter, milestoneCards, partnershipCards]);
+    }), [filter, milestoneCards]);
   const recentOfficialUpdates = useMemo(() => projectFilter === "all" ? [] : recentProjectCards
     .filter((card) => !isVisibleProductProgress(card))
     .filter((card) => !isIndexPartnershipUpdate(card))
@@ -205,16 +203,11 @@ export function FutureView(props: FutureViewProps) {
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="PROGRESS" title={text(lang, "future.title")} lead={text(lang, "future.lead")} action={<RefreshButton disabled={loading} lang={lang} onRefresh={onRefresh} />} />
     <div className="community-hub-progress-controls">
-      <ProjectFilterNav active={projectFilter} allCount={recentProductUpdates.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
+      <ProjectFilterNav active={projectFilter} allCount={productProgressCards.length} allLabel={text(lang, "filter.allOfficialCategories")} ariaLabel={text(lang, "future.projectFilter")} counts={projectCounts} lang={lang} onChange={setProjectFilter} />
       <p className="community-hub-progress-count-guide">{text(lang, "future.countGuide")}</p>
       {availableFilters.length ? <div className="community-hub-filter-row community-hub-filter-row-wide community-hub-progress-status-filter" aria-label={text(lang, "future.statusFilter")}>{availableFilters.map(([value, label, count]) => <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}><span>{text(lang, label)}</span><span>{count}</span></button>)}</div> : null}
-      {filter === "partnership" ? <p className="community-hub-progress-partnership-guide"><Icon name="handshake" />{text(lang, "future.partnershipLead")}</p> : null}
     </div>
-    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => {
-      const partnershipNames = filter === "partnership" ? indexPartnershipNames(card) : [];
-      const partnershipLabel = [text(lang, "future.partnership"), ...partnershipNames].join(" · ");
-      return <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" || filter === "partnership" ? "active" : "past"} statusLabel={filter === "partnership" ? partnershipLabel : text(lang, `filter.plan.${filter}`)} />;
-    }) : <EmptyState title={text(lang, translationPending ? "empty.translating" : "future.noMilestones")} body={!translationPending ? text(lang, emptyBodyKey) : undefined} action={!translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
+    <div className="community-hub-content-list">{pageRows.length ? pageRows.map((card) => <ContentCard key={card.url ?? `${card.title}-${card.published_at}`} card={card} lang={lang} onOpenArticle={onOpenArticle} sourceLabel={text(lang, "card.official")} status={filter === "upcoming" ? "upcoming" : filter === "in_progress" ? "active" : "past"} statusLabel={text(lang, `filter.plan.${filter}`)} />) : <EmptyState title={text(lang, translationPending ? "empty.translating" : "future.noMilestones")} body={!translationPending ? text(lang, emptyBodyKey) : undefined} action={!translationPending && hasOfficialUpdates && !showRecentOfficialUpdates ? openOfficialAction : undefined} />}</div>
     <Pagination lang={lang} page={page} pageCount={pageCount} onPageChange={setPage} />
     {showRecentOfficialUpdates ? <section className="community-hub-progress-updates" aria-labelledby="community-hub-progress-updates-title">
       <div className="community-hub-progress-updates-head">
@@ -254,7 +247,7 @@ export function MediaView({ accountProjects, cards, lang, loading, onOpenArticle
   const [filter, setFilter] = useState<"all" | "official" | "market">("all");
   const rows = useMemo(() => cards.filter((card) => isMedia(card, accountProjects)).filter((card) => {
     if (filter === "official") return isOfficial(card, accountProjects);
-    if (filter === "market") return ["market", "trend", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => String(topic).toLowerCase() === "collectibles");
+    if (filter === "market") return ["market", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => String(topic).toLowerCase() === "collectibles");
     return true;
   }), [accountProjects, cards, filter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);

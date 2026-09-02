@@ -11,16 +11,14 @@ import {
 import { formatUpdate } from "@/lib/feed";
 import type { FeedCard } from "@/types";
 
-const typeLabels: Record<string, string> = { announcement: "公告", event: "活動", feature: "功能／專題", insight: "一般資訊", market: "市場", report: "報告" };
-const topicLabels: Record<string, string> = { alpha: "產品進度", collectibles: "收藏／TCG", community: "社群動態", events: "活動", guides: "新手教學", official: "官方動態", other: "其他", sbt: "SBT" };
+const typeLabels: Record<string, string> = { announcement: "公告", event: "活動", guide: "教學／指南", insight: "一般資訊", market: "市場", product_progress: "產品進度", report: "報告" };
+const topicLabels: Record<string, string> = { collectibles: "收藏／TCG", sbt: "SBT" };
 const regions = [["unknown", "待確認"], ["global", "全球／線上"], ["tw", "台灣"], ["kr", "韓國"], ["my", "馬來西亞"], ["vn", "越南"], ["th", "泰國"], ["multi_region", "跨地區"]] as const;
 const plans = [["needs_review", "待確認"], ["upcoming", "即將推出"], ["in_progress", "進行中"], ["completed", "已完成"], ["cancelled", "已取消"], ["not_plan", "非產品規劃"]] as const;
 
 function TopicPicker({ draft, onChange }: { draft: CardEditorialDraft; onChange: (next: CardEditorialDraft) => void }) {
   const toggle = (topic: string) => {
-    if (topic === "other") return onChange({ ...draft, topicLabels: ["other"] });
     const selected = new Set(draft.topicLabels);
-    selected.delete("other");
     if (selected.has(topic)) selected.delete(topic); else selected.add(topic);
     onChange({ ...draft, topicLabels: [...selected] });
   };
@@ -32,6 +30,7 @@ export function CardAdminEditor({ card, onChanged, onClose, sbtFocus = false }: 
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const availableCardTypes = card.source_role === "official" ? CARD_TYPES : CARD_TYPES.filter((type) => type !== "product_progress");
   useEffect(() => setDraft(cardDraft(card)), [card]);
 
   const save = async () => {
@@ -58,14 +57,13 @@ export function CardAdminEditor({ card, onChanged, onClose, sbtFocus = false }: 
     <div className="community-hub-admin-editor-head"><div><span>來源發文時間</span><strong>{formatUpdate(card.published_at, "zh-Hant")}</strong></div><button type="button" className="community-hub-icon-button" onClick={onClose} aria-label="關閉編輯"><Icon name="x" /></button></div>
     {!sbtFocus ? <>
       <div className="community-hub-admin-form-grid">
-        <label><span>卡片類型</span><select value={draft.cardType} onChange={(event) => setDraft({ ...draft, cardType: event.target.value })}>{CARD_TYPES.map((type) => <option key={type} value={type}>{typeLabels[type] ?? type}</option>)}</select></label>
+        <label><span>卡片類型</span><select value={draft.cardType} onChange={(event) => setDraft({ ...draft, cardType: event.target.value })}>{availableCardTypes.map((type) => <option key={type} value={type}>{typeLabels[type] ?? type}</option>)}</select></label>
         <label><span>內容開始日</span><input type="date" value={draft.timelineDate} onChange={(event) => setDraft({ ...draft, timelineDate: event.target.value })} /></label>
         <label><span>內容結束日</span><input type="date" value={draft.timelineEndDate} onChange={(event) => setDraft({ ...draft, timelineEndDate: event.target.value })} /></label>
-        <label><span>活動地區</span><select value={draft.eventRegion} onChange={(event) => setDraft({ ...draft, eventRegion: event.target.value })}>{regions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label><span>產品進度</span><select value={draft.planStatus} onChange={(event) => setDraft({ ...draft, planStatus: event.target.value as CardEditorialDraft["planStatus"] })}>{plans.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label className="community-hub-admin-toggle"><input type="checkbox" checked={draft.eventWall} onChange={(event) => setDraft({ ...draft, eventWall: event.target.checked })} /><span>顯示在活動時間軸</span></label>
+        {draft.cardType === "event" ? <label><span>活動地區</span><select value={draft.eventRegion} onChange={(event) => setDraft({ ...draft, eventRegion: event.target.value })}>{regions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label> : null}
+        {draft.cardType === "product_progress" ? <label><span>產品進度狀態</span><select value={draft.planStatus} onChange={(event) => setDraft({ ...draft, planStatus: event.target.value as CardEditorialDraft["planStatus"] })}>{plans.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label> : null}
       </div>
-      <fieldset><legend>顯示分區</legend><TopicPicker draft={draft} onChange={setDraft} /></fieldset>
+      <fieldset><legend>主題（可留空）</legend><TopicPicker draft={draft} onChange={setDraft} /></fieldset>
     </> : <div className="community-hub-admin-form-grid"><label><span>內容開始日</span><input type="date" value={draft.timelineDate} onChange={(event) => setDraft({ ...draft, timelineDate: event.target.value })} /></label><label><span>內容結束日</span><input type="date" value={draft.timelineEndDate} onChange={(event) => setDraft({ ...draft, timelineEndDate: event.target.value })} /></label></div>}
     <div className="community-hub-admin-form-grid is-wide">
       <label><span>SBT 名稱（多個以逗號分隔）</span><input value={draft.sbtNames} onChange={(event) => setDraft({ ...draft, sbtNames: event.target.value })} /></label>

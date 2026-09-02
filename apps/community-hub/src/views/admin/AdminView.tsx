@@ -8,12 +8,12 @@ import { PROJECTS, projectIdForAccount, projectLabel, type ProjectId } from "@/l
 import type { FeedCard, Language } from "@/types";
 
 type AdminSection = "status" | "review" | "sources" | "history";
-type AccountCategory = "official" | "official_community" | "ambassador";
+type AccountCategory = "official" | "official_community" | "other";
 
 const ACCOUNT_CATEGORY_LABELS: Record<AccountCategory, string> = {
   official: "官方",
-  official_community: "官方社區",
-  ambassador: "大使",
+  official_community: "官方社群",
+  other: "其他來源",
 };
 
 const OFFICIAL_COMMUNITY_ACCOUNTS = new Set(["renaisskrcm", "renaissmycm", "renaisstwcm", "renaiss_vn", "renaiss_th"]);
@@ -102,7 +102,7 @@ function ReviewSection({ cards }: { cards: FeedCard[] }) {
 function SourcesSection() {
   const { error, load, status } = useAdminStatus();
   const [account, setAccount] = useState("");
-  const [newCategory, setNewCategory] = useState<AccountCategory>("ambassador");
+  const [newCategory, setNewCategory] = useState<AccountCategory>("other");
   const [newProject, setNewProject] = useState<ProjectId>("tcg");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
@@ -114,12 +114,12 @@ function SourcesSection() {
     const normalized = value.toLowerCase();
     return categories[value]
       ?? categories[normalized]
-      ?? (normalized === "renaissxyz" ? "official" : OFFICIAL_COMMUNITY_ACCOUNTS.has(normalized) ? "official_community" : "ambassador");
+      ?? (normalized === "renaissxyz" ? "official" : OFFICIAL_COMMUNITY_ACCOUNTS.has(normalized) ? "official_community" : "other");
   };
   const groupedAccounts = useMemo(() => ({
     official: accounts.filter((value) => accountCategory(value) === "official"),
     official_community: accounts.filter((value) => accountCategory(value) === "official_community"),
-    ambassador: accounts.filter((value) => accountCategory(value) === "ambassador"),
+    other: accounts.filter((value) => accountCategory(value) === "other"),
   }), [accounts, categories]);
   const mutate = async (action: "add" | "remove" | "set_category" | "set_project", value: string, category?: AccountCategory, projectId?: ProjectId) => {
     setBusy(`${action}:${value}`);
@@ -127,7 +127,7 @@ function SourcesSection() {
     try {
       await updateTrackedAccount(action, value, category, projectId);
       setAccount("");
-      setMessage(action === "add" ? "已加入追蹤帳號；下次掃描會開始收錄。" : action === "remove" ? "已停止追蹤；既有內容不會立即刪除。" : action === "set_project" && projectId ? `已將 @${value.replace(/^@+/, "")} 分到「${projectLabel(projectId, "zh-Hant")}」。` : `已將 @${value.replace(/^@+/, "")} 分到${category ? ACCOUNT_CATEGORY_LABELS[category] : "指定分類"}。`);
+      setMessage(action === "add" ? "已加入追蹤帳號；下次掃描會開始收錄。" : action === "remove" ? "已停止追蹤；下次掃描會清除該來源的既有內容。" : action === "set_project" && projectId ? `已將 @${value.replace(/^@+/, "")} 分到「${projectLabel(projectId, "zh-Hant")}」。` : `已將 @${value.replace(/^@+/, "")} 分到${category ? ACCOUNT_CATEGORY_LABELS[category] : "指定分類"}。`);
       await load();
     }
     catch (reason) { setMessage(reason instanceof Error ? reason.message : "更新失敗"); }
@@ -156,7 +156,7 @@ function SourcesSection() {
     <div className="community-hub-admin-section-head"><div><h3>目前追蹤的帳號</h3><p>點帳號可直接開啟 X；官方帳號的動態分類會同步成為公開頁面的分流依據。</p></div><span>{accounts.length} 個帳號</span></div>
     {error ? <p className="community-hub-admin-error">{error}</p> : null}
     <form className="community-hub-admin-source-form" onSubmit={(event) => { event.preventDefault(); void mutate("add", account, newCategory, newCategory === "official" ? newProject : undefined); }}><label><span>@</span><input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="輸入 X 帳號" /></label><select aria-label="新帳號身分分類" value={newCategory} onChange={(event) => setNewCategory(event.target.value as AccountCategory)}>{Object.entries(ACCOUNT_CATEGORY_LABELS).map(([option, optionLabel]) => <option key={option} value={option}>{optionLabel}</option>)}</select>{newCategory === "official" ? <select aria-label="新官方帳號動態分類" value={newProject} onChange={(event) => setNewProject(event.target.value as ProjectId)}>{PROJECTS.map((project) => <option key={project.id} value={project.id}>{projectLabel(project.id, "zh-Hant")}</option>)}</select> : null}<button type="submit" disabled={!account.trim() || Boolean(busy)}><Icon name="plus" />加入追蹤</button></form>
-    <div className="community-hub-admin-source-groups">{renderGroup("official", "官方")}{renderGroup("official_community", "官方社區")}{renderGroup("ambassador", "大使")}</div>
+    <div className="community-hub-admin-source-groups">{renderGroup("official", "官方")}{renderGroup("official_community", "官方社群")}{renderGroup("other", "其他來源")}</div>
     <p className="community-hub-admin-source-message" role="status">{message}</p>
   </div>;
 }

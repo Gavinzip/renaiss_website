@@ -40,9 +40,9 @@ def product_progress_group_key(card: dict[str, Any]) -> str:
     be used as identity. This key uses only the original source text plus the
     structured account, timeline, and lifecycle status fields.
     """
-    if bool(card.get("event_wall")):
+    if str(card.get("source_role") or "").strip().lower() != "official":
         return ""
-    if str(card.get("card_type") or "").strip().lower() in {"event", "report", "market"}:
+    if str(card.get("card_type") or "").strip().lower() != "product_progress":
         return ""
     status = str(card.get("plan_status") or "").strip().lower()
     if status not in {"upcoming", "in_progress", "completed"}:

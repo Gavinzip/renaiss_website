@@ -4,10 +4,7 @@
       "intel-events-list",
       "intel-features-list",
       "intel-events-cards",
-      "intel-other-cards",
-      "intel-pokemon-cards",
       "intel-collectibles-cards",
-      "pokemon-news-list",
       "intel-sbt-cards",
       "intel-sbt-acquisition-list",
       "intel-guides-cards",
@@ -207,12 +204,10 @@
       "events",
       "official",
       "sbt",
-      "pokemon",
       "collectibles",
       "alpha",
       "guides",
       "community",
-      "other",
     ]);
     let intelLazyRenderContext = null;
     let intelLazyRenderToken = 0;
@@ -231,7 +226,6 @@
     let intelLatestFeedGeneratedMs = 0;
     let intelAuthStateRequest = null;
     let intelAutoRepairInFlight = false;
-    let pokemonNewsAutoRequested = false;
 
     function isUsableIntelFeed(feed) {
       return Boolean(feed && typeof feed === "object" && Array.isArray(feed.cards) && feed.cards.length > 0);
@@ -301,7 +295,6 @@
         || lower.includes("api")
         || lower.includes("lang")
         || lower.includes("i18n")
-        || lower.includes("pokemon-news")
       );
     }
 
@@ -717,8 +710,6 @@
               setIntelMessage(`Language feed refresh failed: ${String(error?.message || error)}`, "error");
             }
           });
-        pokemonNewsAutoRequested = false;
-        maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
       });
     }
 
@@ -1016,23 +1007,18 @@
         event: uiLabel("event"),
         official: uiLabel("official"),
         sbt: "SBT",
-        pokemon: uiLabel("pokemon"),
         collectibles: uiLabel("collectibles"),
         alpha: uiLabel("alpha"),
         guides: uiLabel("guides"),
         tools: uiLabel("guides"),
         community: uiLabel("community"),
-        other: uiLabel("other"),
       };
       return map[String(label || "").trim()] || "";
     }
 
     function isAlphaReleaseCard(card) {
       const cardType = String(card?.card_type || "").trim().toLowerCase();
-      const labels = Array.isArray(card?.route_labels)
-        ? card.route_labels.map((x) => String(x || "").trim().toLowerCase())
-        : [];
-      return (cardType === "feature" || cardType === "announcement") && labels.includes("alpha");
+      return cardType === "product_progress" && String(card?.source_role || "").trim().toLowerCase() === "official";
     }
 
     function extractSbtHowToGet(card) {
@@ -1783,44 +1769,6 @@
       panel.style.display = (rows.length || (adminMode && sbtAcqEditMode)) ? "block" : "none";
     }
 
-    function pokemonNewsDetailHtml(item) {
-      const title = String(item?.summary_title || item?.title || uiLabel("unnamedPost")).trim();
-      const summary = String(item?.summary || "").trim();
-      const source = String(item?.source || "unknown").trim();
-      const dateText = String(item?.date || "").trim();
-      const points = Array.isArray(item?.key_points) ? item.key_points.filter((x) => String(x || "").trim()).slice(0, 6) : [];
-      const pointHtml = points.length
-        ? `<ul class="intel-detail-list">${points.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-        : `<p class="intel-summary">${escapeHtml(uiLabel("noPokemonPoints"))}</p>`;
-      const detailLines = Array.isArray(item?.detail_lines) ? item.detail_lines.filter((x) => String(x || "").trim()).slice(0, 6) : [];
-      const detailHtml = detailLines.length
-        ? `<ul class="intel-detail-list">${detailLines.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-        : "";
-      const url = safeUrl(item?.url || "", "");
-      const sourceHtml = url
-        ? `<div class="intel-detail-source"><span class="intel-detail-block-title">${escapeHtml(uiLabel("originalSource"))}</span><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a></div>`
-        : "";
-      return `
-        <div class="intel-detail-top">
-          <span class="intel-detail-kicker">${escapeHtml(uiLabel("pokemonNews"))} · ${escapeHtml(source)}</span>
-          <span class="intel-detail-time">${escapeHtml(dateText || "--")}</span>
-        </div>
-        <h3 class="intel-detail-title">${escapeHtml(title)}</h3>
-        ${summary ? `<p class="intel-detail-glance">${escapeHtml(summary)}</p>` : ""}
-        <div><div class="intel-detail-block-title">${escapeHtml(uiLabel("keySummary"))}</div>${pointHtml}</div>
-        ${detailHtml ? `<div><div class="intel-detail-block-title">${escapeHtml(uiLabel("fullSummary"))}</div>${detailHtml}</div>` : ""}
-        ${sourceHtml}
-      `;
-    }
-
-    function openPokemonNewsDetailModal(index) {
-      const idx = Number(index);
-      if (!Number.isInteger(idx) || idx < 0) return;
-      const item = pokemonNewsItemsState[idx];
-      if (!item) return;
-      openDetailModalWithHtml(pokemonNewsDetailHtml(item));
-    }
-
     function closeIntelDetailModal() {
       const modal = document.getElementById("intel-detail-modal");
       if (!modal) return;
@@ -1887,15 +1835,8 @@
     }
 
     const intelTopicLabelTextMap = {
-      events: "活動分區",
-      official: "官方近期更新",
       sbt: "SBT 分區",
-      pokemon: "寶可夢分區",
       collectibles: "收藏趨勢分區",
-      alpha: "未來規劃分區",
-      guides: "攻略分區",
-      community: "社群精選",
-      other: "無",
     };
 
     function intelTopicLabelName(label) {
@@ -1905,7 +1846,7 @@
 
     function setFeedbackTopicSelections(labels) {
       const normalized = normalizeTopicLabels(labels);
-      const selected = new Set(normalized.includes("other") ? ["other"] : normalized);
+      const selected = new Set(normalized);
       document.querySelectorAll("[data-intel-feedback-section-option]").forEach((node) => {
         node.checked = selected.has(String(node.value || "").trim().toLowerCase());
       });
@@ -1925,8 +1866,8 @@
       const mode = String(options.mode || "feedback");
       const card = options.card && typeof options.card === "object" ? options.card : {};
       const defaultLabel = String(options.defaultLabel || "insight").trim().toLowerCase();
-      const cardTypeLabels = new Set(["event", "feature", "announcement", "market", "trend", "report", "insight"]);
-      const sectionLabels = new Set(["events", "official", "sbt", "pokemon", "collectibles", "alpha", "guides", "community", "other"]);
+      const cardTypeLabels = new Set(["event", "product_progress", "announcement", "market", "report", "guide", "insight"]);
+      const sectionLabels = new Set(["sbt", "collectibles"]);
       const cardTypeFromCard = String(options.cardType || card?.card_type || "").trim().toLowerCase();
       const defaultCardType = cardTypeLabels.has(cardTypeFromCard)
         ? cardTypeFromCard
@@ -1935,7 +1876,7 @@
       const currentTopicLabels = normalizeTopicLabels(options.topicLabels || card?.topic_labels || []);
       const selectedTopicLabels = currentTopicLabels.length
         ? currentTopicLabels
-        : (defaultSection ? [defaultSection] : ["other"]);
+        : (defaultSection ? [defaultSection] : []);
       const isExclude = mode === "exclude";
       if (titleEl) titleEl.textContent = isExclude ? "排除這篇貼文" : "回饋分類";
       if (subEl) {
@@ -1986,11 +1927,6 @@
       } else if (name === "sbt") {
         renderSbtAcquisitionSummary(routed.sbt, ctx.cards);
         renderCardGrid("intel-sbt-cards", "intel-sbt-empty", routed.sbt, uiLabel("noHighlights"));
-      } else if (name === "pokemon") {
-        renderCardGrid("intel-pokemon-cards", "intel-pokemon-empty", routed.pokemon, uiLabel("noHighlights"));
-        if (normalizeIntelCategoryName(getActiveIntelCategory()) === "pokemon") {
-          maybeRefreshPokemonNewsForCategory("pokemon");
-        }
       } else if (name === "collectibles") {
         renderCardGrid("intel-collectibles-cards", "intel-collectibles-empty", routed.collectibles, uiLabel("noHighlights"));
       } else if (name === "alpha") {
@@ -1999,8 +1935,6 @@
         renderCardGrid("intel-guides-cards", "intel-guides-empty", routed.guides, uiLabel("noHighlights"));
       } else if (name === "community") {
         renderCardGrid("intel-community-cards", "intel-community-empty", routed.community, uiLabel("noHighlights"));
-      } else if (name === "other") {
-        renderCardGrid("intel-other-cards", "intel-other-empty", routed.other, uiLabel("noHighlights"));
       }
       intelLazyRenderedCategories.add(name);
       intelDeferredCategoryQueue = intelDeferredCategoryQueue.filter((item) => item !== name);
@@ -2574,7 +2508,6 @@
       const postPath = String(path || "");
       const timeoutMs = (
         postPath === "/api/intel/refresh-content"
-        || postPath === "/api/intel/pokemon-news"
         || postPath === "/api/intel/restore"
       )
         ? INTEL_LONG_POST_TIMEOUT_MS
@@ -2651,10 +2584,12 @@
       return data?.restore || {};
     }
 
-    async function updateIntelXSource(action, account) {
+    async function updateIntelXSource(action, account, category = "") {
       const data = await postIntel("/api/intel/source-config", {
         action: String(action || "").trim().toLowerCase(),
         account: String(account || "").trim(),
+        ...(category ? { category: String(category).trim().toLowerCase() } : {}),
+        ...(String(category).trim().toLowerCase() === "official" ? { project_id: "tcg" } : {}),
       });
       return data?.source || data;
     }
@@ -2666,22 +2601,18 @@
       const monitor = status?.monitors || {};
       const xInfo = monitor?.x && typeof monitor.x === "object" ? monitor.x : {};
       const accounts = Array.isArray(xInfo?.accounts) ? xInfo.accounts.map((x) => String(x || "").trim()).filter(Boolean) : [];
-      const pokemonAccounts = new Set(
-        (Array.isArray(xInfo?.pokemon_accounts) ? xInfo.pokemon_accounts : [])
-          .map((x) => String(x || "").trim().toLowerCase())
-          .filter(Boolean)
-      );
+      const categories = xInfo?.account_categories && typeof xInfo.account_categories === "object" ? xInfo.account_categories : {};
       if (listEl) {
         if (!accounts.length) {
           listEl.textContent = "目前沒有追蹤 X 用戶。";
         } else {
           listEl.innerHTML = accounts.map((account) => {
-            const isPokemon = pokemonAccounts.has(String(account || "").trim().toLowerCase());
+            const role = String(categories?.[account] || categories?.[String(account).toLowerCase()] || "other");
+            const roleLabel = role === "official" ? "官方" : role === "official_community" ? "官方社群" : "其他來源";
             return `
-            <span class="intel-source-pill ${isPokemon ? "is-pokemon-source" : ""}">
+            <span class="intel-source-pill">
               @${escapeHtml(account)}
-              ${isPokemon ? `<span class="intel-source-badge">pokemon</span>` : ""}
-              ${isPokemon ? `<button type="button" class="intel-source-remove" data-intel-source-pokemon-action="remove_pokemon" data-intel-source-account="${escapeHtml(account)}" aria-label="取消寶可夢來源 @${escapeHtml(account)}">取消寶可夢來源</button>` : ""}
+              <span class="intel-source-badge">${escapeHtml(roleLabel)}</span>
               <button type="button" class="intel-source-remove" data-intel-source-remove="${escapeHtml(account)}" aria-label="取消追蹤 @${escapeHtml(account)}">×</button>
             </span>
           `;
@@ -2693,7 +2624,7 @@
         const updated = toLocalTime(xInfo?.updated_at);
         const stats = xInfo?.source_stats && typeof xInfo.source_stats === "object" ? xInfo.source_stats : {};
         const countText = accounts.map((account) => `@${account}:${Number(stats?.[account] || 0)}`).join(" · ");
-        metaEl.textContent = `${defaultText} · 共 ${accounts.length} 個來源 · 寶可夢來源 ${pokemonAccounts.size} 個 · 更新 ${updated}${countText ? ` · ${countText}` : ""}`;
+        metaEl.textContent = `${defaultText} · 共 ${accounts.length} 個來源 · 更新 ${updated}${countText ? ` · ${countText}` : ""}`;
       }
     }
 
@@ -3033,105 +2964,6 @@
       intelAdminState.pollTimer = window.setInterval(() => {
         refreshIntelAdminStatus();
       }, 8000);
-    }
-
-    function renderPokemonNews(payload) {
-      const listEl = document.getElementById("pokemon-news-list");
-      const metaEl = document.getElementById("pokemon-news-meta");
-      if (!listEl || !metaEl) return;
-      const rows = Array.isArray(payload?.items) ? payload.items : [];
-      pokemonNewsItemsState = rows.slice(0, 8);
-      if (!rows.length) {
-        listEl.innerHTML = `<article class="pokemon-news-card"><p class="pokemon-news-summary">${escapeHtml(uiLabel("noPokemonNews"))}</p></article>`;
-      } else {
-        listEl.innerHTML = rows.slice(0, 8).map((item, index) => {
-          const title = String(item?.summary_title || item?.title || item?.url || uiLabel("unnamedPost"));
-          const url = safeUrl(item?.url || "", "");
-          const source = String(item?.source || "").trim() || "unknown";
-          const dateText = String(item?.date || "").trim();
-          const summary = String(item?.summary || item?.snippet || "").trim();
-          const points = Array.isArray(item?.key_points) ? item.key_points.filter((x) => String(x || "").trim()).slice(0, 3) : [];
-          const cardPoints = points.slice(0, 2);
-          const pointHtml = points.length
-            ? `<ul class="pokemon-news-points">${cardPoints.map((x) => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>`
-            : "";
-          const titleHtml = /^https?:\/\//i.test(url)
-            ? `<a class="pokemon-news-title" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
-            : `<div class="pokemon-news-title">${escapeHtml(title)}</div>`;
-          const linkHtml = /^https?:\/\//i.test(url)
-            ? `<a class="pokemon-news-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(uiLabel("sourceOriginal"))}</a>`
-            : "";
-          return `
-            <article class="pokemon-news-card" data-pokemon-news-index="${index}">
-              <div class="pokemon-news-top">
-                <span class="pokemon-news-source">${escapeHtml(source)}</span>
-                <span class="pokemon-news-date">${escapeHtml(dateText || "--")}</span>
-              </div>
-              ${titleHtml}
-              ${summary ? `<p class="pokemon-news-summary">${escapeHtml(summary)}</p>` : ""}
-              ${pointHtml}
-              <p class="pokemon-news-summary">${escapeHtml(uiLabel("clickCardFull"))}</p>
-              ${linkHtml}
-            </article>
-          `;
-        }).join("");
-      }
-      const generatedAt = toLocalTime(payload?.generated_at);
-      const lang = String(payload?.lang || document.documentElement.lang || "zh-Hant").trim();
-      const mode = String(payload?.summary_mode || "ai").trim();
-      const modeLabel = mode.startsWith("ai") ? uiLabel("aiOrganized") : uiLabel("basicOrganized");
-      const providerRaw = String(payload?.provider || "minimax_cli_search").trim();
-      const providerLabel = providerRaw === "minimax_mcp_web_search"
-        ? "MiniMax MCP web_search"
-        : (providerRaw === "minimax_cli_search" || providerRaw === "mmx" ? "MiniMax CLI Search" : providerRaw);
-      const cachedLabel = payload?.cached ? ` · ${uiLabel("cached")}` : ` · ${uiLabel("realtime")}`;
-      const refreshing = Boolean(payload?.refreshing);
-      const refreshingLabel = refreshing ? ` · ${uiLabel("backgroundUpdating")}` : "";
-      const nextRefreshAt = toLocalTime(payload?.next_refresh_at);
-      const nextLabel = nextRefreshAt && nextRefreshAt !== "--" ? ` · ${uiLabel("nextRefresh")} ${nextRefreshAt}` : "";
-      const warning = String(payload?.warning || "").trim();
-      const pendingMsg = String(payload?.message || "").trim();
-      metaEl.textContent = warning
-        ? `${uiLabel("source")}: ${providerLabel} · ${modeLabel} · ${uiLabel("language")} ${lang} · ${uiLabel("updated")} ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel} · ${warning}`
-        : `${uiLabel("source")}: ${providerLabel} · ${modeLabel} · ${uiLabel("language")} ${lang} · ${uiLabel("updated")} ${generatedAt}${cachedLabel}${refreshingLabel}${nextLabel}${pendingMsg ? ` · ${pendingMsg}` : ""}`;
-      markLocalizedDynamicRegions();
-      applyUiLanguage().catch(() => {});
-    }
-
-    async function refreshPokemonNews(force = false) {
-      const metaEl = document.getElementById("pokemon-news-meta");
-      if (metaEl) {
-        metaEl.textContent = force
-          ? uiLabel("updatingNews")
-          : uiLabel("loadingNews");
-      }
-      const currentLang = String(document.documentElement.lang || navigator.language || "zh-Hant");
-      const data = await postIntel("/api/intel/pokemon-news", {
-        force: Boolean(force),
-        max_items: 8,
-        lang: currentLang,
-      });
-      const news = data?.news || {};
-      renderPokemonNews(news);
-      if (pokemonNewsPollTimer) {
-        window.clearTimeout(pokemonNewsPollTimer);
-        pokemonNewsPollTimer = null;
-      }
-      if (Boolean(news?.refreshing)) {
-        pokemonNewsPollTimer = window.setTimeout(() => {
-          refreshPokemonNews(false).catch(() => {});
-        }, 3200);
-      }
-    }
-
-    function maybeRefreshPokemonNewsForCategory(category) {
-      if (normalizeIntelCategoryName(category) !== "pokemon") return;
-      if (location.protocol === "file:" || pokemonNewsAutoRequested) return;
-      pokemonNewsAutoRequested = true;
-      refreshPokemonNews(false).catch((error) => {
-        const metaEl = document.getElementById("pokemon-news-meta");
-        if (metaEl) metaEl.textContent = `${uiLabel("source")}: MiniMax NewsAgent · ${String(error?.message || error)}`;
-      });
     }
 
     function saveAnalyzeJobId(jobId) {
@@ -3521,5 +3353,4 @@
         await attemptIntelAutoRepair(error);
       }
       authReadySoon.catch(() => {});
-      maybeRefreshPokemonNewsForCategory(getActiveIntelCategory());
     }
