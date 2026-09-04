@@ -2172,7 +2172,7 @@ def prune_expired_feed_memory(
     now: datetime | None = None,
     memory_days: int | None = None,
     queue_days: int | None = None,
-) -> tuple[list[StoryCard], dict[str, int]]:
+) -> tuple[list[StoryCard], dict[str, Any]]:
     now_dt = now or datetime.now(timezone.utc)
     memory_retention_days = int(memory_days or _env_positive_int("INTEL_FEED_MEMORY_RETENTION_DAYS", DEFAULT_FEED_MEMORY_RETENTION_DAYS))
     queue_retention_days = int(queue_days or _env_positive_int("INTEL_FEED_QUEUE_RETENTION_DAYS", DEFAULT_FEED_QUEUE_RETENTION_DAYS))
@@ -2180,6 +2180,7 @@ def prune_expired_feed_memory(
     removed_public = 0
     removed_queue = 0
     kept_forced = 0
+    kept_official = 0
     kept_unknown_date = 0
 
     for card in cards:
@@ -2187,6 +2188,14 @@ def prune_expired_feed_memory(
         if cid and (cid in force_ids or card.manual_pick or card.manual_pin or card.manual_bottom):
             kept.append(card)
             kept_forced += 1
+            continue
+
+        # Official product-account posts are durable product history. The
+        # rolling retention window still applies to community and other
+        # sources, but must never erase an official product timeline.
+        if _is_official_x_source_card(card):
+            kept.append(card)
+            kept_official += 1
             continue
 
         retention_days = queue_retention_days if _is_admin_queue_card(card) else memory_retention_days
@@ -2208,10 +2217,11 @@ def prune_expired_feed_memory(
     return kept, {
         "memory_retention_days": memory_retention_days,
         "queue_retention_days": queue_retention_days,
-        "memory_window_mode": "event_date_minus_plus_days_or_published_plus_days",
+        "memory_window_mode": "official_x_indefinite_other_sources_event_or_published_window",
         "removed_public": removed_public,
         "removed_queue": removed_queue,
         "kept_forced": kept_forced,
+        "kept_official": kept_official,
         "kept_unknown_date": kept_unknown_date,
         "input_total": len(cards),
         "output_total": len(kept),
@@ -2219,7 +2229,7 @@ def prune_expired_feed_memory(
 
 
 def _is_official_x_source_card(card: StoryCard) -> bool:
-    if not is_official_account_handle(card.account):
+    if canonical_source_role(card.source_role) != "official" and not is_official_account_handle(card.account):
         return False
     provider = str(card.provider or "").strip().lower()
     return is_x_source_url(card.url) or provider in {"twitter-cli", "tweet-result", "r.jina.ai"}
@@ -4296,6 +4306,7 @@ def sync_accounts(
         "removed_by_retention_public": int(retention_stats.get("removed_public", 0)),
         "removed_by_retention_queue": int(retention_stats.get("removed_queue", 0)),
         "retention_kept_forced": int(retention_stats.get("kept_forced", 0)),
+        "retention_kept_official": int(retention_stats.get("kept_official", 0)),
         "retention_kept_unknown_date": int(retention_stats.get("kept_unknown_date", 0)),
         "retention_memory_days": int(retention_stats.get("memory_retention_days", 0)),
         "retention_queue_days": int(retention_stats.get("queue_retention_days", 0)),

@@ -11,12 +11,12 @@ import { readAdminFeed } from "@/lib/admin";
 import type { BeginnerWikiDocument, FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
 import { CommunityView, EventsView, MediaView, OfficialView } from "@/views/FeedViews";
 import { OverviewView } from "@/views/OverviewView";
-import { ProductProgressView } from "@/views/ProductProgressView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
 import { ArticleView, GuideView, SbtView } from "@/views/SbtGuideViews";
 import { ProfileView } from "@/views/profile/ProfileView";
 
 const AdminView = lazy(() => import("@/views/admin/AdminView").then((module) => ({ default: module.AdminView })));
+const ProductProgressView = lazy(() => import("@/views/ProductProgressView").then((module) => ({ default: module.ProductProgressView })));
 
 const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
 type PreviewEnvironment = "production" | "local" | "";
@@ -247,7 +247,7 @@ export function CommunityHubApp() {
   if (route.view === "official") view = <OfficialView {...shared} />;
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
-  else if (route.view === "future") view = <ProductProgressView cards={cards} lang={lang} loading={loading} onOpenArticle={openArticle} onRefresh={refresh} translationPending={hasPendingTranslation} />;
+  else if (route.view === "future") view = <Suspense fallback={<div className="community-hub-source-state"><strong>{text(lang, "status.loading")}</strong></div>}><ProductProgressView cards={cards} lang={lang} loading={loading} onOpenArticle={openArticle} onRefresh={refresh} translationPending={hasPendingTranslation} /></Suspense>;
   else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
   else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;

@@ -1081,21 +1081,6 @@
   min-width: 0;
 }
 
-.community-hub-region-filter button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.community-hub-region-filter button span {
-  color: #88a3ba;
-  font-size: 0.66rem;
-}
-
-.community-hub-region-filter button.is-active span {
-  color: #4a7da8;
-}
-
 .community-hub-admin-view {
   --admin-line: rgba(104, 164, 213, 0.28);
   color: #274d6c;

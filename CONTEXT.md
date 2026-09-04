@@ -24,6 +24,12 @@ platform capability; proves that its state changed; explains a user or platform
 impact; and contains enough source evidence for that change. If any of those
 four tests is missing, the post is an `announcement`, not `product_progress`.
 
+## Product Source Filter
+
+A browsing filter that narrows Product Progress by the official account that
+published a verified change. It does not own or split the product; one product
+keeps a single identity and timeline across every official account.
+
 ## Plan Status
 
 The lifecycle state of a product-progress item: `upcoming`, `in_progress`,

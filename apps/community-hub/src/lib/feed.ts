@@ -1,4 +1,4 @@
-import type { EventStatus, FeedCard, IntelFeed, Language, PlanStatus } from "@/types";
+import type { EventStatus, FeedCard, IntelFeed, Language } from "@/types";
 import { isRegionalCommunitySource } from "@/lib/regions";
 import { projectIdForCard, type AccountProjectMap } from "@/lib/projects";
 import { cardType, storedSourceRole, topicLabels, type SourceRole } from "@/lib/taxonomy";
@@ -6,9 +6,6 @@ import { cardType, storedSourceRole, topicLabels, type SourceRole } from "@/lib/
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
 const UPCOMING_EVENT_DISPLAY_DAYS = 14;
 const PAST_EVENT_DISPLAY_DAYS = 14;
-const RECENT_OFFICIAL_UPDATE_DAYS = 30;
-const IN_PROGRESS_DISPLAY_DAYS = 14;
-const COMPLETED_PROGRESS_DISPLAY_DAYS = 30;
 
 export function safeUrl(value: unknown): string {
   const raw = String(value ?? "").trim();
@@ -117,13 +114,6 @@ export function isCommunity(card: FeedCard, accountProjects: AccountProjectMap =
   return sourceRole(card, accountProjects) !== "official";
 }
 
-export function planStatus(card: FeedCard): PlanStatus | "" {
-  const value = String(card.plan_status ?? "");
-  return ["upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"].includes(value)
-    ? value as PlanStatus
-    : "";
-}
-
 export function isEvent(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
   return cardType(card) === "event";
 }
@@ -176,27 +166,6 @@ export function isPastEventWithinDisplayWindow(card: FeedCard, referenceDate = n
   const firstVisibleEndDay = new Date(today);
   firstVisibleEndDay.setDate(firstVisibleEndDay.getDate() - PAST_EVENT_DISPLAY_DAYS);
   return endDay >= firstVisibleEndDay;
-}
-
-export function isRecentOfficialUpdate(card: FeedCard, referenceDate = new Date()): boolean {
-  return isWithinPastDays(card.published_at, RECENT_OFFICIAL_UPDATE_DAYS, referenceDate);
-}
-
-export function isVisibleProductProgress(card: FeedCard, referenceDate = new Date()): boolean {
-  if (cardType(card) !== "product_progress" || !isOfficial(card)) return false;
-  const status = planStatus(card);
-  if (status === "upcoming") {
-    const startDay = toCalendarDay(card.timeline_date);
-    return Boolean(startDay && startDay > calendarToday(referenceDate));
-  }
-  if (status === "in_progress") {
-    return isWithinPastDays(card.published_at, IN_PROGRESS_DISPLAY_DAYS, referenceDate);
-  }
-  if (status === "completed") {
-    const completedDay = card.timeline_end_date || card.timeline_date;
-    return Boolean(completedDay) && isWithinPastDays(completedDay, COMPLETED_PROGRESS_DISPLAY_DAYS, referenceDate);
-  }
-  return false;
 }
 
 export function collapseProductMilestones(cards: FeedCard[]): FeedCard[] {
