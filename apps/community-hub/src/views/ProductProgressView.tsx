@@ -5,6 +5,7 @@ import { ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
 import { Icon } from "@/components/Icon";
 import { AnimatedContent } from "@/components/react-bits/AnimatedContent";
+import { assets } from "@/data/legacy";
 import { text } from "@/lib/copy";
 import { coverUrl, formatDate, safeUrl } from "@/lib/feed";
 import { buildProductPortfolio, type ProductFamilyId, type ProductSnapshot, type ProductTimelineEvent } from "@/lib/productPortfolio";
@@ -46,10 +47,9 @@ function productDisplaySummary(product: ProductSnapshot, lang: Language): string
 }
 
 function ProductEvidenceMedia({ lang, onOpenArticle, product }: { lang: Language; onOpenArticle: (source: string) => void; product: ProductSnapshot }) {
-  const image = coverUrl(product.evidenceImage);
+  const image = coverUrl(product.evidenceImage) || assets.defaultCoverImage;
   const source = safeUrl(product.evidenceCard?.url);
   const productName = productDisplayName(product, lang);
-  if (!image) return null;
   const content = <>
     <img src={image} alt={product.evidenceCard?.title || productName} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
     {source ? <span>{text(lang, "product.openEvidence")}<Icon name="arrow-up-right" /></span> : null}
@@ -128,6 +128,13 @@ export function ProductProgressView({ cards, lang, loading, onOpenArticle, onRef
     if (ownedProductIds?.has(update.productId) && update.isMilestone) return false;
     return effectiveFamilyFilter === "all" || update.familyId === effectiveFamilyFilter;
   });
+  const visibleUnassignedUpdates = effectiveSourceFilter === "all" || effectiveFamilyFilter !== "all"
+    ? []
+    : portfolio.unassignedUpdates.filter((card) => normalizeProjectAccount(card.account) === effectiveSourceFilter);
+  const visibleAccountUpdates = [
+    ...visibleRelatedUpdates.map((update) => ({ ...update, sourceLabelKey: "product.contextSource" })),
+    ...visibleUnassignedUpdates.map((card) => ({ card, isMilestone: false, kind: "context" as const, sourceLabelKey: "product.contextStandaloneSource" })),
+  ].sort((left, right) => new Date(right.card.published_at || 0).valueOf() - new Date(left.card.published_at || 0).valueOf());
   const selectSource = (account: "all" | string) => {
     setSourceFilter(account);
     setFamilyFilter("all");
@@ -179,23 +186,23 @@ export function ProductProgressView({ cards, lang, loading, onOpenArticle, onRef
         </section>
       </AnimatedContent>)}
     </div> : effectiveFamilyFilter === "all" && visibleUnmappedUpdates.length ? null : <EmptyState title={text(lang, translationPending ? "empty.translating" : effectiveSourceFilter === "all" ? "product.noProducts" : "product.noOwnedProducts")} />}
-    {visibleRelatedUpdates.length ? <AnimatedContent distance={16} duration={0.52}>
+    {visibleAccountUpdates.length ? <AnimatedContent distance={16} duration={0.52}>
       <section className="community-hub-product-context" aria-labelledby="product-context-title">
         <header className="community-hub-product-context-head">
           <div>
             <p>{text(lang, "product.contextEyebrow")}</p>
             <h2 id="product-context-title">{text(lang, "product.contextTitle")}</h2>
           </div>
-          <small>{visibleRelatedUpdates.length} {text(lang, "product.contextCount")}</small>
+          <small>{visibleAccountUpdates.length} {text(lang, "product.contextCount")}</small>
         </header>
         <p className="community-hub-product-context-lead">{text(lang, "product.contextLead")}</p>
         <div className="community-hub-content-list community-hub-product-context-list">
-          {visibleRelatedUpdates.map(({ card, isMilestone, kind }) => <ContentCard
+          {visibleAccountUpdates.map(({ card, isMilestone, kind, sourceLabelKey }) => <ContentCard
             key={card.id || card.url || `${card.title}-${card.published_at}`}
             card={card}
             lang={lang}
             onOpenArticle={onOpenArticle}
-            sourceLabel={text(lang, "product.contextSource")}
+            sourceLabel={text(lang, sourceLabelKey)}
             statusLabel={text(lang, isMilestone ? `product.update.${kind}` : "product.contextStatus")}
           />)}
         </div>

@@ -59,6 +59,7 @@ export interface ProductPortfolio {
   relatedUpdates: ProductRelatedUpdate[];
   standaloneCount: number;
   sources: ProductSourceSnapshot[];
+  unassignedUpdates: FeedCard[];
   unmappedUpdates: ProductTimelineEvent[];
   updateCount: number;
 }
@@ -93,6 +94,7 @@ const FAMILY_ICONS: Record<ProductFamilyId, string> = {
 };
 
 const includes = (context: MatchContext, pattern: RegExp) => pattern.test(context.text);
+const INDEX_PARTNERSHIP_RE = /\bpartner(?:ship|ed|ing)?\b|\bteamed\s+up\b|\bbuilt\s+with\b|合作(?:夥伴|伙伴|建構|建立)?/i;
 const RENAISS_XYZ_OWNER = ["renaissxyz"] as const;
 const RENAISS_INDEX_OWNER = ["renaiss_index"] as const;
 const TASTE_LAB_OWNER = ["tastedotmd"] as const;
@@ -113,7 +115,7 @@ const PRODUCT_ENTITIES: ProductEntityDefinition[] = [
   { id: "tempest-pack", familyId: "packs", name: "Tempest Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\btempest\s+pack\b/i) },
   { id: "omega-pack", familyId: "packs", name: "Omega Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bomega\s+pack\b/i) },
   { id: "referral-rewards", familyId: "rewards", name: "Referral Rewards", icon: "gift", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\breferral\s+rewards?\b|200\s*%\s*(?:referral|推薦|推荐)/i) },
-  { id: "renaiss-index", familyId: "index", name: "Renaiss Index", icon: "chart-no-axes-combined", priority: 80, ownerAccounts: RENAISS_INDEX_OWNER, match: (context) => context.account === "renaiss_index" || includes(context, /\brenaiss\s+index\b/i) },
+  { id: "renaiss-index", familyId: "index", name: "Renaiss Index", icon: "chart-no-axes-combined", priority: 80, ownerAccounts: RENAISS_INDEX_OWNER, match: (context) => context.account === "renaiss_index" && includes(context, INDEX_PARTNERSHIP_RE) },
   { id: "renaiss-air", familyId: "tech", name: "Renaiss AIR", icon: "wind", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\brenaiss\s+air\b/i) },
   { id: "collector-assistant", familyId: "tech", name: "Collector Assistant", icon: "bot", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\bcollector\s+assistant\b/i) },
   { id: "card-platform-analysis", familyId: "tech", name: "Card Platform Analysis", icon: "scan-search", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\bcard\s+platform\s+analysis\b/i) },
@@ -245,6 +247,7 @@ function dedupeTimeline(events: ProductTimelineEvent[]): ProductTimelineEvent[] 
 export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
   const buckets = new Map<string, { definition: ProductEntityDefinition; standalone: FeedCard[]; timeline: ProductTimelineEvent[] }>();
   const relatedUpdates: ProductRelatedUpdate[] = [];
+  const unassignedUpdates: FeedCard[] = [];
   const unmappedUpdates: ProductTimelineEvent[] = [];
   PRODUCT_ENTITIES.forEach((definition) => buckets.set(definition.id, { definition, standalone: [], timeline: [] }));
 
@@ -258,6 +261,8 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
       if (text && String(card.card_type ?? "").toLowerCase() === "product_progress" && hasCompleteProductProgressEvidence(card)) {
         const kind = updateKind(card, `${text} ${String(card.title ?? "")}`);
         if (kind !== "context") unmappedUpdates.push({ card, date: cardDate(card), kind, relatedProductIds: [] });
+      } else {
+        unassignedUpdates.push(card);
       }
       return;
     }
@@ -321,6 +326,7 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
 
   const sortedUnmappedUpdates = [...unmappedUpdates].sort((left, right) => dateValue(right.card) - dateValue(left.card));
   const sortedRelatedUpdates = [...relatedUpdates].sort((left, right) => dateValue(right.card) - dateValue(left.card));
+  const sortedUnassignedUpdates = [...unassignedUpdates].sort((left, right) => dateValue(right) - dateValue(left));
   const sourceBuckets = new Map<string, { ownedFamilyIds: Set<ProductFamilyId>; ownedProductIds: Set<string>; updateCount: number }>();
   const sourceBucket = (account: string) => {
     const existing = sourceBuckets.get(account);
@@ -342,6 +348,7 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
   }));
   sortedRelatedUpdates.forEach((update) => addSourceUpdate(normalizedAccount(update.card)));
   sortedUnmappedUpdates.forEach((event) => addSourceUpdate(normalizedAccount(event.card)));
+  sortedUnassignedUpdates.forEach((card) => addSourceUpdate(normalizedAccount(card)));
   const sources = [...sourceBuckets.entries()].map(([account, bucket]) => ({
     account,
     ownedFamilyIds: FAMILY_ORDER.filter((familyId) => bucket.ownedFamilyIds.has(familyId)),
@@ -355,6 +362,7 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
     updateCount: families.reduce((count, family) => count + family.updateCount + family.standaloneCount, 0) + sortedUnmappedUpdates.length,
     standaloneCount: families.reduce((count, family) => count + family.standaloneCount, 0),
     sources,
+    unassignedUpdates: sortedUnassignedUpdates,
     unmappedUpdates: sortedUnmappedUpdates,
   };
 }

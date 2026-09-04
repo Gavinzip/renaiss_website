@@ -27,8 +27,10 @@ four tests is missing, the post is an `announcement`, not `product_progress`.
 ## Product Source Filter
 
 A browsing filter that narrows Product Progress by the official account that
-published a verified change. It does not own or split the product; one product
-keeps a single identity and timeline across every official account.
+canonically owns a product. A verified change published by another official
+account may still support that product's timeline without changing ownership.
+Official posts that do not belong to a product remain visible as standalone
+account updates.
 
 ## Plan Status
 
@@ -38,10 +40,11 @@ make a post Product Progress by itself.
 
 ## View
 
-A website presentation assembled from Source Role, Card Type, and Topic. A view
-is not a stored Topic. For example, Official Updates is the `official` Source
-Role view, while Product Progress is the intersection of `official` and
-`product_progress`.
+A website presentation assembled from Source Role, Card Type, Topic, and local
+product grouping. A view is not a stored Topic. Official Updates is the
+`official` Source Role view. Product Progress keeps strict `product_progress`
+cards as evidence while also presenting related official product updates and
+standalone account posts without rewriting their stored Card Type.
 
 ## Retired terms
 
