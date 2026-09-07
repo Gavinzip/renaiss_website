@@ -98,11 +98,10 @@ export function ProductProgressView({ cards, lang, loading, onOpenArticle, onRef
   const [sourceFilter, setSourceFilter] = useState<"all" | string>("all");
   const [familyFilter, setFamilyFilter] = useState<"all" | ProductFamilyId>("all");
   const sourceOptions = useMemo(() => {
-    const projectOrder = new Map(PROJECTS.map((project, index) => [normalizeProjectAccount(project.account), index]));
-    return [...portfolio.sources].sort((left, right) => {
-      const leftOrder = projectOrder.get(left.account) ?? PROJECTS.length;
-      const rightOrder = projectOrder.get(right.account) ?? PROJECTS.length;
-      return leftOrder - rightOrder || left.account.localeCompare(right.account);
+    const sourcesByAccount = new Map(portfolio.sources.map((source) => [source.account, source]));
+    return PROJECTS.map((project) => {
+      const account = normalizeProjectAccount(project.account);
+      return sourcesByAccount.get(account) ?? { account, ownedFamilyIds: [], ownedProductIds: [], updateCount: 0 };
     });
   }, [portfolio.sources]);
   const sourceUpdateCount = sourceOptions.reduce((count, source) => count + source.updateCount, 0);
