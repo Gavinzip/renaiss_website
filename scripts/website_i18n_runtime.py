@@ -288,6 +288,12 @@ def _looks_translated_for_lang(text: str, lang: str) -> bool:
         cjk_ratio = cjk / total
         if cjk_ratio >= 0.06:
             return False
+        # A short numeric/time value may contain only one translatable CJK
+        # token (for example, "約" -> "약"). Once no CJK remains, one Hangul
+        # syllable is sufficient evidence that this compact value was
+        # translated instead of copied unchanged.
+        if hangul >= 1 and cjk == 0 and len(src) <= 32 and re.search(r"\d", src):
+            return True
         # Short mixed labels such as "온라인 (Discord / Live)" should count
         # as translated once they include Korean script and no CJK leftovers.
         if hangul >= 2 and (latin >= 6 or len(src) <= 32):
