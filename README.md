@@ -217,4 +217,10 @@ The backend reads/writes under `data/`:
 - `beginner_wiki_history.jsonl`
 - `pokemon_latest_news*.json`
 
+Community Hub cards keep their primary nature in `card_type`, internal page
+routing in `routing_topics`, and reader-facing keywords in `tags`. Product,
+SBT, and result facts use `product_ids`, `sbt_entries`, and `record_result`.
+AI may refresh these structured facts on source-backed cards; durable human
+field overrides are reapplied once at the final atomic feed write.
+
 If your platform has ephemeral disk, data resets on redeploy unless you mount persistent storage.
