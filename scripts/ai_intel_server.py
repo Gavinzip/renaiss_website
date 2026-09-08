@@ -35,7 +35,8 @@ from uuid import uuid4
 
 from x_intel_core import (
     ALLOWED_CARD_TYPES,
-    ALLOWED_TOPIC_LABELS,
+    ALLOWED_PRODUCT_IDS,
+    ALLOWED_ROUTING_TOPICS,
     AI_CLASSIFICATION_VERSION,
     OFFICIAL_DISCORD_CHANNEL_IDS,
     add_classification_feedback,
@@ -61,7 +62,7 @@ from x_intel_core import (
     update_card_classification_fields,
     update_card_editorial_fields,
     update_card_event_wall_field,
-    update_card_sbt_fields,
+    update_card_sbt_entries,
     update_card_timeline_fields,
     update_x_source_accounts,
 )
@@ -1676,15 +1677,19 @@ def _feed_needs_taxonomy_reclassification() -> bool:
         if not isinstance(row, dict):
             continue
         card_type = str(row.get("card_type") or "").strip().lower()
-        topics = [str(value or "").strip().lower() for value in (row.get("topic_labels") or [])]
+        topics = [str(value or "").strip().lower() for value in (row.get("routing_topics") or [])]
+        product_ids = [str(value or "").strip().lower() for value in (row.get("product_ids") or [])]
         source_role = str(row.get("source_role") or "").strip().lower()
-        if card_type not in ALLOWED_CARD_TYPES or any(topic not in ALLOWED_TOPIC_LABELS for topic in topics):
+        if any(key in row for key in ("topic_labels", "sbt_name", "sbt_names", "sbt_acquisition")):
+            return True
+        if "routing_topics" not in row or "product_ids" not in row or "sbt_entries" not in row or "record_result" not in row:
+            return True
+        if card_type not in ALLOWED_CARD_TYPES or any(topic not in ALLOWED_ROUTING_TOPICS for topic in topics) or any(product_id not in ALLOWED_PRODUCT_IDS for product_id in product_ids):
             return True
         if source_role not in {"official", "official_community", "other"}:
             return True
         if (
-            source_role == "official"
-            and str(row.get("classified_by") or "").strip().lower() != "manual"
+            str(row.get("classified_by") or "").strip().lower() != "manual"
             and str(row.get("review_status") or "").strip() != "admin_overridden"
             and str(row.get("ai_version") or "").strip() != AI_CLASSIFICATION_VERSION
         ):
@@ -5926,11 +5931,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/intel/sbt-fields":
                 tweet_id = str(payload.get("id") or "").strip()
-                update = update_card_sbt_fields(
-                    tweet_id,
-                    sbt_names=payload.get("sbt_names") or "",
-                    sbt_acquisition=str(payload.get("sbt_acquisition") or "").strip(),
-                )
+                update = update_card_sbt_entries(tweet_id, payload.get("sbt_entries"))
                 feed = _read_feed_snapshot()
                 build_i18n_feed_bundle_async(feed, force=False, target_langs=["en", "ko", "zh-Hans"])
                 self._send_json({"ok": True, "update": update, "feed": feed})
@@ -5940,19 +5941,20 @@ class Handler(SimpleHTTPRequestHandler):
                 tweet_id = str(payload.get("id") or "").strip()
                 label = str(payload.get("label") or "").strip().lower()
                 card_type = str(payload.get("card_type") or "").strip().lower()
-                section = str(payload.get("section") or payload.get("topic_label") or "").strip().lower()
-                topic_labels = payload.get("topic_labels")
+                section = str(payload.get("section") or payload.get("routing_topic") or "").strip().lower()
+                routing_topics = payload.get("routing_topics")
+                product_ids = payload.get("product_ids")
                 reason = str(payload.get("reason") or "").strip()
-                if card_type or section or isinstance(topic_labels, list):
-                    feedback = add_classification_feedback_fields(tweet_id, card_type=card_type, topic_label=section, topic_labels=topic_labels if isinstance(topic_labels, list) else None, reason=reason)
-                    update = update_card_classification_fields(tweet_id, card_type=card_type, topic_label=section, topic_labels=topic_labels if isinstance(topic_labels, list) else None)
+                if card_type or section or isinstance(routing_topics, list) or isinstance(product_ids, list):
+                    feedback = add_classification_feedback_fields(tweet_id, card_type=card_type, routing_topic=section, routing_topics=routing_topics if isinstance(routing_topics, list) else None, product_ids=product_ids if isinstance(product_ids, list) else None, reason=reason)
+                    update = update_card_classification_fields(tweet_id, card_type=card_type, routing_topic=section, routing_topics=routing_topics if isinstance(routing_topics, list) else None, product_ids=product_ids if isinstance(product_ids, list) else None)
                 else:
                     feedback = add_classification_feedback(tweet_id, label, reason=reason)
-                    if label in ALLOWED_CARD_TYPES or label in ALLOWED_TOPIC_LABELS:
+                    if label in ALLOWED_CARD_TYPES or label in ALLOWED_ROUTING_TOPICS:
                         update = update_card_classification_fields(
                             tweet_id,
                             card_type=label if label in ALLOWED_CARD_TYPES else "",
-                            topic_label=label if label in ALLOWED_TOPIC_LABELS else "",
+                            routing_topic=label if label in ALLOWED_ROUTING_TOPICS else "",
                         )
                     else:
                         update = {"id": tweet_id, "skipped": True, "reason": "no_card_field_patch"}

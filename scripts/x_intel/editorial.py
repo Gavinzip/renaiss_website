@@ -1165,7 +1165,7 @@ def build_glance_line(card: StoryCard) -> str:
     return f"社群焦點 {topic}。"
 
 
-def infer_topic_labels(card: StoryCard) -> list[str]:
+def infer_routing_topics(card: StoryCard) -> list[str]:
     # 分類信號只看原文/標題/結構化事實，避免被 AI 摘要文案反向污染。
     source = clean_text(" ".join(
         [
@@ -1177,42 +1177,17 @@ def infer_topic_labels(card: StoryCard) -> list[str]:
     labels: list[str] = []
 
     def add(label: str) -> None:
-        if label not in labels and label in ALLOWED_TOPIC_LABELS:
+        if label not in labels and label in ALLOWED_ROUTING_TOPICS:
             labels.append(label)
-
-    facts = normalize_event_facts(card.event_facts)
-
-    def _has_sbt_evidence(text: str, card_type: str, facts_map: dict[str, str]) -> bool:
-        src = clean_text(text)
-        if not src:
-            return False
-        reward_txt = clean_text(" ".join(str(v) for v in facts_map.values()))
-        if re.search(r"\bsbt\b|soulbound", src, re.I):
-            return True
-        if reward_txt and re.search(r"\bsbt\b|soulbound|積分|积分|points?|reward|獎勵|奖励|airdrop|snapshot|快照|threshold|門檻", reward_txt, re.I):
-            return True
-        if re.search(r"(threshold|snapshot|top\s*\d+%|快照|門檻).{0,28}(points?|積分|分)", src, re.I):
-            return True
-        if re.search(r"(points?|積分|分).{0,28}(threshold|snapshot|top\s*\d+%|快照|門檻)", src, re.I):
-            return True
-        if card_type in {"event", "product_progress", "announcement"}:
-            if re.search(r"(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边).{0,24}(sbt|積分|积分|points?)", src, re.I):
-                return True
-            if re.search(r"(sbt|積分|积分|points?).{0,24}(reward|rewards|獎勵|奖励|airdrop|merch|周邊|周边)", src, re.I):
-                return True
-        return False
-
-    if _has_sbt_evidence(source, card.card_type, facts):
-        add("sbt")
 
     if has_pokemon_topic_evidence(source) or re.search(r"collectible|collectibles|收藏品|集換式卡牌|集换式卡牌", source, re.I):
         add("collectibles")
     return labels
 
 
-def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
-    existing = normalize_topic_labels(card.topic_labels)
-    inferred = infer_topic_labels(card)
+def assign_routing_topics(card: StoryCard, keep_existing: bool = True) -> None:
+    existing = normalize_routing_topics(card.routing_topics)
+    inferred = infer_routing_topics(card)
     if keep_existing and existing:
         merged = existing + [x for x in inferred if x not in existing]
     else:
@@ -1224,29 +1199,13 @@ def assign_topic_labels(card: StoryCard, keep_existing: bool = True) -> None:
             " ".join(str(x) for x in (normalize_event_facts(card.event_facts).values())),
         ]
     ))
-    if "sbt" in merged:
-        facts = normalize_event_facts(card.event_facts)
-        sbt_ok = False
-        if re.search(r"\bsbt\b|soulbound", source, re.I):
-            sbt_ok = True
-        elif re.search(r"(threshold|snapshot|top\s*\d+%|快照|門檻).{0,28}(points?|積分|分)", source, re.I):
-            sbt_ok = True
-        elif re.search(r"(points?|積分|分).{0,28}(threshold|snapshot|top\s*\d+%|快照|門檻)", source, re.I):
-            sbt_ok = True
-        else:
-            reward_txt = clean_text(" ".join(str(v) for v in facts.values()))
-            if reward_txt and re.search(r"\bsbt\b|soulbound|snapshot|快照|threshold|門檻", reward_txt, re.I):
-                sbt_ok = True
-        if not sbt_ok:
-            merged = [x for x in merged if x != "sbt"]
-
     if "collectibles" in merged and not (
         has_pokemon_topic_evidence(source)
         or re.search(r"collectible|collectibles|收藏品|集換式卡牌|集换式卡牌", source, re.I)
     ):
         merged = [x for x in merged if x != "collectibles"]
 
-    card.topic_labels = normalize_topic_labels(merged)
+    card.routing_topics = normalize_routing_topics(merged)
 
 
 def infer_timeline_range_dates(text: str, base_dt: datetime | None = None) -> tuple[str, str]:
@@ -1339,7 +1298,7 @@ def refresh_card_routing_fields(card: StoryCard, keep_existing_topics: bool = Tr
     timeline_start, timeline_end = infer_timeline_range_dates(source, base_dt=base_dt)
     card.timeline_date = timeline_start
     card.timeline_end_date = timeline_end
-    assign_topic_labels(card, keep_existing=keep_existing_topics)
+    assign_routing_topics(card, keep_existing=keep_existing_topics)
     card.event_wall = infer_event_wall(card)
 
 
@@ -1391,7 +1350,7 @@ def normalize_card_semantics(card: StoryCard, preserve_type: bool = False) -> No
         card.event_facts = {}
     card.glance = compact_point(build_glance_line(card), 120)
     card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    assign_topic_labels(card, keep_existing=True)
+    assign_routing_topics(card, keep_existing=True)
     card.event_wall = infer_event_wall(card)
 
 
@@ -1570,45 +1529,6 @@ def _threshold_update_needs_rewrite(card: StoryCard) -> bool:
     return not (tier_hit and snapshot_hit)
 
 
-def _sbt_acquisition_missing(card: StoryCard) -> bool:
-    labels = normalize_topic_labels(card.topic_labels)
-    source = clean_text(card.raw_text or card.summary or card.title)
-    if "sbt" not in labels and not has_sbt_signal(source):
-        return False
-    merged = clean_text(
-        " ".join(
-            [
-                str(card.summary or ""),
-                " ".join(str(x) for x in (card.bullets or [])),
-                str(card.detail_summary or ""),
-                " ".join(str(x) for x in (card.detail_lines or [])),
-            ]
-        )
-    )
-    if re.search(r"SBT\s*取得方式", merged, re.I):
-        return False
-    return True
-
-
-def populate_structured_sbt_fields(card: StoryCard, source: str) -> None:
-    """Fill empty SBT fields from an explicit singular source fact without overwriting edits."""
-    existing_names = [clean_text(str(value)) for value in (card.sbt_names or []) if clean_text(str(value))]
-    if not existing_names and clean_text(card.sbt_name):
-        existing_names = [clean_text(card.sbt_name)]
-
-    if not existing_names:
-        inferred_name = infer_single_sbt_name(source)
-        if inferred_name:
-            existing_names = [inferred_name]
-            card.sbt_name = inferred_name
-            card.sbt_names = existing_names
-
-    if len(existing_names) == 1 and not clean_text(card.sbt_acquisition):
-        acquisition = infer_sbt_acquisition_line(source, facts=normalize_event_facts(card.event_facts))
-        if acquisition:
-            card.sbt_acquisition = acquisition
-
-
 def apply_quality_guard(card: StoryCard) -> None:
     source = clean_text(card.raw_text or card.summary or card.title)
     if not source:
@@ -1654,28 +1574,6 @@ def apply_quality_guard(card: StoryCard) -> None:
             card.detail_lines = rebuilt_lines[:6]
 
     if _threshold_update_needs_rewrite(card):
-        rebuilt = build_editorial_copy(source, card.card_type, card.account)
-        rebuilt_summary = clean_text(str(rebuilt.get("summary") or ""))
-        rebuilt_bullets = [clean_text(str(x))[:120] for x in (rebuilt.get("bullets") or []) if str(x).strip()][:3]
-        if rebuilt_summary:
-            card.summary = rebuilt_summary[:320]
-        if rebuilt_bullets:
-            card.bullets = rebuilt_bullets
-        rebuilt_detail = build_detail_copy(
-            source,
-            card.card_type,
-            card.account,
-            event_facts_override=normalize_event_facts(card.event_facts),
-        )
-        rd_summary = clean_text(str(rebuilt_detail.get("detail_summary") or ""))
-        rd_lines = normalize_detail_lines(rebuilt_detail.get("detail_lines"), limit=6)
-        if rd_summary:
-            card.detail_summary = rd_summary[:420]
-        if rd_lines:
-            card.detail_lines = rd_lines[:6]
-
-    if _sbt_acquisition_missing(card):
-        populate_structured_sbt_fields(card, source)
         rebuilt = build_editorial_copy(source, card.card_type, card.account)
         rebuilt_summary = clean_text(str(rebuilt.get("summary") or ""))
         rebuilt_bullets = [clean_text(str(x))[:120] for x in (rebuilt.get("bullets") or []) if str(x).strip()][:3]

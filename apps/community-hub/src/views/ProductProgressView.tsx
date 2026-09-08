@@ -123,8 +123,7 @@ export function ProductProgressView({ cards, lang, loading, onOpenArticle, onRef
     ? portfolio.unmappedUpdates
     : portfolio.unmappedUpdates.filter((event) => normalizeProjectAccount(event.card.account) === effectiveSourceFilter);
   const visibleRelatedUpdates = effectiveSourceFilter === "all" ? [] : portfolio.relatedUpdates.filter((update) => {
-    if (normalizeProjectAccount(update.card.account) !== effectiveSourceFilter) return false;
-    if (ownedProductIds?.has(update.productId) && update.isMilestone) return false;
+    if (!ownedProductIds?.has(update.productId) || update.isMilestone) return false;
     return effectiveFamilyFilter === "all" || update.familyId === effectiveFamilyFilter;
   });
   const visibleUnassignedUpdates = effectiveSourceFilter === "all" || effectiveFamilyFilter !== "all"

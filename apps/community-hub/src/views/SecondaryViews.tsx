@@ -1,7 +1,7 @@
 import { ContentCard } from "@/components/ContentCard";
 import { Icon } from "@/components/Icon";
 import { ViewHeader } from "@/components/AppShell";
-import { isVerifiedResult } from "@/lib/feed";
+import { hasRecordResult } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { OPEN_MONITOR_LEADERBOARD_URL } from "@/lib/sources";
 import type { FeedCard, Language, PackLeaderboard, PackLeaderboardEntry } from "@/types";
@@ -64,7 +64,7 @@ function PackLeaderboardPanel({ leaderboard, loading, error, lang, onRefresh }: 
 }
 
 export function RecordsView({ cards, lang, onOpenArticle, leaderboard, leaderboardLoading, leaderboardError, onRefreshLeaderboard }: RecordsViewProps) {
-  const resultCards = cards.filter(isVerifiedResult);
+  const resultCards = cards.filter(hasRecordResult);
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="RECORDS" title={text(lang, "records.title")} lead={text(lang, "records.lead")} />
     <div className="community-hub-records-layout">

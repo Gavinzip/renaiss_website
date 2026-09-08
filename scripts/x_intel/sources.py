@@ -6,10 +6,16 @@ from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 from .taxonomy import (
     CARD_TYPES,
+    PRODUCT_CATALOG,
+    PRODUCT_IDS,
+    canonical_product_ids,
     canonical_source_role,
     has_complete_product_progress_evidence,
     is_retired_source_handle,
+    migrate_card_taxonomy_payload,
+    normalize_record_result,
     normalize_product_progress_evidence,
+    normalize_sbt_entries,
 )
 
 globals().update(vars(_bootstrap))
@@ -46,7 +52,7 @@ AI_SPECULATION_RE = re.compile(
 AI_RESERVED_DISPLAY_TAGS = {
     "official", "official_community", "community", "other", "events", "event",
     "product_progress", "feature", "alpha", "guides", "guide", "pokemon",
-    "collectibles", "sbt", "官方", "官方社群", "社群", "其他", "無", "宝可梦", "寶可夢",
+    "collectibles", "官方", "官方社群", "社群", "其他", "無", "宝可梦", "寶可夢",
 }
 
 
@@ -256,163 +262,28 @@ def normalize_official_account_role_copy(card: StoryCard) -> bool:
     return True
 
 
-def _is_official_x_public_source(card: StoryCard) -> bool:
-    provider = str(card.provider or "").strip().lower()
-    return bool(
-        is_official_account_handle(card.account)
-        and (is_x_source_url(card.url) or provider in {"twitter-cli", "tweet-result", "r.jina.ai"})
-    )
-
-
-def _fallback_public_copy(card: StoryCard) -> tuple[str, str, list[str], str, list[str]]:
-    raw = clean_text(strip_links_mentions(card.raw_text or card.title or card.summary))
-    existing_summary = clean_text(card.summary or "")
-    if re.search(r"AI\s*尚未完成|待\s*AI|等待模型", existing_summary, re.I):
-        existing_summary = ""
-    title = compact_point(card.title or raw, 96) or "Renaiss 官方更新"
-    summary = compact_point(existing_summary or raw or title, 220)
-    source_lines = [clean_text(strip_links_mentions(x)) for x in split_sentences(raw)]
-    bullets: list[str] = []
-    for line in [*(card.bullets or []), *source_lines]:
-        item = compact_point(line, 88)
-        if item and item not in bullets:
-            bullets.append(item)
-        if len(bullets) >= 3:
-            break
-    while len(bullets) < 3:
-        fallback = [
-            summary or title,
-            "來源：Renaiss 官方 X。",
-            "請查看官方原文確認完整細節。",
-        ][len(bullets)]
-        if fallback not in bullets:
-            bullets.append(fallback)
-        else:
-            bullets.append(f"官方來源補充 {len(bullets) + 1}")
-    detail_summary = compact_point(card.detail_summary or summary or raw or title, 360)
-    detail_lines = normalize_detail_lines(card.detail_lines, limit=6)
-    for line in bullets:
-        if line and line not in detail_lines:
-            detail_lines.append(line)
-        if len(detail_lines) >= 4:
-            break
-    while len(detail_lines) < 4:
-        fallback = [
-            "來源：Renaiss 官方 X",
-            f"主題：{title}",
-            f"重點：{summary or title}",
-            "下一步：查看官方原文確認完整細節。",
-        ][len(detail_lines)]
-        if fallback not in detail_lines:
-            detail_lines.append(fallback)
-        else:
-            detail_lines.append(f"官方來源補充 {len(detail_lines) + 1}")
-    return title[:120], summary[:320], bullets[:3], detail_summary[:420], detail_lines[:6]
-
-
-def _publish_official_x_public_fallback(
+def _set_ai_review_queue(
     card: StoryCard,
     error: str,
     *,
     model: str = "",
-    title: str = "",
-    summary: str = "",
-    bullets: list[str] | None = None,
-    card_type: str = "",
-    layout: str = "",
-    tags: list[str] | None = None,
-    confidence: float | None = None,
-    event_facts: dict[str, str] | None = None,
-    topic_labels: list[str] | None = None,
-    timeline_date: str = "",
-    timeline_end_date: str = "",
-    number_facts: list[dict[str, str]] | None = None,
-    detail_summary: str = "",
-    detail_lines: list[str] | None = None,
-    reason: str = "",
-    plan_status: str = "",
-    plan_status_reason: str = "",
+    preserve_semantics: bool = False,
 ) -> None:
-    fallback_title, fallback_summary, fallback_bullets, fallback_detail_summary, fallback_detail_lines = _fallback_public_copy(card)
-    final_type = AI_CARD_TYPE_ALIASES.get(str(card_type or card.card_type or "").strip().lower(), str(card_type or card.card_type or "").strip().lower())
-    if final_type not in AI_CARD_TYPES:
-        final_type = "announcement"
-    if final_type == "product_progress":
-        final_type = "announcement"
-    final_layout = str(layout or card.layout or "").strip().lower()
-    if final_layout not in AI_LAYOUTS:
-        final_layout = "brief" if final_type != "event" else "timeline"
-    labels = normalize_topic_labels(topic_labels or card.topic_labels or [])
-    cleaned_tags = _normalize_ai_display_tags(tags or card.tags or [])
-    if not cleaned_tags:
-        cleaned_tags = default_style_for_type(final_type)[1]
-    valid_timeline_date = "" if timeline_date == "__INVALID_DATE__" else str(timeline_date or card.timeline_date or "")
-    valid_timeline_end_date = "" if timeline_end_date == "__INVALID_DATE__" else str(timeline_end_date or card.timeline_end_date or "")
-    try:
-        final_confidence = float(confidence if confidence is not None else card.confidence or 0.0)
-    except Exception:
-        final_confidence = 0.0
-
-    card.title = clean_text(title or fallback_title)[:120]
-    card.summary = clean_text(summary or fallback_summary or card.title)[:320]
-    card.bullets = [clean_text(str(x))[:120] for x in (bullets or fallback_bullets) if clean_text(str(x))][:3] or fallback_bullets[:3]
-    card.card_type = final_type
-    card.layout = final_layout
-    card.tags = cleaned_tags[:3]
-    card.confidence = max(0.55, min(1.0, final_confidence or 0.55))
-    card.event_facts = normalize_event_facts(event_facts or card.event_facts) if final_type == "event" else {}
-    if final_type != "event":
-        _clear_event_region(card)
-    card.topic_labels = labels
-    card.product_progress_evidence = {}
-    card.timeline_date = valid_timeline_date
-    card.timeline_end_date = valid_timeline_end_date
-    card.number_facts = number_facts or card.number_facts or []
-    card.detail_summary = clean_text(detail_summary or fallback_detail_summary or card.summary)[:420]
-    card.detail_lines = normalize_detail_lines(detail_lines or fallback_detail_lines, limit=6)
-    card.classified_by = "ai"
-    card.ai_model = model or card.ai_model or minimax_model_name()
-    card.ai_version = AI_CLASSIFICATION_VERSION
-    card.ai_confidence = card.confidence
-    card.ai_status = "ok"
-    card.review_status = AI_REVIEW_AUTO_APPROVED
-    card.classification_reason = (
-        clean_text(reason)
-        or "官方 X 來源即使 AI 驗證未完整通過，也先公開；後台仍保留錯誤原因供人工修正。"
-    )[:360]
-    card.classification_error = clean_text(str(error or "official_x_public_fallback"))[:220]
-    _apply_plan_status(
-        card,
-        status=plan_status or card.plan_status or "needs_review",
-        reason=plan_status_reason or card.plan_status_reason or "AI 規劃狀態需要重新確認。",
-        model=model or card.ai_model or minimax_model_name(),
-    )
-    card.template_id = choose_template_id(card.card_type)
-    card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
-    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    card.event_wall = card.card_type == "event"
-    card.importance = score_card(card)
-
-
-def _set_ai_review_queue(card: StoryCard, error: str, *, model: str = "") -> None:
-    if _is_official_x_public_source(card):
-        _publish_official_x_public_fallback(card, error, model=model)
-        return
     card.classified_by = "ai"
     card.ai_model = model or minimax_model_name()
     card.ai_version = AI_CLASSIFICATION_VERSION
     card.ai_status = "needs_review"
     card.review_status = AI_REVIEW_ADMIN_QUEUE
     card.classification_error = clean_text(str(error or "ai_needs_review"))[:220]
-    _apply_plan_status(
-        card,
-        status="needs_review",
-        reason=f"AI 分類失敗：{clean_text(str(error or 'ai_needs_review'))[:240]}",
-        model=model or minimax_model_name(),
-    )
+    if not preserve_semantics:
+        _apply_plan_status(
+            card,
+            status="needs_review",
+            reason=f"AI 分類失敗：{clean_text(str(error or 'ai_needs_review'))[:240]}",
+            model=model or minimax_model_name(),
+        )
     if not card.classification_reason:
         card.classification_reason = "AI 未產生可安全公開的完整分類，需管理員確認。"
-    card.topic_labels = []
     card.tags = ["待審核"]
     card.template_id = choose_template_id(card.card_type)
     card.glance = compact_point(card.summary or card.title or card.raw_text, 120)
@@ -455,8 +326,34 @@ def _raw_needs_number_facts(raw_text: str) -> bool:
     return False
 
 
-def _normalize_ai_topic_labels(card: StoryCard, labels: list[str], card_type: str, ai_title: str) -> list[str]:
-    return normalize_topic_labels(labels)
+def _normalize_ai_routing_topics(card: StoryCard, labels: list[str], card_type: str, ai_title: str) -> list[str]:
+    return normalize_routing_topics(labels)
+
+
+def _record_result_has_source_signal(kind: str, raw_text: str) -> bool:
+    source = clean_text(raw_text or "")
+    patterns = {
+        "competition_result": r"winner|won\b|congrats|results?|top\s*\d+|排名|名次|冠軍|冠军|前\s*\d+|符合資格|符合资格",
+        "draw_result": r"winner|selected|draw\s+results?|得獎|得奖|中獎|中奖|名單|名单|抽選結果|抽选结果",
+        "reward_claim": r"claim|eligible|redeem|領取|领取|可領|可领|開放領取|开放领取|符合資格|符合资格",
+        "reward_distributed": r"distributed|sent\s+to|airdropped|發放|发放|已.{0,12}(?:送達|送达|到帳|到账)",
+        "milestone_record": r"sold\s*out|milestone|volume|revenue|users?|交易額|交易额|成交|用戶|用户|完售|售罄|突破|累計|累计",
+    }
+    pattern = patterns.get(str(kind or "").strip().lower())
+    return bool(pattern and re.search(pattern, source, re.I))
+
+
+def _raw_requires_record_result(raw_text: str) -> bool:
+    source = clean_text(raw_text or "")
+    return bool(re.search(
+        r"\bwinners?\s+(?:are|is|were|announced|revealed)|(?:draw|giveaway)\s+results?|"
+        r"(?:top\s*\d+|前\s*\d+).{0,80}(?:eligible|claim|符合資格|符合资格|領取|领取)|"
+        r"(?:reward|獎勵|奖励).{0,40}(?:distributed|sent|發放|发放|到帳|到账)|"
+        r"sold\s*out|gross\s+revenue|transaction\s+volume|交易額|交易额|累計交易|累计交易|"
+        r"中獎名單|中奖名单|抽獎結果|抽奖结果|公布.{0,20}(?:得獎|得奖|名次|排名)",
+        source,
+        re.I,
+    ))
 
 
 def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
@@ -471,46 +368,48 @@ def _unsupported_ai_copy_errors(text: str, raw_text: str) -> list[str]:
     return errors
 
 
-def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, model: str) -> bool:
+def _finalize_ai_semantics(card: StoryCard, parsed: dict[str, Any], *, model: str) -> bool:
+    """Validate and persist source-backed facts without depending on public copy."""
+
     errors: list[str] = []
-    card_type = str(parsed.get("card_type") or "").strip().lower()
-    card_type = AI_CARD_TYPE_ALIASES.get(card_type, card_type)
-    layout = str(parsed.get("layout") or "").strip().lower()
-    layout = {
-        "event_poster": "poster",
-        "market_signal": "data",
-        "announcement_timeline": "timeline",
-        "community_brief": "brief",
-    }.get(layout, layout)
-    title = clean_text(str(parsed.get("title") or ""))
-    topic_labels = _normalize_ai_topic_labels(card, normalize_topic_labels(parsed.get("topic_labels")), card_type, title)
+    card_type = AI_CARD_TYPE_ALIASES.get(
+        str(parsed.get("card_type") or "").strip().lower(),
+        str(parsed.get("card_type") or "").strip().lower(),
+    )
+    routing_topics = _normalize_ai_routing_topics(
+        card,
+        normalize_routing_topics(parsed.get("routing_topics")),
+        card_type,
+        "",
+    )
+    raw_product_ids = parsed.get("product_ids")
+    product_ids = canonical_product_ids(raw_product_ids)
     event_facts = normalize_event_facts(parsed.get("event_facts"))
+    product_progress_evidence = normalize_product_progress_evidence(parsed.get("product_progress_evidence"))
+    raw_sbt_entries = parsed.get("sbt_entries")
+    sbt_entries = normalize_sbt_entries(raw_sbt_entries)
+    raw_record_result = parsed.get("record_result")
+    record_result = normalize_record_result(raw_record_result)
+    timeline_date = _valid_ai_date(parsed.get("timeline_date"))
+    timeline_end_date = _valid_ai_date(parsed.get("timeline_end_date"))
+    plan_status = _valid_plan_status(parsed.get("plan_status"))
+    plan_status_reason = clean_text(str(parsed.get("plan_status_reason") or ""))[:360]
+    reason = clean_text(str(parsed.get("classification_reason") or parsed.get("reasoning_note") or ""))[:360]
     number_facts = _source_backed_number_facts(
         normalize_number_facts(parsed.get("number_facts") or parsed.get("numbers")),
         card.raw_text,
     )
-    timeline_date = _valid_ai_date(parsed.get("timeline_date"))
-    timeline_end_date = _valid_ai_date(parsed.get("timeline_end_date"))
-    summary = clean_text(str(parsed.get("summary") or ""))
-    bullets_raw = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
-    bullets = [clean_text(str(x))[:120] for x in bullets_raw if clean_text(str(x))][:3]
-    detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
-    detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
-    reason = clean_text(str(parsed.get("classification_reason") or parsed.get("reasoning_note") or ""))[:360]
-    product_progress_evidence = normalize_product_progress_evidence(parsed.get("product_progress_evidence"))
-    plan_status = _valid_plan_status(parsed.get("plan_status"))
-    plan_status_reason = clean_text(str(parsed.get("plan_status_reason") or ""))[:360]
-    tags = _normalize_ai_display_tags(parsed.get("tags"))
-    confidence_raw = parsed.get("confidence")
     try:
-        confidence = float(confidence_raw)
+        confidence = float(parsed.get("confidence"))
     except Exception:
         confidence = 0.0
 
     if card_type not in AI_CARD_TYPES:
         errors.append("invalid_card_type")
-    if layout not in AI_LAYOUTS:
-        errors.append("invalid_layout")
+    if not isinstance(raw_product_ids, list):
+        errors.append("invalid_product_ids")
+    elif any(str(value or "").strip().lower() not in PRODUCT_IDS for value in raw_product_ids):
+        errors.append("invalid_product_ids")
     if card_type == "product_progress":
         if card.source_role != "official":
             errors.append("product_progress_requires_official_source")
@@ -520,10 +419,6 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         errors.append("invalid_timeline_date")
     if confidence < ai_min_confidence():
         errors.append("low_confidence")
-    if not title or not summary or len(bullets) < 3:
-        errors.append("missing_public_copy")
-    if not detail_summary or len(detail_lines) < 4:
-        errors.append("missing_detail_copy")
     if not reason:
         errors.append("missing_classification_reason")
     if not plan_status:
@@ -532,84 +427,104 @@ def _finalize_ai_classified_card(card: StoryCard, parsed: dict[str, Any], *, mod
         errors.append("missing_plan_status_reason")
     if _raw_needs_number_facts(card.raw_text) and not number_facts:
         errors.append("missing_number_facts")
-    copy_for_grounding = " ".join(
-        [title, summary, " ".join(bullets), detail_summary, " ".join(detail_lines), json.dumps(event_facts, ensure_ascii=False)]
-    )
+    if raw_record_result is not None and raw_record_result != {} and not isinstance(raw_record_result, dict):
+        errors.append("invalid_record_result")
+    if isinstance(raw_record_result, dict) and raw_record_result and not record_result:
+        errors.append("invalid_record_result")
+    if record_result and not _record_result_has_source_signal(record_result.get("kind", ""), card.raw_text):
+        errors.append("unsupported_record_result")
+    if not record_result and _raw_requires_record_result(card.raw_text):
+        errors.append("missing_record_result")
+    raw_sbt_signal = bool(re.search(r"\bSBT\b|soul\s*bound(?:\s+token)?|soulbound|靈魂綁定|灵魂绑定", card.raw_text or "", re.I))
+    if raw_sbt_entries not in (None, []) and not isinstance(raw_sbt_entries, list):
+        errors.append("invalid_sbt_entries")
+    if isinstance(raw_sbt_entries, list) and len(sbt_entries) != len(raw_sbt_entries):
+        errors.append("incomplete_sbt_entries")
+    if sbt_entries and not raw_sbt_signal:
+        errors.append("unsupported_sbt_entries")
+    if raw_sbt_signal and not sbt_entries:
+        errors.append("missing_sbt_entries")
+
+    if errors:
+        _set_ai_review_queue(card, ",".join(errors), model=model)
+        if reason:
+            card.classification_reason = reason
+        return False
+
+    card.card_type = card_type
+    card.layout, default_tags = default_style_for_type(card_type)
+    card.tags = default_tags[:]
+    card.confidence = max(0.0, min(1.0, confidence))
+    card.event_facts = event_facts if card_type == "event" else {}
+    if card_type != "event":
+        _clear_event_region(card)
+    card.routing_topics = routing_topics
+    card.product_ids = product_ids
+    card.sbt_entries = sbt_entries
+    card.record_result = record_result
+    card.product_progress_evidence = product_progress_evidence if card_type == "product_progress" else {}
+    card.timeline_date = "" if timeline_date == "__INVALID_DATE__" else timeline_date
+    card.timeline_end_date = "" if timeline_end_date == "__INVALID_DATE__" else timeline_end_date
+    card.number_facts = number_facts
+    card.classified_by = "ai"
+    card.ai_model = model
+    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_confidence = card.confidence
+    card.ai_status = "semantic_ok"
+    card.review_status = AI_REVIEW_ADMIN_QUEUE
+    card.classification_reason = reason
+    card.classification_error = ""
+    _apply_plan_status(card, status=plan_status, reason=plan_status_reason, model=model)
+    card.template_id = choose_template_id(card.card_type)
+    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
+    card.event_wall = card.card_type == "event"
+    return True
+
+
+def _finalize_ai_editorial(card: StoryCard, parsed: dict[str, Any], *, model: str) -> bool:
+    """Validate display copy after semantic classification has succeeded."""
+
+    errors: list[str] = []
+    title = clean_text(str(parsed.get("title") or ""))
+    summary = clean_text(str(parsed.get("summary") or ""))
+    bullets_raw = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
+    bullets = [clean_text(str(value))[:120] for value in bullets_raw if clean_text(str(value))][:3]
+    detail_summary = clean_text(str(parsed.get("detail_summary") or ""))[:420]
+    detail_lines = normalize_detail_lines(parsed.get("detail_lines"), limit=6)
+    tags = _normalize_ai_display_tags(parsed.get("tags"))
+    layout = str(parsed.get("layout") or "").strip().lower()
+    layout = {
+        "event_poster": "poster",
+        "market_signal": "data",
+        "announcement_timeline": "timeline",
+        "community_brief": "brief",
+    }.get(layout, layout)
+    if layout not in AI_LAYOUTS:
+        errors.append("invalid_layout")
+    if not title or not summary or len(bullets) < 3:
+        errors.append("missing_public_copy")
+    if not detail_summary or len(detail_lines) < 4:
+        errors.append("missing_detail_copy")
+    copy_for_grounding = " ".join([title, summary, " ".join(bullets), detail_summary, " ".join(detail_lines)])
     if not re.search(r"[\u4e00-\u9fff]", copy_for_grounding):
         errors.append("non_chinese_copy")
     source_for_grounding = " ".join([str(card.raw_text or ""), str(card.url or ""), str(card.provider or "")])
     errors.extend(_unsupported_ai_copy_errors(copy_for_grounding, source_for_grounding))
-
     if errors:
-        if _is_official_x_public_source(card):
-            _publish_official_x_public_fallback(
-                card,
-                ",".join(errors),
-                model=model,
-                title=title,
-                summary=summary,
-                bullets=bullets,
-                card_type=card_type,
-                layout=layout,
-                tags=tags,
-                confidence=confidence,
-                event_facts=event_facts,
-                topic_labels=topic_labels,
-                timeline_date=timeline_date,
-                timeline_end_date=timeline_end_date,
-                number_facts=number_facts,
-                detail_summary=detail_summary,
-                detail_lines=detail_lines,
-                reason=reason,
-                plan_status=plan_status,
-                plan_status_reason=plan_status_reason,
-            )
-            return True
-        _set_ai_review_queue(card, ",".join(errors), model=model)
-        if title:
-            card.title = title[:120]
-        if summary:
-            card.summary = summary[:320]
-        if bullets:
-            card.bullets = bullets
-        card.classification_reason = reason or card.classification_reason
+        _set_ai_review_queue(card, ",".join(errors), model=model, preserve_semantics=True)
         return False
 
     card.title = title[:120]
     card.summary = summary[:320]
     card.bullets = bullets
-    card.card_type = card_type
-    card.layout = layout
-    card.tags = tags or default_style_for_type(card_type)[1]
-    card.confidence = max(0.0, min(1.0, confidence))
-    card.event_facts = event_facts if card_type == "event" else {}
-    if card_type != "event":
-        _clear_event_region(card)
-    card.topic_labels = topic_labels
-    card.product_progress_evidence = product_progress_evidence if card_type == "product_progress" else {}
-    card.timeline_date = timeline_date
-    card.timeline_end_date = timeline_end_date
-    card.number_facts = number_facts
     card.detail_summary = detail_summary
     card.detail_lines = detail_lines
-    card.classified_by = "ai"
-    card.ai_model = model
-    card.ai_version = AI_CLASSIFICATION_VERSION
-    card.ai_confidence = card.confidence
+    card.tags = tags or default_style_for_type(card.card_type)[1]
+    card.layout = layout
+    card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
     card.ai_status = "ok"
     card.review_status = AI_REVIEW_AUTO_APPROVED
-    card.classification_reason = reason
     card.classification_error = ""
-    _apply_plan_status(
-        card,
-        status=plan_status,
-        reason=plan_status_reason,
-        model=model,
-    )
-    card.template_id = choose_template_id(card.card_type)
-    card.glance = compact_point(card.summary or " ".join(card.bullets), 120)
-    card.urgency = compute_urgency(card.card_type, card.importance, card.timeline_date)
-    card.event_wall = card.card_type == "event"
     card.importance = score_card(card)
     return True
 
@@ -645,7 +560,8 @@ def build_ai_pending_card(
         cover_image=cover_image,
         metrics=metrics or {},
         reply_to_id=reply_to_id,
-        topic_labels=[],
+        routing_topics=[],
+        product_ids=[],
         classified_by="ai",
         ai_model=minimax_model_name(),
         ai_version=AI_CLASSIFICATION_VERSION,
@@ -653,8 +569,6 @@ def build_ai_pending_card(
         review_status=AI_REVIEW_ADMIN_QUEUE,
         classification_error="ai_not_run",
     )
-    if _is_official_x_public_source(card):
-        _publish_official_x_public_fallback(card, "ai_not_run", model=card.ai_model)
     card.template_id = choose_template_id(card.card_type)
     card.importance = score_card(card)
     return card
@@ -1132,6 +1046,7 @@ def apply_minimax_story_refine(
     call_index = 0
     regional_cm_accounts = ", ".join(REGIONAL_COMMUNITY_X_HANDLE_LABELS)
     official_product_accounts = "；".join(f"@{account}={role}" for account, role in OFFICIAL_X_ACCOUNT_ROLES.items())
+    product_catalog_text = "；".join(f"{product_id}={name}" for product_id, name in PRODUCT_CATALOG.items())
     classification_date = datetime.now(timezone.utc).date().isoformat()
 
     def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
@@ -1204,7 +1119,10 @@ def apply_minimax_story_refine(
             "{\"title\":\"\",\"summary\":\"\",\"bullets\":[\"\",\"\",\"\"],\"card_type\":\"event|product_progress|announcement|market|report|guide|insight\","
             "\"layout\":\"poster|brief|data|timeline\",\"confidence\":0.0,\"tags\":[\"\"],"
             "\"event_facts\":{\"participation\":\"\",\"audience\":\"\",\"location\":\"\",\"schedule\":\"\"},"
-            "\"topic_labels\":[\"collectibles|sbt\"],"
+            "\"routing_topics\":[\"collectibles\"],"
+            "\"product_ids\":[],"
+            "\"sbt_entries\":[{\"name\":\"\",\"acquisition\":\"\",\"status\":\"unknown|upcoming|available|ended|distributed\",\"start_date\":\"YYYY-MM-DD或空字串\",\"end_date\":\"YYYY-MM-DD或空字串\",\"evidence\":\"\"}],"
+            "\"record_result\":null或{\"kind\":\"competition_result|draw_result|reward_claim|reward_distributed|milestone_record\",\"status\":\"confirmed|claim_open|distributed|completed\",\"subject\":\"\",\"evidence\":\"\"},"
             "\"product_progress_evidence\":{\"product_or_capability\":\"\",\"state_change\":\"\",\"user_or_platform_impact\":\"\",\"source_evidence\":\"\"},"
             "\"timeline_date\":\"YYYY-MM-DD或空字串\",\"timeline_end_date\":\"YYYY-MM-DD或空字串\","
             "\"plan_status\":\"upcoming|in_progress|completed|cancelled|not_plan|needs_review\",\"plan_status_reason\":\"\","
@@ -1219,8 +1137,9 @@ def apply_minimax_story_refine(
             "6) 只有含明確活動訊號（時間/地點/報名/參與方式）才可標為 event；"
             "7) product_progress 只給官方來源，而且必須同時回答四問：明確產品或能力、相較之前的狀態改變、使用者或平台影響、原文證據；任一不足就標 announcement；"
             "8) 單句互動、祝賀、表情、聊天回覆通常是 insight；"
-            "9) topic_labels 是可空的陣列，只能使用 collectibles 與 sbt；來源身分、活動、教學、產品進度都不是 topic；"
-            "9c) tags 只能是內容關鍵詞，不可填 official/community/event/product_progress/alpha/pokemon/collectibles/sbt/guide/other 等分類詞；"
+            "9) routing_topics 是內部導頁欄位，只能是 collectibles 或空陣列，不可放 SBT；來源身分、活動、教學、產品進度都不是 routing topic；"
+            f"9a) product_ids 是獨立的產品歸屬事實，只能使用此清單中的 ID：{product_catalog_text}；原文沒有足夠證據時輸出空陣列，不可從摘要或帳號自行補產品；"
+            "9c) tags 只能是讀者看得懂的具體內容關鍵詞，例如產品名、卡牌名、合作方或技術名稱；不可填 official/community/event/product_progress/alpha/pokemon/collectibles/guide/other 等系統分類詞；原文明確提到 SBT 時可把 SBT 當技術名稱；"
             "10) 繁體中文，不可捏造；"
             "11) 禁止使用『核心訊號/關鍵數字/決策建議/判讀建議/分析主題/文中數據/使用方式』這種模板詞；"
             "12) 若出現數字，必須說明它代表什麼（單位/情境/用途），不能只列數字；"
@@ -1238,9 +1157,11 @@ def apply_minimax_story_refine(
             "24) 只有系統已標為 source_role=official 的來源可判為 product_progress；一般情報、媒體、零售商與 official_community/other 來源不可使用 product_progress；"
             f"24b) 以下是目前已知官方帳號的產品身分對照：{official_product_accounts}。這份對照只協助理解產品線，來源身分仍以系統 source_role 為準，不可從帳號尾碼猜國家或地區；"
             f"24a) {regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X；除非原文有 #renaiss 或 @renaissxyz，否則不要標 community，也永遠不要因帳號名標 official；"
-            "25) 若不符合 collectibles 或 sbt，topic_labels 輸出空陣列；"
+            "25) 若不符合 collectibles，routing_topics 輸出空陣列；SBT 必須寫入 sbt_entries，不得再寫成 routing topic；"
             "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，若沒有四問完整證據，card_type 用 announcement；"
-            "若原文出現 SBT/badge/unlock/claim 才加 sbt；寶可夢卡牌內容可加 collectibles；"
+            "原文明確出現 SBT 或 Soul Bound Token 才建立 sbt_entries；每筆必須有 name、status 與貼近原文的 evidence；原文只寫 SBT 時 name 可原樣填 SBT，沒有原文詞時不得自行命名；"
+            "record_result 只用於已公布或已發生的比賽結果、抽獎結果、獎勵領取/發放或正式里程碑；只提到未來獎勵、參與條件或 completed 字樣時必須為 null；"
+            "寶可夢卡牌內容可加 collectibles；"
             "這類有發售日期但沒有 join/register/直播/聚會參與流程時，不要標 event；"
             "26) 活動貼文的 title 必須優先抓活動名稱、參與方式、獎勵或截止條件；不要把主辦/主持身份（例如 Ambassador、hosted by）當成主題；"
             "27) 活動摘要要保留關鍵獎勵、名額、報名限制與操作提醒，例如 Top 100、SBT、booster box、merch、chip bonus、late registration；"
@@ -1252,7 +1173,7 @@ def apply_minimax_story_refine(
             "33) 相對日期（例如 This Friday）必須以發布時間推算成 YYYY-MM-DD；無法確認就留空；"
             "33a) 發售日、開賣日、claim/unlock 日期也要填 timeline_date；欄位只輸出 YYYY-MM-DD，不要輸出時間或時區；"
             "34) 不可把 t.co 或其他短網址尾碼、Discord ID、tweet id、雜湊片段當成 number_facts；"
-            "35) classification_reason 要說明為什麼是該 card_type 與可選的 topic_labels；product_progress_evidence 四欄必須各自引用或緊貼原文證據；"
+            "35) classification_reason 要說明為什麼是該 card_type、product_ids、routing_topics、sbt_entries 與 record_result；所有 evidence 必須引用或緊貼原文證據；"
             "36) number_facts.text 必須是原文中實際出現的數字字串；只收價格、數量、名額、比例、成交價、積分門檻等有解讀價值的數字，不要放發布日期、發售日、推算日期、時間、時區或純年份；"
             "37) 原文沒有 Discord、直播、線上、報名連結、獎勵或限制時，不可自行補這些資訊；"
             "38) detail_lines 只列原文有根據的活動名稱、時間、參與方式、獎勵、限制與下一步；缺少的項目直接省略，不要寫未公布/未提供；"
@@ -1271,13 +1192,14 @@ def apply_minimax_story_refine(
             f"既有標題: {card.title}\n"
             f"內容: {card.raw_text[:4200]}"
         )
+        semantic_ok = False
         try:
             raw = _call_minimax(card, prompt, attempt=1, purpose="initial_refine")
             parsed = parse_json_block(raw)
             if not parsed:
                 compact_retry_prompt = (
                     "請直接輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,product_progress_evidence,"
+                    "欄位固定：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,routing_topics,product_ids,sbt_entries,record_result,product_progress_evidence,"
                     "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
                     "全部繁體中文，且每欄位要短：title<=40字、summary<=120字、每條bullet<=30字。"
                     "detail_summary 與 detail_lines 必須重新整理詳情，不可沿用模板句。"
@@ -1285,7 +1207,8 @@ def apply_minimax_story_refine(
                     "活動標題要抓活動名稱與主要獎勵/參與條件，不要把 Ambassador、hosted by 這種主辦身份當主題。"
                     "相對日期要依發布時間推算成 YYYY-MM-DD；短網址尾碼不可當成數字。"
                     "number_facts.text 只能放原文實際出現的價格、數量、名額、比例、成交價、積分門檻，不要放日期/時間/時區/純年份；原文沒有 Discord、直播、線上或獎勵時不可補。"
-                    "topic_labels 只能是 collectibles/sbt 或空陣列；來源身分不是 topic。"
+                    "routing_topics 只能是 collectibles 或空陣列；SBT 要放 sbt_entries；record_result 只有原文已公布結果或實際發放/里程碑證據時才能填。"
+                    f"product_ids 只能使用此清單且證據不足要留空：{product_catalog_text}。"
                     f"官方產品帳號固定身分：{official_product_accounts}。不可從帳號尾碼猜國家或地區。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement，不要因為發售日標 event。"
@@ -1317,20 +1240,22 @@ def apply_minimax_story_refine(
                     model=model_name,
                 )
                 continue
-            if not _finalize_ai_classified_card(card, parsed, model=model_name):
+            semantic_ok = _finalize_ai_semantics(card, parsed, model=model_name)
+            if not semantic_ok:
                 retry_reason = card.classification_error
                 strict_retry_prompt = (
                     "上一版 JSON 未通過資料驗證，原因："
                     f"{retry_reason}。請重新輸出合法 JSON，不要任何前後文字，不要 ```。"
-                    "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,topic_labels,product_progress_evidence,"
+                    "必須包含所有欄位：title,summary,bullets(3),card_type,layout,tags,confidence,event_facts,routing_topics,product_ids,sbt_entries,record_result,product_progress_evidence,"
                     "timeline_date,timeline_end_date,plan_status,plan_status_reason,number_facts,classification_reason,detail_summary,detail_lines。"
-                    "topic_labels 必須是陣列，只能包含 collectibles/sbt，也可以是空陣列。"
+                    "routing_topics 必須是陣列，只能包含 collectibles，也可以是空陣列；SBT 只放 sbt_entries。"
+                    f"product_ids 必須是陣列，只能使用此清單且證據不足要留空：{product_catalog_text}。"
                     "Pokemon Center、零售商、媒體或一般情報帳號不算 official。"
                     f"{regional_cm_accounts} 是 regional/community CM 帳號，不是官方 X，不可因帳號名標 official。"
                     "官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，card_type 用 announcement；"
                     f"規劃狀態以 {classification_date} 為判斷日；product_progress 必須是官方來源且四問證據完整。已上線、售罄、完售、認領完畢或已過單日發售日期用 completed；"
                     "仍在測試/開放/開發用 in_progress；未來明確日期用 upcoming；一般資訊用 not_plan；證據不足用 needs_review。"
-                    "寶可夢卡牌可加 collectibles；出現 SBT/badge/unlock/claim 才加 sbt；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
+                    "寶可夢卡牌可加 collectibles；明確出現 SBT 才建立有 evidence 的 sbt_entries；record_result 沒有已發生結果證據就必須為 null；有發售日但沒有 join/register/直播/聚會參與流程時，不要標 event。"
                     "所有公開文字必須是繁體中文；detail_summary 必填，detail_lines 必須 4 到 6 條。"
                     "layout 只能是 poster/brief/data/timeline，不可輸出 event_poster 等 template 名稱。"
                     "只能依原文，不可補 Discord、直播、線上、報名連結、獎勵或限制；"
@@ -1343,7 +1268,42 @@ def apply_minimax_story_refine(
                 raw = _call_minimax(card, strict_retry_prompt, attempt=3, purpose="validation_retry")
                 parsed = parse_json_block(raw)
                 if parsed:
-                    _finalize_ai_classified_card(card, parsed, model=model_name)
+                    semantic_ok = _finalize_ai_semantics(card, parsed, model=model_name)
+            if semantic_ok:
+                editorial_ok = _finalize_ai_editorial(card, parsed, model=model_name)
+                if not editorial_ok:
+                    semantic_context = json.dumps(
+                        {
+                            "card_type": card.card_type,
+                            "event_facts": card.event_facts or {},
+                            "routing_topics": card.routing_topics or [],
+                            "product_ids": card.product_ids or [],
+                            "sbt_entries": card.sbt_entries or [],
+                            "record_result": card.record_result or None,
+                            "product_progress_evidence": card.product_progress_evidence or {},
+                            "timeline_date": card.timeline_date,
+                            "timeline_end_date": card.timeline_end_date,
+                            "plan_status": card.plan_status,
+                        },
+                        ensure_ascii=False,
+                    )
+                    editorial_retry_prompt = (
+                        "你是繁體中文社群編輯。語意分類已通過驗證，現在只重寫公開文案，不得改變分類事實。"
+                        "只輸出合法 JSON："
+                        "{\"title\":\"\",\"summary\":\"\",\"bullets\":[\"\",\"\",\"\"],"
+                        "\"layout\":\"poster|brief|data|timeline\",\"tags\":[\"\"],\"detail_summary\":\"\",\"detail_lines\":[\"\",\"\",\"\",\"\"]}。"
+                        "title<=40字、summary<=150字、每條 bullet<=34字；detail_lines 4到6條。"
+                        "只能使用原文與已驗證分類資料，不得新增原文沒有的年份、人名、地點、獎勵、限制、Discord、直播或推測。"
+                        "tags 只放產品名、卡牌名、合作方或技術名稱，不得放 official、event、product_progress、collectibles 等系統分類詞；原文明確提到 SBT 時可使用 SBT。\n\n"
+                        f"已驗證分類：{semantic_context}\n"
+                        f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n原文:{card.raw_text[:4200]}"
+                    )
+                    editorial_raw = _call_minimax(card, editorial_retry_prompt, attempt=1, purpose="editorial_retry")
+                    editorial_parsed = parse_json_block(editorial_raw)
+                    if not editorial_parsed:
+                        _set_ai_review_queue(card, "editorial_json_parse_failed", model=model_name, preserve_semantics=True)
+                    else:
+                        _finalize_ai_editorial(card, editorial_parsed, model=model_name)
             _emit(
                 "refine_card_done",
                 done_cards=index + 1,
@@ -1358,7 +1318,12 @@ def apply_minimax_story_refine(
                 model=model_name,
             )
         except Exception as exc:
-            _set_ai_review_queue(card, f"ai_request_failed:{type(exc).__name__}", model=model_name)
+            _set_ai_review_queue(
+                card,
+                f"ai_request_failed:{type(exc).__name__}",
+                model=model_name,
+                preserve_semantics=semantic_ok,
+            )
             _emit(
                 "refine_card_failed",
                 done_cards=index + 1,
@@ -2175,6 +2140,8 @@ def collect_account_cards(
             try:
                 if str(item.get("account", "")).lower() != username.lower():
                     continue
+                item = dict(item)
+                migrate_card_taxonomy_payload(item, item.get("source_role"))
                 published = str(item.get("published_at") or "")
                 published_dt = datetime.fromisoformat(published) if published else datetime.now(timezone.utc)
                 if published_dt.tzinfo is None:
@@ -2211,6 +2178,7 @@ def collect_account_cards(
                         template_id=str(item.get("template_id") or "community_brief"),
                         glance=str(item.get("glance") or ""),
                         timeline_date=str(item.get("timeline_date") or ""),
+                        timeline_end_date=str(item.get("timeline_end_date") or ""),
                         urgency=str(item.get("urgency") or "normal"),
                         manual_pick=bool(item.get("manual_pick") or False),
                         manual_pin=bool(item.get("manual_pin") or False),
@@ -2222,7 +2190,10 @@ def collect_account_cards(
                         event_region_reason=str(item.get("event_region_reason") or ""),
                         event_region_model=str(item.get("event_region_model") or ""),
                         event_region_version=str(item.get("event_region_version") or ""),
-                        topic_labels=normalize_topic_labels(item.get("topic_labels")),
+                        routing_topics=normalize_routing_topics(item.get("routing_topics")),
+                        product_ids=canonical_product_ids(item.get("product_ids")),
+                        sbt_entries=normalize_sbt_entries(item.get("sbt_entries")),
+                        record_result=normalize_record_result(item.get("record_result")) or None,
                         detail_summary=str(item.get("detail_summary") or ""),
                         detail_lines=normalize_detail_lines(item.get("detail_lines"), limit=6),
                         reply_to_id=str(item.get("reply_to_id") or ""),
@@ -2506,7 +2477,8 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         article_fetch_status=next((c.article_fetch_status for c in rows if c.article_fetch_status), ""),
         metrics=_sum_metrics(rows),
         reply_to_id=str(first.reply_to_id or ""),
-        topic_labels=[],
+        routing_topics=[],
+        product_ids=[],
         classified_by="ai",
         ai_model=last.ai_model or first.ai_model or minimax_model_name(),
         ai_version=AI_CLASSIFICATION_VERSION,

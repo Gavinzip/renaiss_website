@@ -170,7 +170,7 @@ export function MediaView({ accountProjects, cards, lang, loading, onOpenArticle
   const [filter, setFilter] = useState<"all" | "official" | "market">("all");
   const rows = useMemo(() => cards.filter((card) => isMedia(card, accountProjects)).filter((card) => {
     if (filter === "official") return isOfficial(card, accountProjects);
-    if (filter === "market") return ["market", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.topic_labels?.some((topic) => String(topic).toLowerCase() === "collectibles");
+    if (filter === "market") return ["market", "report"].includes(String(card.card_type ?? "").toLowerCase()) || card.routing_topics?.some((topic) => String(topic).toLowerCase() === "collectibles");
     return true;
   }), [accountProjects, cards, filter]);
   const { page, pageCount, pageRows, setPage } = usePaginatedRows(rows, `${lang}:${filter}`);

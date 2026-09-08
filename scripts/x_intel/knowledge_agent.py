@@ -173,12 +173,21 @@ def _item_blob(item: dict[str, Any]) -> str:
         item.get("detail_summary"),
         item.get("raw_hint"),
         item.get("semantic_text"),
-        " ".join(str(x) for x in (item.get("topic_labels") or []) if x),
+        " ".join(str(x) for x in (item.get("routing_topics") or []) if x),
+        " ".join(str(x) for x in (item.get("product_ids") or []) if x),
         " ".join(str(x) for x in (item.get("tags") or []) if x),
     ]
     facts = item.get("event_facts")
     if isinstance(facts, dict):
         parts.extend(facts.values())
+    sbt_entries = item.get("sbt_entries")
+    if isinstance(sbt_entries, list):
+        for entry in sbt_entries:
+            if isinstance(entry, dict):
+                parts.extend(entry.values())
+    record_result = item.get("record_result")
+    if isinstance(record_result, dict):
+        parts.extend(record_result.values())
     return clean_text(" ".join(str(part or "") for part in parts)).lower()
 
 
@@ -500,8 +509,21 @@ def _answer_curated_sbt_matrix(question: str, *, lang: str) -> dict[str, Any] | 
         "detail_summary": detail,
         "raw_hint": "Source: website/assets/index-data.js sbtRows",
         "card_type": "guide",
-        "topic_labels": ["sbt"],
-        "tags": ["sbt", "curated"],
+        "routing_topics": [],
+        "tags": ["SBT"],
+        "sbt_entries": [
+            {
+                "name": str(row.get("name") or ""),
+                "acquisition": str(row.get("requirement") or ""),
+                "status": "available",
+                "start_date": "",
+                "end_date": "",
+                "evidence": str(row.get("requirement") or ""),
+            }
+            for row in source_rows
+            if str(row.get("name") or "").strip() and str(row.get("requirement") or "").strip()
+        ],
+        "record_result": None,
         "event_facts": {},
         "date_role": "",
         "event_group_key": "",
@@ -532,7 +554,7 @@ def _answer_curated_sbt_matrix(question: str, *, lang: str) -> dict[str, Any] | 
 
 def _score_memory_item(base_score: float, item: dict[str, Any], question: str, now: datetime) -> tuple[float, list[str]]:
     intent = _question_intent(question)
-    labels = {str(x).lower() for x in (item.get("topic_labels") or []) if x}
+    labels = {str(x).lower() for x in (item.get("routing_topics") or []) if x}
     tags = {str(x).lower() for x in (item.get("tags") or []) if x}
     card_type = str(item.get("card_type") or "").lower()
     source_role = str(item.get("source_role") or "").strip().lower()
@@ -555,7 +577,7 @@ def _score_memory_item(base_score: float, item: dict[str, Any], question: str, n
             score += 0.1
             reasons.append("official_source")
 
-    if intent["sbt"] and ("sbt" in labels or "sbt" in tags or "sbt" in blob):
+    if intent["sbt"] and item.get("sbt_entries"):
         score += 0.12
         reasons.append("sbt_match")
 
@@ -648,8 +670,11 @@ def _source_from_item(
         "raw_hint": _compact(item.get("raw_hint"), 600),
         "card_type": str(item.get("card_type") or ""),
         "source_role": str(item.get("source_role") or ""),
-        "topic_labels": [str(x) for x in (item.get("topic_labels") or []) if x],
+        "routing_topics": [str(x) for x in (item.get("routing_topics") or []) if x],
+        "product_ids": [str(x) for x in (item.get("product_ids") or []) if x],
         "tags": [str(x) for x in (item.get("tags") or []) if x],
+        "sbt_entries": [dict(x) for x in (item.get("sbt_entries") or []) if isinstance(x, dict)],
+        "record_result": dict(item.get("record_result")) if isinstance(item.get("record_result"), dict) else None,
         "event_facts": {str(k): _compact(v, 220) for k, v in facts.items() if str(v or "").strip()},
         "date_role": str(item.get("date_role") or ""),
         "date_role_source": str(item.get("date_role_source") or ""),
@@ -675,7 +700,8 @@ def _context_line(source: dict[str, Any], index: int) -> str:
         f"source_role={source.get('source_role') or ''}",
         f"date_role={source.get('date_role') or ''}",
         f"event_group={source.get('event_group_key') or ''}",
-        f"labels={','.join(source.get('topic_labels') or [])}",
+        f"labels={','.join(source.get('routing_topics') or [])}",
+        f"products={','.join(source.get('product_ids') or [])}",
         f"title={source.get('title') or ''}",
         f"summary={source.get('summary') or ''}",
         f"detail={source.get('detail_summary') or ''}",

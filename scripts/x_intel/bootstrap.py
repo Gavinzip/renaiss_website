@@ -25,9 +25,13 @@ from website_storage import get_website_data_dir
 
 from .taxonomy import (
     CARD_TYPES,
-    TOPIC_LABELS,
-    canonical_topic_labels,
+    PRODUCT_IDS,
+    ROUTING_TOPICS,
+    canonical_product_ids,
+    canonical_routing_topics,
+    normalize_record_result,
     normalize_product_progress_evidence,
+    normalize_sbt_entries,
 )
 
 try:
@@ -45,8 +49,9 @@ MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 ALLOWED_CARD_TYPES = set(CARD_TYPES)
-ALLOWED_TOPIC_LABELS = set(TOPIC_LABELS)
-ALLOWED_FEEDBACK_LABELS = ALLOWED_CARD_TYPES | ALLOWED_TOPIC_LABELS | {"exclude"}
+ALLOWED_PRODUCT_IDS = set(PRODUCT_IDS)
+ALLOWED_ROUTING_TOPICS = set(ROUTING_TOPICS)
+ALLOWED_FEEDBACK_LABELS = ALLOWED_CARD_TYPES | ALLOWED_ROUTING_TOPICS | {"exclude"}
 JINA_HOST = "r.jina.ai"
 JINA_ANON_MIN_INTERVAL_SECONDS = 3.2
 JINA_KEYED_MIN_INTERVAL_SECONDS = 0.2
@@ -109,7 +114,7 @@ REGIONAL_COMMUNITY_X_HANDLES = {handle.lower() for handle in REGIONAL_COMMUNITY_
 REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
-AI_CLASSIFICATION_VERSION = "20260902-source-role-product-progress1"
+AI_CLASSIFICATION_VERSION = "20260908-structured-semantics1"
 PLAN_STATUS_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
 EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
 PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}
@@ -253,12 +258,12 @@ class StoryCard:
     event_region_reason: str = ""
     event_region_model: str = ""
     event_region_version: str = ""
-    topic_labels: list[str] | None = None
+    routing_topics: list[str] | None = None
+    product_ids: list[str] | None = None
     detail_summary: str = ""
     detail_lines: list[str] | None = None
-    sbt_name: str = ""
-    sbt_names: list[str] | None = None
-    sbt_acquisition: str = ""
+    sbt_entries: list[dict[str, str]] | None = None
+    record_result: dict[str, str] | None = None
     reply_to_id: str = ""
     dedupe_status: str = ""
     dedupe_checked: bool = False
@@ -332,12 +337,12 @@ class StoryCard:
             "event_region_reason": self.event_region_reason,
             "event_region_model": self.event_region_model,
             "event_region_version": self.event_region_version,
-            "topic_labels": self.topic_labels or [],
+            "routing_topics": canonical_routing_topics(self.routing_topics),
+            "product_ids": canonical_product_ids(self.product_ids),
             "detail_summary": self.detail_summary,
             "detail_lines": self.detail_lines or [],
-            "sbt_name": self.sbt_name,
-            "sbt_names": self.sbt_names or [],
-            "sbt_acquisition": self.sbt_acquisition,
+            "sbt_entries": normalize_sbt_entries(self.sbt_entries),
+            "record_result": normalize_record_result(self.record_result) or None,
             "reply_to_id": self.reply_to_id,
             "dedupe_status": self.dedupe_status,
             "dedupe_checked": self.dedupe_checked,
@@ -1491,7 +1496,8 @@ def parse_status_page(
         ) or ("complete" if article_blocks else "partial" if is_article else ""),
         metrics=metrics,
         reply_to_id=reply_to_id,
-        topic_labels=[],
+        routing_topics=[],
+        product_ids=[],
         classified_by="ai",
         ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M3").strip(),
         ai_version=AI_CLASSIFICATION_VERSION,
@@ -1840,10 +1846,10 @@ def has_guide_topic_evidence(text: Any, card_type: str = "") -> bool:
     return False
 
 
-def normalize_topic_labels(value: Any) -> list[str]:
+def normalize_routing_topics(value: Any) -> list[str]:
     if isinstance(value, str):
         value = re.split(r"[,，/|\\\s]+", value)
-    return canonical_topic_labels(value)
+    return canonical_routing_topics(value)
 
 
 def normalize_number_facts(value: Any) -> list[dict[str, str]]:

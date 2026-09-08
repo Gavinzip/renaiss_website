@@ -46,7 +46,7 @@ I18N_BUILD_STATE: dict[str, object] = {
 
 TRANSLATE_MAX_CHARS = 320
 I18N_TARGET_LANGS = ["zh-Hant", "zh-Hans", "en", "ko"]
-I18N_BUILD_VERSION = 12
+I18N_BUILD_VERSION = 13
 I18N_QUEUE_MERGE_WAIT_SEC = 0.25
 I18N_FEED_TEXT_KEYS = {
     "headline",
@@ -72,7 +72,9 @@ I18N_FEED_TEXT_KEYS = {
     "reward",
     "message",
     "participation",
-    "sbt_acquisition",
+    "acquisition",
+    "evidence",
+    "subject",
     "tags",
     "meaning",
 }
@@ -137,9 +139,6 @@ I18N_CARD_FACT_TEXT_KEYS = (
     "what",
     "why",
     "impact",
-)
-I18N_CARD_DIRECT_TEXT_KEYS = (
-    "sbt_acquisition",
 )
 I18N_VISIBLE_FEED_ROOT_KEYS = (
     "digest",
@@ -983,10 +982,6 @@ def _collect_feed_i18n_entries(node: object) -> list[tuple[str, str]]:
             value = card.get(key)
             if isinstance(value, str):
                 _push(f"{card_path}.{key}", value, key)
-        for key in I18N_CARD_DIRECT_TEXT_KEYS:
-            value = card.get(key)
-            if isinstance(value, str):
-                _push(f"{card_path}.{key}", value, key)
         for key in I18N_FEED_LIST_KEYS:
             value = card.get(key)
             if not isinstance(value, list):
@@ -1008,6 +1003,21 @@ def _collect_feed_i18n_entries(node: object) -> list[tuple[str, str]]:
                 meaning = item.get("meaning")
                 if isinstance(meaning, str):
                     _push(f"{card_path}.number_facts[{idx}].meaning", meaning, "meaning")
+        sbt_entries = card.get("sbt_entries")
+        if isinstance(sbt_entries, list):
+            for idx, item in enumerate(_iter_limited(sbt_entries)):
+                if not isinstance(item, dict):
+                    continue
+                for key in ("name", "acquisition", "evidence"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        _push(f"{card_path}.sbt_entries[{idx}].{key}", value, key)
+        record_result = card.get("record_result")
+        if isinstance(record_result, dict):
+            for key in ("subject", "evidence"):
+                value = record_result.get(key)
+                if isinstance(value, str):
+                    _push(f"{card_path}.record_result.{key}", value, key)
 
     if not isinstance(node, dict):
         return out

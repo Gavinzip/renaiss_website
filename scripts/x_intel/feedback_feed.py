@@ -16,10 +16,14 @@ from .knowledge_memory import (
 )
 from .taxonomy import (
     RETIRED_X_SOURCE_HANDLES,
+    SBT_STATUSES,
     canonical_card_type,
+    canonical_product_ids,
     canonical_source_role,
     migrate_card_taxonomy_payload,
     normalize_product_progress_evidence,
+    normalize_record_result,
+    normalize_sbt_entries,
 )
 
 globals().update(vars(_bootstrap))
@@ -91,11 +95,11 @@ def _env_positive_int(name: str, default: int) -> int:
 DEFAULT_MEMORY_RULES = [
     "只有明確有參與行為、時間、地點、直播、報名或 join/register 等訊號，才把 card_type 判成 event。",
     "產品進度必須是官方來源，並同時具備明確產品或能力、狀態改變、使用者或平台影響、原文證據；任一不足就是 announcement。",
-    "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；SBT 是 topic，不是 card type。",
+    "只提到 SBT 門檻、快照、積分線、claim 條件時，不要只因為有日期就判成活動；SBT 只寫入有原文證據的 sbt_entries，不是 card type 或 routing topic。",
     "官方來源與社群轉述重複時，優先保留官方來源；社群版本只在提供額外攻略或經驗時保留。",
     "寶可夢不是獨立 topic；寶可夢卡牌或收藏品內容可標 collectibles，並依貼文實際用途選擇 card type。",
     "教學、操作步驟、參與流程、工具用法、集運、查價或套利等可照做資訊使用 card_type=guide。",
-    "topic_labels 可以是空陣列，且只允許 collectibles 與 sbt；來源身分與頁面分區不得寫入 topic。",
+    "routing_topics 可以是空陣列，目前只允許 collectibles；來源身分、SBT 與頁面分區不得寫入 routing topic。",
 ]
 
 
@@ -247,21 +251,21 @@ def _is_forced_collectibles_channel_card(card: StoryCard) -> bool:
     return _extract_discord_channel_id_from_card(card) == FORCED_COLLECTIBLES_CHANNEL_ID
 
 
-def _enforce_fixed_channel_topic_labels(cards: list[StoryCard]) -> None:
+def _enforce_fixed_channel_routing_topics(cards: list[StoryCard]) -> None:
     for card in cards:
         if str(card.classified_by or "").strip().lower() in {"ai", "manual"}:
             continue
-        labels = normalize_topic_labels(card.topic_labels)
+        labels = normalize_routing_topics(card.routing_topics)
         if _is_forced_collectibles_channel_card(card):
-            labels = normalize_topic_labels([*labels, "collectibles"])
+            labels = normalize_routing_topics([*labels, "collectibles"])
         else:
             labels = [label for label in labels if label != "collectibles"]
-        card.topic_labels = labels
+        card.routing_topics = labels
 
 
 def _enforce_fixed_channel_payload_fields(item: dict[str, Any]) -> None:
     if isinstance(item, dict):
-        item["topic_labels"] = normalize_topic_labels(item.get("topic_labels"))
+        item["routing_topics"] = normalize_routing_topics(item.get("routing_topics"))
 
 
 def _ensure_forced_collectibles_cards_in_curated(
@@ -275,14 +279,14 @@ def _ensure_forced_collectibles_cards_in_curated(
     for card in source_cards:
         if not _is_forced_collectibles_channel_card(card):
             continue
-        if str(card.classified_by or "").strip().lower() in {"ai", "manual"} and "collectibles" not in normalize_topic_labels(card.topic_labels):
+        if str(card.classified_by or "").strip().lower() in {"ai", "manual"} and "collectibles" not in normalize_routing_topics(card.routing_topics):
             continue
         card_id = str(card.id or "").strip()
         if not card_id or card_id in existing_ids:
             continue
         if str(card.classified_by or "").strip().lower() not in {"ai", "manual"}:
-            labels = normalize_topic_labels([*(card.topic_labels or []), "collectibles"])
-            card.topic_labels = labels if labels else ["collectibles"]
+            labels = normalize_routing_topics([*(card.routing_topics or []), "collectibles"])
+            card.routing_topics = labels if labels else ["collectibles"]
         out.append(card)
         existing_ids.add(card_id)
     return out
@@ -336,10 +340,24 @@ def migrate_feedback_taxonomy_state() -> int:
     }
     changed = 0
     overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
-    for override in overrides.values():
+    feed_payload = _read_feed_payload()
+    feed_rows = feed_payload.get("cards") if isinstance(feed_payload.get("cards"), list) else []
+    feed_by_id = {
+        str(row.get("id") or "").strip(): row
+        for row in feed_rows
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+    for card_id, override in overrides.items():
         if not isinstance(override, dict):
             continue
-        legacy_topics = override.get("topic_labels") if isinstance(override.get("topic_labels"), list) else []
+        legacy_topics = (
+            override.get("routing_topics")
+            if isinstance(override.get("routing_topics"), list)
+            else override.get("topic_labels")
+            if isinstance(override.get("topic_labels"), list)
+            else []
+        )
+        snapshot = feed_by_id.get(str(card_id or "").strip(), {})
         account = normalize_account_handle(override.get("source_account"))
         role = roles_by_handle.get(
             account,
@@ -353,13 +371,40 @@ def migrate_feedback_taxonomy_state() -> int:
             plan_status=override.get("plan_status"),
             classified_by="manual",
         ) if old_type or any(str(x).strip().lower() in {"alpha", "guides", "guide"} for x in legacy_topics) else ""
-        next_topics = normalize_topic_labels(legacy_topics)
+        next_topics = normalize_routing_topics(legacy_topics)
         if next_type and next_type != old_type:
             override["card_type"] = next_type
             changed += 1
-        if "topic_labels" in override and next_topics != legacy_topics:
-            override["topic_labels"] = next_topics
+        if "routing_topics" in override and next_topics != legacy_topics:
+            override["routing_topics"] = next_topics
             changed += 1
+        if "topic_labels" in override:
+            override["routing_topics"] = next_topics
+            override.pop("topic_labels", None)
+            changed += 1
+        if any(key in override for key in ("sbt_name", "sbt_names", "sbt_acquisition")) or "sbt" in {
+            str(topic or "").strip().lower() for topic in legacy_topics
+        }:
+            override["sbt_entries"] = normalize_sbt_entries(
+                override.get("sbt_entries"),
+                legacy_name=override.get("sbt_name"),
+                legacy_names=override.get("sbt_names"),
+                legacy_acquisition=override.get("sbt_acquisition"),
+                legacy_topic_labels=legacy_topics,
+                raw_text=snapshot.get("raw_text"),
+                timeline_date=override.get("timeline_date") or snapshot.get("timeline_date"),
+                timeline_end_date=override.get("timeline_end_date") or snapshot.get("timeline_end_date"),
+            )
+            for key in ("sbt_name", "sbt_names", "sbt_acquisition"):
+                override.pop(key, None)
+            changed += 1
+        if "record_result" in override:
+            override["record_result"] = normalize_record_result(override.get("record_result")) or None
+        if "product_ids" in override:
+            normalized_product_ids = canonical_product_ids(override.get("product_ids"))
+            if normalized_product_ids != override.get("product_ids"):
+                override["product_ids"] = normalized_product_ids
+                changed += 1
         if "event_wall" in override:
             override.pop("event_wall", None)
             changed += 1
@@ -417,8 +462,8 @@ def _feedback_label_kind(label: str) -> str:
         return "exclude"
     if row in ALLOWED_CARD_TYPES:
         return "card_type"
-    if row in ALLOWED_TOPIC_LABELS:
-        return "topic_label"
+    if row in ALLOWED_ROUTING_TOPICS:
+        return "routing_topic"
     return ""
 
 
@@ -500,12 +545,12 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         event_region_reason=str(row.get("event_region_reason") or ""),
         event_region_model=str(row.get("event_region_model") or ""),
         event_region_version=str(row.get("event_region_version") or ""),
-        topic_labels=normalize_topic_labels(row.get("topic_labels")),
+        routing_topics=normalize_routing_topics(row.get("routing_topics")),
+        product_ids=canonical_product_ids(row.get("product_ids")),
         detail_summary=str(row.get("detail_summary") or ""),
         detail_lines=normalize_detail_lines(row.get("detail_lines"), limit=6),
-        sbt_name=str(row.get("sbt_name") or ""),
-        sbt_names=[str(x) for x in row.get("sbt_names", []) if str(x).strip()][:8] if isinstance(row.get("sbt_names"), list) else [],
-        sbt_acquisition=str(row.get("sbt_acquisition") or ""),
+        sbt_entries=normalize_sbt_entries(row.get("sbt_entries")),
+        record_result=normalize_record_result(row.get("record_result")),
         reply_to_id=str(row.get("reply_to_id") or ""),
         dedupe_status=str(row.get("dedupe_status") or ""),
         dedupe_checked=bool(row.get("dedupe_checked") is True),
@@ -846,7 +891,7 @@ def _distill_feedback_rule(
         "title": clean_text(str(snapshot.get("title") or ""))[:220],
         "summary": clean_text(str(snapshot.get("summary") or snapshot.get("glance") or ""))[:420],
         "card_type_before": str(snapshot.get("card_type") or ""),
-        "topic_labels_before": normalize_topic_labels(snapshot.get("topic_labels")),
+        "routing_topics_before": normalize_routing_topics(snapshot.get("routing_topics")),
         "event_facts": snapshot.get("event_facts") if isinstance(snapshot.get("event_facts"), dict) else {},
         "raw_text": clean_text(str(snapshot.get("raw_text") or ""))[:1200],
     }
@@ -870,8 +915,8 @@ def _distill_feedback_rule(
         "  \"rule\": \"一條繁中規則，60 字以內\",\n"
         "  \"scope\": \"適用範圍，30 字以內\",\n"
         "  \"rationale\": \"你如何理解這次修正，80 字以內\",\n"
-        "  \"target_label\": \"event/product_progress/announcement/market/report/guide/insight/collectibles/sbt/exclude\",\n"
-        "  \"label_kind\": \"card_type/topic_label/exclude\"\n"
+        "  \"target_label\": \"event/product_progress/announcement/market/report/guide/insight/collectibles/exclude\",\n"
+        "  \"label_kind\": \"card_type/routing_topic/exclude\"\n"
         "}"
     )
     try:
@@ -889,7 +934,7 @@ def _distill_feedback_rule(
             "status": "pending",
             "error": clean_text(str(parsed.get("rationale") or "AI did not produce a usable rule"))[:220],
         }
-    if label_kind not in {"card_type", "topic_label", "exclude"}:
+    if label_kind not in {"card_type", "routing_topic", "exclude"}:
         label_kind = _feedback_label_kind(target_label)
     return {
         "status": "ready",
@@ -992,7 +1037,7 @@ def add_classification_feedback(tweet_id: str, label: str, reason: str = "") -> 
         "source_account": str(snapshot.get("account") or ""),
         "source_title": clean_text(str(snapshot.get("title") or snapshot.get("glance") or ""))[:180],
         "source_card_type": str(snapshot.get("card_type") or ""),
-        "source_topic_labels": normalize_topic_labels(snapshot.get("topic_labels")),
+        "source_routing_topics": normalize_routing_topics(snapshot.get("routing_topics")),
         "source_url": str(snapshot.get("url") or ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1024,26 +1069,31 @@ def add_classification_feedback_fields(
     tweet_id: str,
     *,
     card_type: str = "",
-    topic_label: str = "",
-    topic_labels: list[str] | None = None,
+    routing_topic: str = "",
+    routing_topics: list[str] | None = None,
+    product_ids: list[str] | None = None,
     reason: str = "",
 ) -> dict[str, Any]:
     tid = str(tweet_id or "").strip()
     next_card_type = str(card_type or "").strip().lower()
-    has_topic_labels_payload = isinstance(topic_labels, list)
-    raw_topic_labels = topic_labels if has_topic_labels_payload else []
-    if not raw_topic_labels and str(topic_label or "").strip():
-        raw_topic_labels = [topic_label]
-    next_topic_labels = normalize_topic_labels(raw_topic_labels)
+    has_routing_topics_payload = isinstance(routing_topics, list)
+    raw_routing_topics = routing_topics if has_routing_topics_payload else []
+    if not raw_routing_topics and str(routing_topic or "").strip():
+        raw_routing_topics = [routing_topic]
+    next_routing_topics = normalize_routing_topics(raw_routing_topics)
+    has_product_ids_payload = isinstance(product_ids, list)
+    next_product_ids = canonical_product_ids(product_ids)
     fb_reason = clean_text(reason or "")
     if not tid:
         raise ValueError("tweet id is required")
     if next_card_type and next_card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
-    if str(topic_label or "").strip() and not next_topic_labels:
-        raise ValueError("invalid topic_label")
-    if not next_card_type and not has_topic_labels_payload and not next_topic_labels:
-        raise ValueError("card_type or topic_label is required")
+    if str(routing_topic or "").strip() and not next_routing_topics:
+        raise ValueError("invalid routing_topic")
+    if has_product_ids_payload and len(next_product_ids) != len({str(value or "").strip().lower() for value in product_ids}):
+        raise ValueError("invalid product_ids")
+    if not next_card_type and not has_routing_topics_payload and not next_routing_topics and not has_product_ids_payload:
+        raise ValueError("card_type, routing_topic, or product_ids is required")
 
     state = read_feedback_state()
     overrides = state.get("card_field_overrides")
@@ -1056,14 +1106,16 @@ def add_classification_feedback_fields(
     next_override = dict(prev)
     if next_card_type:
         next_override["card_type"] = next_card_type
-    if has_topic_labels_payload or next_topic_labels:
+    if has_routing_topics_payload or next_routing_topics:
         # A section correction stores the final section state, including multi-section cards.
-        next_override["topic_labels"] = next_topic_labels
+        next_override["routing_topics"] = next_routing_topics
+    if has_product_ids_payload:
+        next_override["product_ids"] = next_product_ids
     next_override["reason"] = fb_reason[:420]
     next_override["source_account"] = str(snapshot.get("account") or "")
     next_override["source_title"] = clean_text(str(snapshot.get("title") or snapshot.get("glance") or ""))[:180]
     next_override["source_card_type"] = str(snapshot.get("card_type") or "")
-    next_override["source_topic_labels"] = normalize_topic_labels(snapshot.get("topic_labels"))
+    next_override["source_routing_topics"] = normalize_routing_topics(snapshot.get("routing_topics"))
     next_override["source_url"] = str(snapshot.get("url") or "")
     next_override["updated_at"] = datetime.now(timezone.utc).isoformat()
     overrides[tid] = next_override
@@ -1078,7 +1130,7 @@ def add_classification_feedback_fields(
             current.update(next_override)
             overrides[tid] = current
             state["card_field_overrides"] = overrides
-        for topic in next_topic_labels:
+        for topic in next_routing_topics:
             memory_results.append(add_classification_feedback(tid, topic, reason=fb_reason))
             state = read_feedback_state()
             overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
@@ -1093,7 +1145,8 @@ def add_classification_feedback_fields(
     return {
         "id": tid,
         "card_type": next_card_type,
-        "topic_labels": next_topic_labels,
+        "routing_topics": next_routing_topics,
+        "product_ids": next_product_ids,
         "memory_results": memory_results,
     }
 
@@ -1106,9 +1159,8 @@ def _read_feed_payload() -> dict[str, Any]:
 EDITORIAL_OVERRIDE_FIELDS = {
     "timeline_date",
     "timeline_end_date",
-    "sbt_name",
-    "sbt_names",
-    "sbt_acquisition",
+    "sbt_entries",
+    "record_result",
     "event_region",
     "plan_status",
 }
@@ -1145,7 +1197,7 @@ def _persist_card_editorial_override(tweet_id: str, patch: dict[str, Any]) -> di
 
 def _apply_editorial_override(card: StoryCard, field_info: dict[str, Any]) -> int:
     changed = 0
-    for key in ("timeline_date", "timeline_end_date", "sbt_name", "sbt_acquisition"):
+    for key in ("timeline_date", "timeline_end_date"):
         if key not in field_info:
             continue
         value = str(field_info.get(key) or "")
@@ -1156,10 +1208,15 @@ def _apply_editorial_override(card: StoryCard, field_info: dict[str, Any]) -> in
     if card.event_wall != derived_event_wall:
         card.event_wall = derived_event_wall
         changed += 1
-    if "sbt_names" in field_info:
-        value = [clean_text(str(item)) for item in (field_info.get("sbt_names") or []) if clean_text(str(item))][:8]
-        if (card.sbt_names or []) != value:
-            card.sbt_names = value
+    if "sbt_entries" in field_info:
+        value = normalize_sbt_entries(field_info.get("sbt_entries"))
+        if (card.sbt_entries or []) != value:
+            card.sbt_entries = value
+            changed += 1
+    if "record_result" in field_info:
+        value = normalize_record_result(field_info.get("record_result")) or None
+        if card.record_result != value:
+            card.record_result = value
             changed += 1
     if "event_region" in field_info:
         value = str(field_info.get("event_region") or "unknown").strip().lower()
@@ -1238,21 +1295,36 @@ def update_card_event_wall_field(tweet_id: str, event_wall: bool) -> dict[str, A
     )
 
 
-def update_card_sbt_fields(tweet_id: str, sbt_names: Any = "", sbt_acquisition: str = "") -> dict[str, Any]:
-    if isinstance(sbt_names, list):
-        names = [clean_text(str(x)) for x in sbt_names if clean_text(str(x))]
-    else:
-        raw = str(sbt_names or "")
-        names = [clean_text(x) for x in re.split(r"[,，、/|\\n]+", raw) if clean_text(x)]
-    names = names[:8]
-    acquisition = clean_text(str(sbt_acquisition or ""))[:320]
+def _validate_sbt_entries_payload(sbt_entries: Any) -> list[dict[str, str]]:
+    if not isinstance(sbt_entries, list):
+        raise ValueError("sbt_entries must be a list")
+    raw_entries = sbt_entries
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            raise ValueError("each SBT entry must be an object")
+        status = str(raw_entry.get("status") or "unknown").strip().lower().replace("-", "_")
+        if status not in SBT_STATUSES:
+            raise ValueError("invalid SBT status")
+        for date_key in ("start_date", "end_date"):
+            date_value = str(raw_entry.get(date_key) or "").strip()
+            if date_value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
+                raise ValueError(f"SBT {date_key} must be YYYY-MM-DD")
+    entries = normalize_sbt_entries(raw_entries)
+    if len(entries) != len(raw_entries):
+        raise ValueError("invalid sbt_entries")
+    for entry in entries:
+        if not entry.get("name") or not entry.get("evidence"):
+            raise ValueError("each SBT entry requires name and evidence")
+        if entry.get("start_date") and entry.get("end_date") and entry["end_date"] < entry["start_date"]:
+            raise ValueError("SBT end_date cannot be earlier than start_date")
+    return entries
+
+
+def update_card_sbt_entries(tweet_id: str, sbt_entries: Any) -> dict[str, Any]:
+    entries = _validate_sbt_entries_payload(sbt_entries)
     return _update_feed_card_fields(
         tweet_id,
-        {
-            "sbt_name": names[0] if names else "",
-            "sbt_names": names,
-            "sbt_acquisition": acquisition,
-        },
+        {"sbt_entries": entries},
         persist_editorial=True,
     )
 
@@ -1308,18 +1380,19 @@ def update_card_editorial_fields(
         if start and end and end < start:
             raise ValueError("timeline_end_date cannot be earlier than timeline_date")
         editorial_patch.update({"timeline_date": start, "timeline_end_date": end})
-    if "sbt_names" in patch or "sbt_acquisition" in patch:
-        raw_names = patch.get("sbt_names") or []
-        if isinstance(raw_names, list):
-            names = [clean_text(str(value)) for value in raw_names if clean_text(str(value))]
+    if "sbt_entries" in patch:
+        editorial_patch["sbt_entries"] = _validate_sbt_entries_payload(patch.get("sbt_entries"))
+    if "record_result" in patch:
+        raw_record = patch.get("record_result")
+        if raw_record is None:
+            editorial_patch["record_result"] = None
+        elif not isinstance(raw_record, dict):
+            raise ValueError("record_result must be an object or null")
         else:
-            names = [clean_text(value) for value in re.split(r"[,，、/|\\n]+", str(raw_names)) if clean_text(value)]
-        names = names[:8]
-        editorial_patch.update({
-            "sbt_name": names[0] if names else "",
-            "sbt_names": names,
-            "sbt_acquisition": clean_text(str(patch.get("sbt_acquisition") or ""))[:320],
-        })
+            record = normalize_record_result(raw_record)
+            if not record:
+                raise ValueError("record_result requires valid kind, status, subject, and evidence")
+            editorial_patch["record_result"] = record
     if "event_region" in patch:
         region = str(patch.get("event_region") or "unknown").strip().lower()
         if region not in allowed_regions:
@@ -1332,12 +1405,16 @@ def update_card_editorial_fields(
         editorial_patch["plan_status"] = plan
 
     card_type = str(patch.get("card_type") or "").strip().lower()
-    raw_topics = patch.get("topic_labels")
-    topic_labels = normalize_topic_labels(raw_topics if isinstance(raw_topics, list) else [])
+    raw_topics = patch.get("routing_topics")
+    routing_topics = normalize_routing_topics(raw_topics if isinstance(raw_topics, list) else [])
+    raw_product_ids = patch.get("product_ids")
+    product_ids = canonical_product_ids(raw_product_ids if isinstance(raw_product_ids, list) else [])
     reason = clean_text(str(patch.get("reason") or ""))[:600]
-    has_classification = bool(card_type or isinstance(raw_topics, list))
+    has_classification = bool(card_type or isinstance(raw_topics, list) or isinstance(raw_product_ids, list))
     if card_type and card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
+    if isinstance(raw_product_ids, list) and len(product_ids) != len({str(value or "").strip().lower() for value in raw_product_ids}):
+        raise ValueError("invalid product_ids")
     with EDITORIAL_DATA_LOCK:
         before = _read_current_feed_card(tid)
         if not before:
@@ -1357,16 +1434,12 @@ def update_card_editorial_fields(
             add_classification_feedback_fields(
                 tid,
                 card_type=card_type,
-                topic_labels=topic_labels if isinstance(raw_topics, list) else None,
+                routing_topics=routing_topics if isinstance(raw_topics, list) else None,
+                product_ids=product_ids if isinstance(raw_product_ids, list) else None,
                 reason=reason,
             )
-            update_card_classification_fields(
-                tid,
-                card_type=card_type,
-                topic_labels=topic_labels if isinstance(raw_topics, list) else None,
-            )
         if editorial_patch:
-            _update_feed_card_fields(tid, editorial_patch, persist_editorial=True)
+            _persist_card_editorial_override(tid, editorial_patch)
 
         state = read_feedback_state()
         overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
@@ -1385,9 +1458,6 @@ def update_card_editorial_fields(
         cards = payload.get("cards") if isinstance(payload.get("cards"), list) else []
         updated_card = next((item for item in cards if isinstance(item, dict) and str(item.get("id") or "").strip() == tid), None)
         if isinstance(updated_card, dict):
-            updated_card["editorial_revision"] = revision
-            updated_card["editorial_updated_at"] = next_override["updated_at"]
-            updated_card["editorial_updated_by"] = next_override["updated_by"]
             payload["generated_at"] = _now_iso()
             write_json(data_dir() / "x_intel_feed.json", payload)
         after = dict(updated_card) if isinstance(updated_card, dict) else {}
@@ -1397,7 +1467,7 @@ def update_card_editorial_fields(
             "actor": next_override["updated_by"],
             "updated_at": next_override["updated_at"],
             "reason": reason,
-            "patch": {**editorial_patch, **({"card_type": card_type} if card_type else {}), **({"topic_labels": topic_labels} if isinstance(raw_topics, list) else {})},
+            "patch": {**editorial_patch, **({"card_type": card_type} if card_type else {}), **({"routing_topics": routing_topics} if isinstance(raw_topics, list) else {}), **({"product_ids": product_ids} if isinstance(raw_product_ids, list) else {})},
             "source_account": str(before.get("account") or ""),
             "source_title": clean_text(str(before.get("title") or before.get("glance") or ""))[:180],
         })
@@ -1408,24 +1478,29 @@ def update_card_classification_fields(
     tweet_id: str,
     *,
     card_type: str = "",
-    topic_label: str = "",
-    topic_labels: list[str] | None = None,
+    routing_topic: str = "",
+    routing_topics: list[str] | None = None,
+    product_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     tid = str(tweet_id or "").strip()
     next_card_type = str(card_type or "").strip().lower()
-    has_topic_labels_payload = isinstance(topic_labels, list)
-    raw_topic_labels = topic_labels if has_topic_labels_payload else []
-    if not raw_topic_labels and str(topic_label or "").strip():
-        raw_topic_labels = [topic_label]
-    next_topic_labels = normalize_topic_labels(raw_topic_labels)
+    has_routing_topics_payload = isinstance(routing_topics, list)
+    raw_routing_topics = routing_topics if has_routing_topics_payload else []
+    if not raw_routing_topics and str(routing_topic or "").strip():
+        raw_routing_topics = [routing_topic]
+    next_routing_topics = normalize_routing_topics(raw_routing_topics)
+    has_product_ids_payload = isinstance(product_ids, list)
+    next_product_ids = canonical_product_ids(product_ids)
     if not tid:
         raise ValueError("tweet id is required")
     if next_card_type and next_card_type not in ALLOWED_CARD_TYPES:
         raise ValueError("invalid card_type")
-    if str(topic_label or "").strip() and not next_topic_labels:
-        raise ValueError("invalid topic_label")
-    if not next_card_type and not has_topic_labels_payload and not next_topic_labels:
-        raise ValueError("card_type or topic_label is required")
+    if str(routing_topic or "").strip() and not next_routing_topics:
+        raise ValueError("invalid routing_topic")
+    if has_product_ids_payload and len(next_product_ids) != len({str(value or "").strip().lower() for value in product_ids}):
+        raise ValueError("invalid product_ids")
+    if not next_card_type and not has_routing_topics_payload and not next_routing_topics and not has_product_ids_payload:
+        raise ValueError("card_type, routing_topic, or product_ids is required")
 
     payload = _read_feed_payload()
     cards = payload.get("cards")
@@ -1438,34 +1513,8 @@ def update_card_classification_fields(
             continue
         if str(item.get("id") or "").strip() != tid:
             continue
-        card = _story_card_from_payload(item)
-        if next_card_type == "product_progress" and card.source_role != "official":
+        if next_card_type == "product_progress" and _source_role_for_payload(item) != "official":
             raise ValueError("product_progress requires an official source")
-        if next_card_type:
-            _apply_card_type_override(card, next_card_type)
-        if has_topic_labels_payload or next_topic_labels:
-            _apply_topic_label_override(card, next_topic_labels, exact=True)
-        item.update(
-            {
-                "card_type": card.card_type,
-                "layout": card.layout,
-                "tags": card.tags,
-                "confidence": card.confidence,
-                "template_id": card.template_id,
-                "event_facts": card.event_facts or {},
-                "urgency": card.urgency,
-                "topic_labels": normalize_topic_labels(card.topic_labels),
-                "event_wall": bool(card.event_wall),
-                "classified_by": card.classified_by,
-                "ai_model": card.ai_model,
-                "ai_version": card.ai_version,
-                "ai_confidence": card.ai_confidence,
-                "ai_status": card.ai_status,
-                "review_status": card.review_status,
-                "classification_reason": card.classification_reason,
-                "classification_error": card.classification_error,
-            }
-        )
         updated_card = item
         break
 
@@ -1476,7 +1525,8 @@ def update_card_classification_fields(
     return {
         "id": tid,
         "card_type": str(updated_card.get("card_type") or ""),
-        "topic_labels": normalize_topic_labels(updated_card.get("topic_labels")),
+        "routing_topics": normalize_routing_topics(updated_card.get("routing_topics")),
+        "product_ids": canonical_product_ids(updated_card.get("product_ids")),
         "card": updated_card,
     }
 
@@ -1503,7 +1553,9 @@ CONTENT_REFRESH_FIELDS = {
     "card_type",
     "layout",
     "template_id",
-    "topic_labels",
+    "routing_topics",
+    "sbt_entries",
+    "record_result",
     "number_facts",
     "classified_by",
     "ai_model",
@@ -1524,13 +1576,13 @@ CONTENT_REFRESH_PRESERVED_FIELDS = {
     "card_type",
     "layout",
     "template_id",
-    "topic_labels",
+    "routing_topics",
+    "product_ids",
     "manual_pick",
     "manual_pin",
     "manual_bottom",
-    "sbt_name",
-    "sbt_names",
-    "sbt_acquisition",
+    "sbt_entries",
+    "record_result",
     "dedupe_status",
     "dedupe_checked",
     "dedupe_checked_at",
@@ -1548,7 +1600,10 @@ CONTENT_REFRESH_CLASSIFICATION_FIELDS = {
     "card_type",
     "layout",
     "template_id",
-    "topic_labels",
+    "routing_topics",
+    "product_ids",
+    "sbt_entries",
+    "record_result",
     "event_facts",
     "event_region",
     "event_region_reason",
@@ -1620,11 +1675,6 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
         if key in refreshed:
             updated[key] = refreshed.get(key)
     updated.update(preserved)
-    # Reapply saved editorial fields after AI refresh so dates, event-wall
-    # placement, and SBT details cannot be overwritten by a regeneration.
-    refreshed_with_overrides = _story_card_from_payload(updated)
-    apply_feedback_overrides([refreshed_with_overrides])
-    updated.update(refreshed_with_overrides.to_dict())
     _enforce_fixed_channel_payload_fields(updated)
 
     cards[target_index] = updated
@@ -1764,57 +1814,47 @@ def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
     return changed
 
 
-def _apply_topic_label_override(card: StoryCard, labels: list[str], *, exact: bool) -> None:
-    normalized = normalize_topic_labels(labels)
+def _apply_routing_topic_override(card: StoryCard, labels: list[str], *, exact: bool) -> None:
+    normalized = normalize_routing_topics(labels)
     if not normalized and not exact:
         return
-    card.topic_labels = normalized if exact else normalize_topic_labels([*(card.topic_labels or []), *normalized])
+    card.routing_topics = normalized if exact else normalize_routing_topics([*(card.routing_topics or []), *normalized])
     _mark_feedback_tag(card)
     _mark_manual_classification(card)
 
 
-def apply_feedback_overrides(cards: list[StoryCard]) -> dict[str, Any]:
+def _apply_product_ids_override(card: StoryCard, product_ids: list[str]) -> None:
+    card.product_ids = canonical_product_ids(product_ids)
+    _mark_manual_classification(card)
+
+
+def _feedback_pipeline_controls() -> dict[str, Any]:
+    """Read durable decisions without applying their field values before final write."""
     state = read_feedback_state()
-    items = state.get("items", {})
-    field_overrides = state.get("card_field_overrides", {})
+    items = state.get("items") if isinstance(state.get("items"), dict) else {}
+    overrides = state.get("card_field_overrides") if isinstance(state.get("card_field_overrides"), dict) else {}
+    locked_ids = {
+        str(card_id or "").strip()
+        for card_id, value in overrides.items()
+        if str(card_id or "").strip() and isinstance(value, dict)
+    }
     excluded_ids: set[str] = set()
-    override_count = 0
-    if not isinstance(items, dict):
-        items = {}
-    if not isinstance(field_overrides, dict):
-        field_overrides = {}
-    if not items and not field_overrides:
-        return {"override_count": 0, "excluded_ids": excluded_ids}
-
-    for card in cards:
-        info = items.get(card.id)
-        if isinstance(info, dict):
-            label = str(info.get("label") or "").strip().lower()
-            if label == "exclude":
-                excluded_ids.add(card.id)
-                override_count += 1
-                continue
-            if label in ALLOWED_CARD_TYPES:
-                if _apply_card_type_override(card, label):
-                    override_count += 1
-            elif label in ALLOWED_TOPIC_LABELS:
-                labels = normalize_topic_labels([*(card.topic_labels or []), label])
-                if labels != normalize_topic_labels(card.topic_labels):
-                    override_count += 1
-                _apply_topic_label_override(card, labels, exact=False)
-
-        field_info = field_overrides.get(card.id)
-        if isinstance(field_info, dict):
-            card_type = str(field_info.get("card_type") or "").strip().lower()
-            if card_type in ALLOWED_CARD_TYPES and _apply_card_type_override(card, card_type):
-                override_count += 1
-            labels = normalize_topic_labels(field_info.get("topic_labels"))
-            if "topic_labels" in field_info:
-                if labels != normalize_topic_labels(card.topic_labels):
-                    override_count += 1
-                _apply_topic_label_override(card, labels, exact=True)
-            override_count += _apply_editorial_override(card, field_info)
-    return {"override_count": override_count, "excluded_ids": excluded_ids}
+    for card_id, value in items.items():
+        if not isinstance(value, dict):
+            continue
+        normalized_id = str(card_id or "").strip()
+        label = str(value.get("label") or "").strip().lower()
+        if not normalized_id:
+            continue
+        if label == "exclude":
+            excluded_ids.add(normalized_id)
+        elif label in ALLOWED_CARD_TYPES or label in ALLOWED_ROUTING_TOPICS:
+            locked_ids.add(normalized_id)
+    return {
+        "locked_ids": locked_ids,
+        "excluded_ids": excluded_ids,
+        "override_count": len(locked_ids) + len(excluded_ids),
+    }
 
 
 def read_manual_picks() -> dict[str, set[str]]:
@@ -1870,14 +1910,16 @@ def _merge_latest_admin_state(payload: dict[str, Any]) -> dict[str, Any]:
             label = str(feedback_info.get("label") or "").strip().lower()
             if label in ALLOWED_CARD_TYPES:
                 _apply_card_type_override(card, label)
-            elif label in ALLOWED_TOPIC_LABELS:
-                _apply_topic_label_override(card, [*(card.topic_labels or []), label], exact=False)
+            elif label in ALLOWED_ROUTING_TOPICS:
+                _apply_routing_topic_override(card, [*(card.routing_topics or []), label], exact=False)
             card_type = str(field_info.get("card_type") or "").strip().lower()
             if card_type in ALLOWED_CARD_TYPES:
                 _apply_card_type_override(card, card_type)
-            labels = normalize_topic_labels(field_info.get("topic_labels"))
-            if "topic_labels" in field_info:
-                _apply_topic_label_override(card, labels, exact=True)
+            labels = normalize_routing_topics(field_info.get("routing_topics"))
+            if "routing_topics" in field_info:
+                _apply_routing_topic_override(card, labels, exact=True)
+            if "product_ids" in field_info:
+                _apply_product_ids_override(card, field_info.get("product_ids") or [])
             _apply_editorial_override(card, field_info)
             item.update(card.to_dict())
             if field_info:
@@ -2088,14 +2130,6 @@ def _is_protected_official_x_source_card(card: StoryCard) -> bool:
 
 def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     reason_key = str(reason or "review").strip().lower()
-    if _is_protected_official_x_source_card(card):
-        card.review_status = AI_REVIEW_AUTO_APPROVED
-        if str(card.ai_status or "").strip().lower() in {"needs_review", "pending", "failed"}:
-            card.ai_status = "ok"
-        card.topic_labels = normalize_topic_labels(card.topic_labels)
-        card.event_wall = card.card_type == "event"
-        card.classification_error = clean_text(card.classification_error or reason_key or "official_x_kept_public")[:220]
-        return card
     label_map = {
         "dedupe": "去重淘汰",
         "source_preference": "去重淘汰",
@@ -2106,7 +2140,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
         "curation": "篩選淘汰",
     }
     label = label_map.get(reason_key, "待審核")
-    card.topic_labels = []
+    card.routing_topics = []
     card.event_wall = False  # type: ignore[attr-defined]
     card.review_status = AI_REVIEW_ADMIN_QUEUE
     card.ai_status = "needs_review"
@@ -2120,7 +2154,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     existing_tags = [str(x).strip() for x in (card.tags or []) if str(x).strip() and str(x).strip() != label]
     card.tags = [label, *existing_tags][:3]
     card.confidence = max(0.6, float(card.confidence or 0.0))
-    _enforce_fixed_channel_topic_labels([card])
+    _enforce_fixed_channel_routing_topics([card])
     return card
 
 
@@ -3469,10 +3503,10 @@ PRESERVED_CARD_MUTABLE_FIELDS = {
     "event_facts",
     "event_region",
     "event_region_reason",
-    "topic_labels",
-    "sbt_name",
-    "sbt_names",
-    "sbt_acquisition",
+    "routing_topics",
+    "product_ids",
+    "sbt_entries",
+    "record_result",
     "dedupe_status",
     "dedupe_checked",
     "dedupe_checked_at",
@@ -3494,6 +3528,10 @@ LEGACY_CARD_FIELDS = {
     "manual_topic_override",
     "admin_queue_reason",
     "admin_queue_label",
+    "topic_labels",
+    "sbt_name",
+    "sbt_names",
+    "sbt_acquisition",
 }
 
 
@@ -3843,6 +3881,9 @@ def sync_accounts(
     existing_cards, retention_stats = prune_expired_feed_memory(existing_cards, force_ids=force_ids)
     existing_ids = _card_ids(existing_cards)
     feedback_context = feedback_training_text()
+    feedback_result = _feedback_pipeline_controls()
+    manual_override_ids = set(feedback_result.get("locked_ids", set()))
+    feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
 
     manual_path = data_dir() / "x_intel_manual_entries.json"
     manual_raw = read_json(manual_path, [])
@@ -3879,16 +3920,15 @@ def sync_accounts(
     merged_cards = merge_cards(existing_cards, merged_new_cards)
     merged_total = len(existing_cards) + len(merged_new_cards)
 
-    feedback_result = apply_feedback_overrides(existing_cards)
-    _enforce_fixed_channel_topic_labels(existing_cards)
+    _enforce_fixed_channel_routing_topics(existing_cards)
     reclassified_existing_count = 0
-    reclassify_limit = _env_positive_int("INTEL_TAXONOMY_RECLASSIFY_LIMIT", 200)
+    reclassify_limit = _env_positive_int("INTEL_TAXONOMY_RECLASSIFY_LIMIT", 500)
     taxonomy_review_cards = [
         card
         for card in existing_cards
-        if card.source_role == "official"
-        and str(card.classified_by or "").strip().lower() != "manual"
+        if str(card.classified_by or "").strip().lower() != "manual"
         and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
+        and str(card.id or "").strip() not in manual_override_ids
         and str(card.ai_version or "").strip() != AI_CLASSIFICATION_VERSION
     ][:reclassify_limit]
     plan_status_reclassified_count = 0
@@ -3901,9 +3941,7 @@ def sync_accounts(
             progress_callback=progress_callback,
         )
         reclassified_existing_count = len(taxonomy_review_cards)
-        refreshed_feedback_result = apply_feedback_overrides(taxonomy_review_cards)
-        feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(refreshed_feedback_result.get("override_count", 0) or 0)
-        _enforce_fixed_channel_topic_labels(taxonomy_review_cards)
+        _enforce_fixed_channel_routing_topics(taxonomy_review_cards)
     plan_review_limit = _env_positive_int("INTEL_PLAN_STATUS_REVIEW_LIMIT", 80)
     plan_review_cards = [card for card in existing_cards if plan_status_review_due(card)][:plan_review_limit]
     event_region_review_limit = _env_positive_int("INTEL_EVENT_REGION_REVIEW_LIMIT", 80)
@@ -3920,7 +3958,6 @@ def sync_accounts(
             api_key,
             progress_callback=progress_callback,
         )
-    feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
     preserved_cards: list[StoryCard] = []
     removed_by_selection = 0
     removed_by_feedback = 0
@@ -3934,11 +3971,6 @@ def sync_accounts(
             continue
         preserved_cards.append(c)
 
-    new_feedback_result = apply_feedback_overrides(merged_new_cards)
-    if int(new_feedback_result.get("override_count", 0) or 0):
-        feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(new_feedback_result.get("override_count", 0) or 0)
-    feedback_excluded_ids |= set(new_feedback_result.get("excluded_ids", set()))
-
     new_source_cards: list[StoryCard] = []
     for c in merged_new_cards:
         _apply_manual_flags_to_card(c, include_ids=include_ids, pin_ids=pin_ids, bottom_ids=bottom_ids)
@@ -3950,11 +3982,19 @@ def sync_accounts(
             continue
         new_source_cards.append(c)
 
+    new_ai_cards = [
+        card
+        for card in new_source_cards
+        if str(card.classified_by or "").strip().lower() != "manual"
+        and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
+        and str(card.id or "").strip() not in manual_override_ids
+    ]
+
     _emit_sync_progress(
         progress_callback,
         "refine_start",
         done_cards=0,
-        total_cards=len(new_source_cards),
+        total_cards=len(new_ai_cards),
         current_card_id="",
         current_title="",
         new_candidate_total=len(merged_new_cards),
@@ -3962,29 +4002,26 @@ def sync_accounts(
     )
     # New cards must be readable even if they are later deduped or sent to the admin queue.
     # Keep this before source preference, curation, and dedupe so queue/other cards are AI-refined too.
-    if api_key and new_source_cards:
+    if api_key and new_ai_cards:
         apply_minimax_story_refine(
-            new_source_cards,
+            new_ai_cards,
             api_key,
             feedback_context=feedback_context,
             progress_callback=progress_callback,
         )
         event_region_reclassified_count += apply_minimax_event_region_review(
-            [card for card in new_source_cards if event_region_review_due(card)],
+            [card for card in new_ai_cards if event_region_review_due(card)],
             api_key,
             progress_callback=progress_callback,
         )
-        post_refine_feedback_result = apply_feedback_overrides(new_source_cards)
-        if int(post_refine_feedback_result.get("override_count", 0) or 0):
-            feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(post_refine_feedback_result.get("override_count", 0) or 0)
-    elif new_source_cards:
-        for card in new_source_cards:
+    elif new_ai_cards:
+        for card in new_ai_cards:
             _set_ai_review_queue(card, "missing_ai_key")
             _emit_sync_progress(
                 progress_callback,
                 "refine_card_failed",
-                done_cards=len(new_source_cards),
-                total_cards=len(new_source_cards),
+                done_cards=len(new_ai_cards),
+                total_cards=len(new_ai_cards),
                 card_id=str(card.id or ""),
                 account=str(card.account or ""),
                 title=str(card.title or "")[:140],
@@ -4102,9 +4139,6 @@ def sync_accounts(
     batch_deduped = 0
     batch_embedding_dedupe_stats: dict[str, Any] = {"status": "empty", "scope": "batch_candidate"}
     if api_key and curated_cards:
-        refined_feedback_result = apply_feedback_overrides(curated_cards)
-        if int(refined_feedback_result.get("override_count", 0) or 0):
-            feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(refined_feedback_result.get("override_count", 0) or 0)
         _emit_sync_progress(
             progress_callback,
             "dedupe_batch_start",
@@ -4139,7 +4173,11 @@ def sync_accounts(
         removed_count += len(final_curation_removed_cards)
     else:
         for card in curated_cards:
-            if not _is_admin_queue_card(card):
+            if (
+                not _is_admin_queue_card(card)
+                and str(card.classified_by or "").strip().lower() != "manual"
+                and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
+            ):
                 _set_ai_review_queue(card, "missing_ai_key")
         _emit_sync_progress(
             progress_callback,
@@ -4164,18 +4202,13 @@ def sync_accounts(
             embedding_status=str(batch_embedding_dedupe_stats.get("status") or ""),
         )
     curated_cards = _ensure_forced_collectibles_cards_in_curated(new_source_cards, curated_cards)
-    _enforce_fixed_channel_topic_labels(curated_cards)
+    _enforce_fixed_channel_routing_topics(curated_cards)
     for card in curated_cards:
         card.manual_pick = card.manual_pick or (card.id in include_ids)
         card.manual_pin = card.id in pin_ids
         card.manual_bottom = card.id in bottom_ids
         _refresh_runtime_fields(card)
-    final_feedback_result = apply_feedback_overrides(curated_cards)
-    _enforce_fixed_channel_topic_labels(curated_cards)
-    if int(final_feedback_result.get("override_count", 0) or 0):
-        feedback_result["override_count"] = int(feedback_result.get("override_count", 0) or 0) + int(final_feedback_result.get("override_count", 0) or 0)
-        for card in curated_cards:
-            card.importance = score_card(card)
+    _enforce_fixed_channel_routing_topics(curated_cards)
     curated_cards.sort(
         key=lambda c: (_parse_iso_safe(c.published_at) or datetime.min.replace(tzinfo=timezone.utc), c.importance),
         reverse=True,

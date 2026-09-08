@@ -1,7 +1,7 @@
 import type { EventStatus, FeedCard, IntelFeed, Language } from "@/types";
 import { isRegionalCommunitySource } from "@/lib/regions";
 import { projectIdForCard, type AccountProjectMap } from "@/lib/projects";
-import { cardType, storedSourceRole, topicLabels, type SourceRole } from "@/lib/taxonomy";
+import { cardType, storedSourceRole, routingTopics, type SourceRole } from "@/lib/taxonomy";
 
 const OFFICIAL_DISCORD_GUILD_IDS = new Set(["1478788250687766796"]);
 const UPCOMING_EVENT_DISPLAY_DAYS = 14;
@@ -83,7 +83,7 @@ export function normalizeCards(feed: IntelFeed | null, lang: Language): FeedCard
 }
 
 export function topics(card: FeedCard): string[] {
-  return topicLabels(card);
+  return routingTopics(card);
 }
 
 export function sourceRole(card: FeedCard, accountProjects: AccountProjectMap = {}): SourceRole {
@@ -123,18 +123,15 @@ export function isGuideArticle(card: FeedCard): boolean {
 }
 
 export function isSbt(card: FeedCard): boolean {
-  const value = [card.title, card.summary, card.raw_text, card.sbt_name, card.sbt_acquisition, ...(card.sbt_names ?? [])].join(" ");
-  return topics(card).includes("sbt") || /\bSBT\b/i.test(value);
+  return Boolean(card.sbt_entries?.length);
 }
 
 export function isMedia(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
   return isOfficial(card, accountProjects) || topics(card).includes("collectibles") || ["announcement", "market", "report"].includes(cardType(card));
 }
 
-export function isVerifiedResult(card: FeedCard): boolean {
-  if (!isOfficial(card)) return false;
-  const value = [card.title, card.summary, card.raw_text].join(" ");
-  return /(?:\bwinners?\s+(?:are|is|were|have been|revealed|live|announced)|\bresults?\s+(?:are|is|were|live|announced)|(?:lucky draw|giveaway).{0,64}(?:winner|result)|中獎|得獎|獲獎|中奖|获奖|수상|抽獎結果|抽奖结果|(?:獎勵|奖励|rewards?).{0,24}(?:完成|發放|发放|complete|sent))/i.test(value);
+export function hasRecordResult(card: FeedCard): boolean {
+  return Boolean(card.record_result?.kind && card.record_result.evidence);
 }
 
 export function eventStatus(card: FeedCard, referenceDate = new Date()): EventStatus {
@@ -193,18 +190,6 @@ export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): Feed
   });
 }
 
-export function limitedSbtStatus(card: FeedCard): "active" | "upcoming" | "ended" | "" {
-  const start = toDate(card.timeline_date) ?? toDate(card.published_at);
-  const end = toDate(card.timeline_end_date);
-  if (!start || !end) return "";
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  if (endDay < today) return "ended";
-  return startDay > today ? "upcoming" : "active";
-}
-
 export interface LimitedSbtCampaign {
   acquisition: string;
   end: Date;
@@ -218,13 +203,17 @@ export function limitedSbtCampaigns(cards: FeedCard[], accountProjects: AccountP
     .filter((card) => isOfficial(card, accountProjects))
     .filter(isSbt)
     .flatMap((card) => {
-      const status = limitedSbtStatus(card);
-      const names = [...new Set([...(card.sbt_names ?? []), card.sbt_name].map((value) => String(value ?? "").trim()).filter(Boolean))];
-      const acquisition = String(card.sbt_acquisition ?? "").trim();
-      const end = toDate(card.timeline_end_date);
       const source = safeUrl(card.url);
-      if (!status || status === "ended" || !names.length || !acquisition || !end || !source) return [];
-      return [{ acquisition, end, names, source, status }];
+      if (!source) return [];
+      return (card.sbt_entries ?? []).flatMap((entry) => {
+        const entryStatus = String(entry.status ?? "unknown");
+        const status: LimitedSbtCampaign["status"] | "" = entryStatus === "available" ? "active" : entryStatus === "upcoming" ? "upcoming" : "";
+        const name = String(entry.name ?? "").trim();
+        const acquisition = String(entry.acquisition ?? "").trim();
+        const end = toDate(entry.end_date);
+        if (!status || !name || !acquisition || !end) return [];
+        return [{ acquisition, end, names: [name], source, status }];
+      });
     })
     .sort((left, right) => (left.status === right.status ? left.end.valueOf() - right.end.valueOf() : left.status === "active" ? -1 : 1));
 }

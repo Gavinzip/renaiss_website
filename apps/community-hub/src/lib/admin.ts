@@ -1,9 +1,9 @@
 import { intelApiUrl } from "@/lib/api";
 import type { ProjectId } from "@/lib/projects";
-import type { FeedCard, IntelFeed, PlanStatus } from "@/types";
-import { CARD_TYPES, TOPIC_LABELS } from "@/lib/taxonomy";
+import type { FeedCard, IntelFeed, PlanStatus, RecordResult, SbtEntry } from "@/types";
+import { CARD_TYPES, ROUTING_TOPICS } from "@/lib/taxonomy";
 
-export { CARD_TYPES, TOPIC_LABELS };
+export { CARD_TYPES, ROUTING_TOPICS };
 
 export interface AdminStatus {
   server_time?: string;
@@ -68,12 +68,13 @@ export interface CardEditorialDraft {
   cardType: string;
   eventRegion: string;
   planStatus: PlanStatus;
+  productIds: string[];
+  recordResult: RecordResult | null;
   reason: string;
-  sbtAcquisition: string;
-  sbtNames: string;
+  sbtEntries: SbtEntry[];
   timelineDate: string;
   timelineEndDate: string;
-  topicLabels: string[];
+  routingTopics: string[];
 }
 
 export interface EditorialHistoryItem {
@@ -118,12 +119,13 @@ export function cardDraft(card: FeedCard): CardEditorialDraft {
     cardType: String(card.card_type ?? "insight"),
     eventRegion: String(card.event_region ?? "unknown"),
     planStatus: (String(card.plan_status ?? "needs_review") as PlanStatus),
+    productIds: (card.product_ids ?? []).map((value) => String(value).toLowerCase()),
+    recordResult: card.record_result ? { ...card.record_result } : null,
     reason: "",
-    sbtAcquisition: String(card.sbt_acquisition ?? ""),
-    sbtNames: [...new Set([...(card.sbt_names ?? []), card.sbt_name].map((value) => String(value ?? "").trim()).filter(Boolean))].join(", "),
+    sbtEntries: (card.sbt_entries ?? []).map((entry) => ({ ...entry })),
     timelineDate: String(card.timeline_date ?? "").slice(0, 10),
     timelineEndDate: String(card.timeline_end_date ?? "").slice(0, 10),
-    topicLabels: (card.topic_labels ?? []).map((value) => String(value).toLowerCase()),
+    routingTopics: (card.routing_topics ?? []).map((value) => String(value).toLowerCase()),
   };
 }
 
@@ -149,16 +151,23 @@ export async function saveCardEditorial(card: FeedCard, draft: CardEditorialDraf
   if (!id) throw new Error("找不到貼文 ID");
   if (!draft.cardType) throw new Error("請保留卡片類型");
   if (draft.timelineDate && draft.timelineEndDate && draft.timelineEndDate < draft.timelineDate) throw new Error("結束日期不得早於開始日期");
+  for (const entry of draft.sbtEntries) {
+    if (!entry.name.trim() || !entry.evidence.trim()) throw new Error("每筆 SBT 都必須填寫名稱與原文證據");
+    if (entry.start_date && entry.end_date && entry.end_date < entry.start_date) throw new Error("SBT 結束日期不得早於開始日期");
+  }
+  if (draft.recordResult && (!draft.recordResult.subject.trim() || !draft.recordResult.evidence.trim())) throw new Error("紀錄／結果必須填寫對象與原文證據");
   const original = cardDraft(card);
-  const sameTopics = [...original.topicLabels].sort().join("|") === [...draft.topicLabels].sort().join("|");
+  const sameTopics = [...original.routingTopics].sort().join("|") === [...draft.routingTopics].sort().join("|");
+  const sameProducts = [...original.productIds].sort().join("|") === [...draft.productIds].sort().join("|");
   const changed = original.cardType !== draft.cardType
     || !sameTopics
+    || !sameProducts
     || original.timelineDate !== draft.timelineDate
     || original.timelineEndDate !== draft.timelineEndDate
     || original.eventRegion !== draft.eventRegion
     || original.planStatus !== draft.planStatus
-    || original.sbtNames !== draft.sbtNames
-    || original.sbtAcquisition !== draft.sbtAcquisition.trim()
+    || JSON.stringify(original.sbtEntries) !== JSON.stringify(draft.sbtEntries)
+    || JSON.stringify(original.recordResult) !== JSON.stringify(draft.recordResult)
     || Boolean(draft.reason.trim());
   if (!changed) return false;
   await post("/api/intel/editorial", {
@@ -166,13 +175,14 @@ export async function saveCardEditorial(card: FeedCard, draft: CardEditorialDraf
     ...(card.editorial_revision !== undefined ? { expected_revision: Number(card.editorial_revision) } : {}),
     patch: {
       card_type: draft.cardType,
-      topic_labels: draft.topicLabels,
+      routing_topics: draft.routingTopics,
+      product_ids: draft.productIds,
       timeline_date: draft.timelineDate,
       timeline_end_date: draft.timelineEndDate,
       event_region: draft.eventRegion,
       plan_status: draft.planStatus,
-      sbt_names: draft.sbtNames,
-      sbt_acquisition: draft.sbtAcquisition.trim(),
+      sbt_entries: draft.sbtEntries,
+      record_result: draft.recordResult,
       reason: draft.reason.trim(),
     },
   });

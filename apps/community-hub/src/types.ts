@@ -5,6 +5,25 @@ export type HubView = "overview" | "official" | "feed" | "events" | "future" | "
 export type EventStatus = "active" | "upcoming" | "past" | "reference";
 export type PlanStatus = "upcoming" | "in_progress" | "completed" | "cancelled" | "not_plan" | "needs_review";
 export type SourceRole = "official" | "official_community" | "other";
+export type SbtEntryStatus = "unknown" | "upcoming" | "available" | "ended" | "distributed";
+export type RecordResultKind = "competition_result" | "draw_result" | "reward_claim" | "reward_distributed" | "milestone_record";
+export type RecordResultStatus = "confirmed" | "claim_open" | "distributed" | "completed";
+
+export interface SbtEntry {
+  acquisition: string;
+  end_date: string;
+  evidence: string;
+  name: string;
+  start_date: string;
+  status: SbtEntryStatus;
+}
+
+export interface RecordResult {
+  evidence: string;
+  kind: RecordResultKind;
+  status: RecordResultStatus;
+  subject: string;
+}
 
 export interface ArticleBlock {
   alt?: string;
@@ -58,6 +77,7 @@ export interface FeedCard {
   plan_status_checked_at?: string;
   plan_status_reason?: string;
   product_progress_group_key?: string;
+  product_ids?: string[];
   product_progress_evidence?: {
     product_or_capability?: string;
     source_evidence?: string;
@@ -68,15 +88,14 @@ export interface FeedCard {
   review_status?: string;
   source_role?: SourceRole;
   semantic_text?: string;
-  sbt_acquisition?: string;
-  sbt_name?: string;
-  sbt_names?: string[];
+  sbt_entries?: SbtEntry[];
+  record_result?: RecordResult | null;
   summary?: string;
   tags?: string[];
   timeline_date?: string;
   timeline_end_date?: string;
   title?: string;
-  topic_labels?: string[];
+  routing_topics?: string[];
   url?: string;
   _i18n_status?: { status?: string };
 }

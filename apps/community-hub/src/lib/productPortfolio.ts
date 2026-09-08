@@ -68,16 +68,10 @@ interface ProductEntityDefinition {
   familyId: ProductFamilyId;
   icon: string;
   id: string;
-  match: (context: MatchContext) => boolean;
   mode?: ProductMode;
   name: string;
   ownerAccounts: readonly string[];
   priority: number;
-}
-
-interface MatchContext {
-  account: string;
-  text: string;
 }
 
 const FAMILY_ORDER: ProductFamilyId[] = ["fair", "gacha", "packs", "rewards", "index", "tech", "store", "platform", "vinci"];
@@ -93,37 +87,37 @@ const FAMILY_ICONS: Record<ProductFamilyId, string> = {
   vinci: "sparkles",
 };
 
-const includes = (context: MatchContext, pattern: RegExp) => pattern.test(context.text);
-const INDEX_PARTNERSHIP_RE = /\bpartner(?:ship|ed|ing)?\b|\bteamed\s+up\b|\bbuilt\s+with\b|合作(?:夥伴|伙伴|建構|建立)?/i;
 const RENAISS_XYZ_OWNER = ["renaissxyz"] as const;
 const RENAISS_INDEX_OWNER = ["renaiss_index"] as const;
 const TASTE_LAB_OWNER = ["tastedotmd"] as const;
 const VINCI_WORLD_OWNER = ["vinciwld"] as const;
 
 const PRODUCT_ENTITIES: ProductEntityDefinition[] = [
-  { id: "proof-of-fair", familyId: "fair", name: "RIP: Proof of Fair", icon: "shield-check", priority: 140, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bproof\s+of\s+fair\b|\brenaiss\s+fair\b|\bRIP\b/i) },
-  { id: "pandora-248", familyId: "gacha", name: "PANDORA 248", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bpandora\s*248\b|潘朵拉\s*248/i) },
-  { id: "pandora-88", familyId: "gacha", name: "PANDORA 88", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bpandora\s*88\b|潘朵拉\s*88/i) },
-  { id: "pandora-48", familyId: "gacha", name: "PANDORA 48", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bpandora\s*48\b|潘朵拉\s*48/i) },
-  { id: "pandora-28", familyId: "gacha", name: "PANDORA 28", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bpandora\s*28\b|潘朵拉\s*28/i) },
-  { id: "eden-gacha", familyId: "gacha", name: "EDEN Gacha", icon: "gem", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\beden\b.{0,40}\bgacha\b|\bgacha\b.{0,40}\beden\b/i) },
-  { id: "infinite-gacha", familyId: "gacha", name: "Infinite Gacha", icon: "infinity", priority: 40, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\binfinite\s+(?:vrf\s+)?gacha\b|\bgacha\s+machines?\b|扭蛋機|轉蛋機|转蛋机/i) },
-  { id: "niu-lai-pack", familyId: "packs", name: "NIU LAI Pack", icon: "beef", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bniu\s+lai\s+pack\b|牛來包|牛来包/i) },
-  { id: "genesis-pack", familyId: "packs", name: "Genesis Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bgenesis\s+pack\b/i) },
-  { id: "surge-pack", familyId: "packs", name: "Surge Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bsurge\s+pack\b/i) },
-  { id: "inferno-pack", familyId: "packs", name: "Inferno Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\binferno\s+pack\b/i) },
-  { id: "tempest-pack", familyId: "packs", name: "Tempest Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\btempest\s+pack\b/i) },
-  { id: "omega-pack", familyId: "packs", name: "Omega Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bomega\s+pack\b/i) },
-  { id: "referral-rewards", familyId: "rewards", name: "Referral Rewards", icon: "gift", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\breferral\s+rewards?\b|200\s*%\s*(?:referral|推薦|推荐)/i) },
-  { id: "renaiss-index", familyId: "index", name: "Renaiss Index", icon: "chart-no-axes-combined", priority: 80, ownerAccounts: RENAISS_INDEX_OWNER, match: (context) => context.account === "renaiss_index" && includes(context, INDEX_PARTNERSHIP_RE) },
-  { id: "renaiss-air", familyId: "tech", name: "Renaiss AIR", icon: "wind", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\brenaiss\s+air\b/i) },
-  { id: "collector-assistant", familyId: "tech", name: "Collector Assistant", icon: "bot", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\bcollector\s+assistant\b/i) },
-  { id: "card-platform-analysis", familyId: "tech", name: "Card Platform Analysis", icon: "scan-search", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER, match: (context) => includes(context, /\bcard\s+platform\s+analysis\b/i) },
-  { id: "store-redemption", familyId: "store", name: "Merch Rewards Redemption", icon: "shopping-bag", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /(?:t-?shirt|bracelet|merch|store|shop).{0,120}(?:SBT|redeem)|(?:SBT|redeem).{0,120}(?:t-?shirt|bracelet|merch|store|shop)/i) },
-  { id: "collectibles-binder", familyId: "platform", name: "Collectibles Binder", icon: "book-image", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bcollectibles?\s+binder\b/i) },
-  { id: "card-handling-fees", familyId: "platform", name: "Card Handling Fees", icon: "receipt-text", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER, match: (context) => includes(context, /\bcard\s+handling\s+fees?\b|卡牌手續費|卡牌手续费/i) },
-  { id: "social-hall", familyId: "vinci", name: "Vinci World Social Hall", icon: "door-open", priority: 110, mode: "candidate", ownerAccounts: VINCI_WORLD_OWNER, match: (context) => includes(context, /\bsocial\s+hall\b/i) },
+  { id: "proof-of-fair", familyId: "fair", name: "RIP: Proof of Fair", icon: "shield-check", priority: 140, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "pandora-248", familyId: "gacha", name: "PANDORA 248", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "pandora-88", familyId: "gacha", name: "PANDORA 88", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "pandora-48", familyId: "gacha", name: "PANDORA 48", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "pandora-28", familyId: "gacha", name: "PANDORA 28", icon: "circle-dollar-sign", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "eden-gacha", familyId: "gacha", name: "EDEN Gacha", icon: "gem", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "infinite-gacha", familyId: "gacha", name: "Infinite Gacha", icon: "infinity", priority: 40, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "niu-lai-pack", familyId: "packs", name: "NIU LAI Pack", icon: "beef", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "genesis-pack", familyId: "packs", name: "Genesis Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "surge-pack", familyId: "packs", name: "Surge Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "inferno-pack", familyId: "packs", name: "Inferno Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "tempest-pack", familyId: "packs", name: "Tempest Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "omega-pack", familyId: "packs", name: "Omega Pack", icon: "package-open", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "referral-rewards", familyId: "rewards", name: "Referral Rewards", icon: "gift", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "renaiss-index", familyId: "index", name: "Renaiss Index", icon: "chart-no-axes-combined", priority: 80, ownerAccounts: RENAISS_INDEX_OWNER },
+  { id: "renaiss-air", familyId: "tech", name: "Renaiss AIR", icon: "wind", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER },
+  { id: "collector-assistant", familyId: "tech", name: "Collector Assistant", icon: "bot", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER },
+  { id: "card-platform-analysis", familyId: "tech", name: "Card Platform Analysis", icon: "scan-search", priority: 140, mode: "experimental", ownerAccounts: TASTE_LAB_OWNER },
+  { id: "store-redemption", familyId: "store", name: "Merch Rewards Redemption", icon: "shopping-bag", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "collectibles-binder", familyId: "platform", name: "Collectibles Binder", icon: "book-image", priority: 130, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "card-handling-fees", familyId: "platform", name: "Card Handling Fees", icon: "receipt-text", priority: 120, ownerAccounts: RENAISS_XYZ_OWNER },
+  { id: "social-hall", familyId: "vinci", name: "Vinci World Social Hall", icon: "door-open", priority: 110, mode: "candidate", ownerAccounts: VINCI_WORLD_OWNER },
 ];
+
+export const PRODUCT_OPTIONS = PRODUCT_ENTITIES.map(({ id, name }) => ({ id, name }));
 
 const ONE_TIME_KINDS = new Set<ProductUpdateKind>(["proposal", "implementation", "adoption", "launch", "sold_out", "policy_change", "prototype", "announcement"]);
 const VERIFIED_STATE_CHANGE_KINDS = new Set<ProductUpdateKind>([
@@ -255,8 +249,8 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
     if (String(card.source_role ?? "").toLowerCase() !== "official") return;
     const account = normalizedAccount(card);
     const text = sourceText(card);
-    const context = { account, text };
-    const matches = PRODUCT_ENTITIES.filter((definition) => definition.match(context));
+    const productIds = new Set((card.product_ids ?? []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
+    const matches = PRODUCT_ENTITIES.filter((definition) => productIds.has(definition.id));
     if (!matches.length) {
       if (text && String(card.card_type ?? "").toLowerCase() === "product_progress" && hasCompleteProductProgressEvidence(card)) {
         const kind = updateKind(card, `${text} ${String(card.title ?? "")}`);
@@ -346,7 +340,10 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
       bucket.ownedProductIds.add(product.id);
     });
   }));
-  sortedRelatedUpdates.forEach((update) => addSourceUpdate(normalizedAccount(update.card)));
+  const ownersByProductId = new Map(PRODUCT_ENTITIES.map((definition) => [definition.id, definition.ownerAccounts]));
+  sortedRelatedUpdates.forEach((update) => {
+    ownersByProductId.get(update.productId)?.forEach(addSourceUpdate);
+  });
   sortedUnmappedUpdates.forEach((event) => addSourceUpdate(normalizedAccount(event.card)));
   sortedUnassignedUpdates.forEach((card) => addSourceUpdate(normalizedAccount(card)));
   const sources = [...sourceBuckets.entries()].map(([account, bucket]) => ({

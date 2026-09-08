@@ -15,7 +15,7 @@ from .bootstrap import (
     extract_timeline_date,
     is_official_account_handle,
     normalize_event_facts,
-    normalize_topic_labels,
+    normalize_routing_topics,
     strip_links_mentions,
 )
 from .embedding_cache import (
@@ -24,10 +24,11 @@ from .embedding_cache import (
     prune_embedding_cache,
     semantic_text_for_row,
 )
+from .taxonomy import normalize_record_result, normalize_sbt_entries
 
 
 KNOWLEDGE_MEMORY_FILENAME = "x_intel_knowledge_memory.json"
-KNOWLEDGE_MEMORY_VERSION = "20260902-source-role-taxonomy1"
+KNOWLEDGE_MEMORY_VERSION = "20260908-structured-semantics1"
 DEFAULT_KNOWLEDGE_EMBEDDING_MODEL = "text-embedding-3-small"
 DATE_ROLE_EVENT_START = "event_start"
 DATE_ROLE_SCHEDULE_UPDATE = "schedule_update"
@@ -170,6 +171,8 @@ def _compact(text: Any, max_len: int) -> str:
 
 def _card_text_blob(card: StoryCard) -> str:
     facts = normalize_event_facts(card.event_facts)
+    sbt_entries = normalize_sbt_entries(card.sbt_entries)
+    record_result = normalize_record_result(card.record_result)
     parts: list[str] = [
         card.title,
         card.summary,
@@ -177,8 +180,11 @@ def _card_text_blob(card: StoryCard) -> str:
         card.raw_text,
         " ".join(card.bullets or []),
         " ".join(card.tags or []),
-        " ".join(card.topic_labels or []),
+        " ".join(card.routing_topics or []),
+        " ".join(card.product_ids or []),
         " ".join(facts.values()),
+        " ".join(" ".join(entry.values()) for entry in sbt_entries),
+        " ".join(record_result.values()),
     ]
     return clean_text(" ".join(str(part or "") for part in parts))
 
@@ -206,6 +212,14 @@ def infer_date_role(card: StoryCard) -> dict[str, str]:
     has_timeline = bool(str(card.timeline_date or "").strip())
     has_time_signal = bool(TIME_SIGNAL_RE.search(text))
     has_registration = bool(REGISTRATION_SIGNAL_RE.search(text))
+
+    if normalize_record_result(card.record_result):
+        return {
+            "role": DATE_ROLE_RESULT_ANNOUNCEMENT,
+            "source": "record_result",
+            "confidence": "high",
+            "reason": "structured_record_result",
+        }
 
     if SCHEDULE_UPDATE_RE.search(text):
         return {
@@ -375,7 +389,10 @@ def _knowledge_item(card: StoryCard, window: dict[str, Any], *, embedding_model:
         "raw_hint": _compact(raw_hint, 900),
         "card_type": str(card.card_type or ""),
         "source_role": str(card.source_role or "other"),
-        "topic_labels": list(card.topic_labels or []),
+        "routing_topics": list(card.routing_topics or []),
+        "product_ids": list(card.product_ids or []),
+        "sbt_entries": normalize_sbt_entries(card.sbt_entries),
+        "record_result": normalize_record_result(card.record_result) or None,
         "tags": list(card.tags or []),
         "published_at": str(card.published_at or ""),
         "timeline_date": str(card.timeline_date or ""),

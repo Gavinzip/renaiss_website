@@ -69,7 +69,7 @@ def _pizza_target_card() -> StoryCard:
                 "Quoting @renaissxyz: Renaiss Pizza Day is landing in Kuala Lumpur."
             ),
             "provider": "r.jina.ai",
-            "topic_labels": ["events", "community"],
+            "routing_topics": [],
         }
     )
 
@@ -205,7 +205,7 @@ def run_checks() -> dict[str, Any]:
             "tags": ["events"],
             "raw_text": "Renaiss Pizza Day is landing in Kuala Lumpur. May 22, Pizza Mansion @ The Five.",
             "provider": "r.jina.ai",
-            "topic_labels": ["events", "official"],
+            "routing_topics": [],
         }
     )
     batch_b = _story_card_from_payload(
@@ -221,7 +221,7 @@ def run_checks() -> dict[str, Any]:
             "tags": ["events"],
             "raw_text": "Renaiss Pizza Day is landing in Kuala Lumpur. May 22, Pizza Mansion @ The Five.",
             "provider": "r.jina.ai",
-            "topic_labels": ["events", "community"],
+            "routing_topics": [],
         }
     )
     batch_kept, batch_queued, batch_embedding_stats = dedupe_new_cards_against_batch_canonical(

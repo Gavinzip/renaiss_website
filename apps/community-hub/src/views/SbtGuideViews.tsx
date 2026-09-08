@@ -320,9 +320,9 @@ export function ArticleView({ articleUrl, cards, lang, onBack }: ArticleViewProp
   if (!card) return <section className="community-hub-view is-active is-entering"><button type="button" className="community-hub-back-button" onClick={onBack}><Icon name="arrow-left" />{text(lang, "action.back")}</button><EmptyState title={text(lang, "empty.unavailable")} /></section>;
   const media = assets.guideAsset(card.cover_image) || coverUrl(card.cover_image);
   const facts = Object.entries(card.event_facts ?? {}).filter((entry): entry is [keyof NonNullable<FeedCard["event_facts"]>, string] => Boolean(String(entry[1] ?? "").trim()));
-  const labels = [...new Set([...(card.topic_labels ?? []), ...(card.tags ?? [])].map((value) => String(value).trim()).filter(Boolean))];
+  const labels = [...new Set((card.tags ?? []).map((value) => String(value).trim()).filter(Boolean))];
   const detailLines = [...new Set((card.detail_lines ?? []).map((value) => String(value).trim()).filter(Boolean))];
-  const sbtNames = [...new Set([...(card.sbt_names ?? []), card.sbt_name].map((value) => String(value ?? "").trim()).filter(Boolean))];
+  const sbtEntries = (card.sbt_entries ?? []).filter((entry) => String(entry.name ?? "").trim());
   return <section className="community-hub-view is-active is-entering"><article className="community-hub-article">
     <button type="button" className="community-hub-back-button" onClick={onBack}><Icon name="arrow-left" />{text(lang, "action.back")}</button>
     <header className="community-hub-article-header"><p className="community-hub-section-index">ARTICLE</p><h2>{card.title || "Renaiss"}</h2><div className="community-hub-article-meta"><span>@{String(card.account || "source").replace(/^@+/, "")}</span><span>{text(lang, "article.published")} · {formatDate(card.published_at, lang)}</span>{card.timeline_date ? <span>{text(lang, "article.timeline")} · {formatDate(card.timeline_date, lang)}{card.timeline_end_date ? ` - ${formatDate(card.timeline_end_date, lang)}` : ""}</span> : null}</div></header>
@@ -334,7 +334,7 @@ export function ArticleView({ articleUrl, cards, lang, onBack }: ArticleViewProp
       {card.bullets?.length ? <section><h3>{text(lang, "article.highlights")}</h3><ul>{card.bullets.map((line) => <li key={line}>{line}</li>)}</ul></section> : null}
       {card.detail_summary ? <section><h3>{text(lang, "article.analysis")}</h3><p>{card.detail_summary}</p></section> : null}
       {detailLines.length ? <section><h3>{text(lang, "article.details")}</h3><ul>{detailLines.map((line) => <li key={line}>{line}</li>)}</ul></section> : null}
-      {sbtNames.length || card.sbt_acquisition ? <section><h3>{text(lang, "article.sbt")}</h3>{sbtNames.length ? <p><strong>{sbtNames.join(" · ")}</strong></p> : null}{card.sbt_acquisition ? <p>{card.sbt_acquisition}</p> : null}</section> : null}
+      {sbtEntries.length ? <section><h3>{text(lang, "article.sbt")}</h3>{sbtEntries.map((entry, index) => <div key={`${entry.name}-${index}`}><p><strong>{entry.name}</strong></p>{entry.acquisition ? <p>{entry.acquisition}</p> : null}</div>)}</section> : null}
       {card.plan_status || card.plan_status_reason ? <section><h3>{text(lang, "article.plan")}</h3>{card.plan_status ? <p><strong>{text(lang, `filter.plan.${card.plan_status}`)}</strong></p> : null}{card.plan_status_reason ? <p>{card.plan_status_reason}</p> : null}</section> : null}
       <ArticleSourceBlocks card={card} lang={lang} />
       {labels.length ? <div className="community-hub-article-tags" aria-label={text(lang, "article.tags")}>{labels.map((label) => <span key={label}>{label}</span>)}</div> : null}
