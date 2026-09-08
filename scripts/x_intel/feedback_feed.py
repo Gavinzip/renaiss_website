@@ -93,6 +93,19 @@ def _env_positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _is_ai_semantic_source_card(card: StoryCard, manual_source_ids: set[str]) -> bool:
+    """Return whether AI may fill semantics before final editorial overlays.
+
+    A card with a partial human override is still an AI-readable source card.
+    Only entries authored through the manual source are excluded here.
+    """
+
+    card_id = str(card.id or "").strip()
+    provider = str(card.provider or "").strip().lower()
+    account = normalize_account_handle(card.account)
+    return card_id not in manual_source_ids and provider != "manual" and account != "manual"
+
+
 def _reclassify_existing_cards(
     cards: list[StoryCard],
     api_key: str,
@@ -3941,7 +3954,6 @@ def sync_accounts(
     existing_ids = _card_ids(existing_cards)
     feedback_context = feedback_training_text()
     feedback_result = _feedback_pipeline_controls()
-    manual_override_ids = set(feedback_result.get("locked_ids", set()))
     feedback_excluded_ids = set(feedback_result.get("excluded_ids", set()))
 
     manual_path = data_dir() / "x_intel_manual_entries.json"
@@ -3956,6 +3968,7 @@ def sync_accounts(
             manual_cards.append(card)
         except Exception:
             continue
+    manual_source_ids = _card_ids(manual_cards)
 
     _assign_source_roles(account_cards, source_config)
     _assign_source_roles(discord_cards, source_config)
@@ -3985,9 +3998,7 @@ def sync_accounts(
     taxonomy_review_cards = [
         card
         for card in existing_cards
-        if str(card.classified_by or "").strip().lower() != "manual"
-        and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
-        and str(card.id or "").strip() not in manual_override_ids
+        if _is_ai_semantic_source_card(card, manual_source_ids)
         and str(card.ai_version or "").strip() != AI_CLASSIFICATION_VERSION
     ][:reclassify_limit]
     plan_status_reclassified_count = 0
@@ -4044,9 +4055,7 @@ def sync_accounts(
     new_ai_cards = [
         card
         for card in new_source_cards
-        if str(card.classified_by or "").strip().lower() != "manual"
-        and str(card.review_status or "").strip() != AI_REVIEW_ADMIN_OVERRIDDEN
-        and str(card.id or "").strip() not in manual_override_ids
+        if _is_ai_semantic_source_card(card, manual_source_ids)
     ]
 
     _emit_sync_progress(
