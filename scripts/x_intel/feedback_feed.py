@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from threading import RLock, get_ident
 
 from . import bootstrap as _bootstrap
@@ -90,6 +91,64 @@ def _env_positive_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _reclassify_existing_cards(
+    cards: list[StoryCard],
+    api_key: str,
+    *,
+    feedback_context: str,
+    progress_callback: Any | None,
+) -> None:
+    """Refine independent persisted cards with bounded request concurrency.
+
+    Workers receive disjoint ``StoryCard`` objects. Downstream curation and
+    the atomic feed write still wait for every worker, so readers never see a
+    partially rebuilt taxonomy.
+    """
+
+    if not cards:
+        return
+    worker_count = min(_env_positive_int("INTEL_TAXONOMY_RECLASSIFY_WORKERS", 6), 8, len(cards))
+    if worker_count == 1:
+        apply_minimax_story_refine(
+            cards,
+            api_key,
+            feedback_context=feedback_context,
+            progress_callback=progress_callback,
+        )
+        return
+
+    completed_count = 0
+    progress_lock = RLock()
+
+    def _worker_progress(event_name: str, payload: dict[str, Any]) -> None:
+        nonlocal completed_count
+        if not progress_callback:
+            return
+        next_payload = dict(payload)
+        with progress_lock:
+            if event_name in {"refine_card_done", "refine_card_failed"}:
+                completed_count += 1
+            next_payload["done_cards"] = completed_count
+            next_payload["total_cards"] = len(cards)
+            progress_callback(event_name, next_payload)
+
+    chunks = [cards[index::worker_count] for index in range(worker_count)]
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="taxonomy-reclass") as pool:
+        futures = [
+            pool.submit(
+                apply_minimax_story_refine,
+                chunk,
+                api_key,
+                feedback_context=feedback_context,
+                progress_callback=_worker_progress,
+            )
+            for chunk in chunks
+            if chunk
+        ]
+        for future in futures:
+            future.result()
 
 
 DEFAULT_MEMORY_RULES = [
@@ -3934,7 +3993,7 @@ def sync_accounts(
     plan_status_reclassified_count = 0
     event_region_reclassified_count = 0
     if api_key and taxonomy_review_cards:
-        apply_minimax_story_refine(
+        _reclassify_existing_cards(
             taxonomy_review_cards,
             api_key,
             feedback_context=feedback_context,
