@@ -5,7 +5,7 @@ import react from "@vitejs/plugin-react";
 const appRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const outputRoot = fileURLToPath(new URL("../../website/community-hub", import.meta.url));
-const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "https://renaiss.zeabur.app";
+const backendProxyTarget = process.env.VITE_API_PROXY_TARGET || "https://renaiss.zeabur.app";
 
 export default defineConfig({
   plugins: [react()],
@@ -17,7 +17,12 @@ export default defineConfig({
     fs: { allow: [repositoryRoot] },
     proxy: {
       "/api": {
-        target: apiProxyTarget,
+        target: backendProxyTarget,
+        changeOrigin: true,
+        secure: true,
+      },
+      "/data": {
+        target: backendProxyTarget,
         changeOrigin: true,
         secure: true,
       },

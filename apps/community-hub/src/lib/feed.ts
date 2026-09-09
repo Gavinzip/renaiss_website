@@ -19,7 +19,7 @@ export function safeUrl(value: unknown): string {
 
 export function coverUrl(value: unknown): string {
   const raw = String(value ?? "").trim();
-  if (/^\/data\/generated_covers\//.test(raw)) return `https://renaiss.zeabur.app${raw}`;
+  if (/^\/data\/generated_covers\//.test(raw)) return raw;
   return safeUrl(raw);
 }
 
