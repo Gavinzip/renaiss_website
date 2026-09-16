@@ -29,6 +29,7 @@ from .taxonomy import (
     ROUTING_TOPICS,
     canonical_product_ids,
     canonical_routing_topics,
+    migrate_card_taxonomy_payload,
     normalize_record_result,
     normalize_product_progress_evidence,
     normalize_sbt_entries,
@@ -260,6 +261,7 @@ class StoryCard:
     event_region_version: str = ""
     routing_topics: list[str] | None = None
     product_ids: list[str] | None = None
+    product_definition: dict[str, str] | None = None
     detail_summary: str = ""
     detail_lines: list[str] | None = None
     sbt_entries: list[dict[str, str]] | None = None
@@ -298,7 +300,7 @@ class StoryCard:
 
     def to_dict(self) -> dict[str, Any]:
         derived_update_kind, derived_partner_names = infer_official_update_metadata(self.account, self.raw_text)
-        return {
+        payload = {
             "id": self.id,
             "account": self.account,
             "url": self.url,
@@ -339,6 +341,7 @@ class StoryCard:
             "event_region_version": self.event_region_version,
             "routing_topics": canonical_routing_topics(self.routing_topics),
             "product_ids": canonical_product_ids(self.product_ids),
+            "product_definition": self.product_definition or None,
             "detail_summary": self.detail_summary,
             "detail_lines": self.detail_lines or [],
             "sbt_entries": normalize_sbt_entries(self.sbt_entries),
@@ -375,6 +378,8 @@ class StoryCard:
             "source_message_id": self.source_message_id,
             "source_message_timestamp": self.source_message_timestamp,
         }
+        migrate_card_taxonomy_payload(payload, self.source_role)
+        return payload
 
 
 SYNDICATION_META_CACHE: dict[str, dict[str, Any]] = {}

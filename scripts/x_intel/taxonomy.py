@@ -7,6 +7,7 @@ cannot silently restore retired labels.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -48,6 +49,22 @@ PRODUCT_CATALOG = {
     "social-hall": "Vinci World Social Hall",
 }
 PRODUCT_IDS = frozenset(PRODUCT_CATALOG)
+PRODUCT_FAMILY_IDS = frozenset({"fair", "gacha", "packs", "rewards", "index", "tech", "store", "platform", "vinci"})
+
+# A product is not allowed to appear in the public Product Progress view merely
+# because a post uses a product-like tag.  These are the explicit terms used to
+# place a *verified, otherwise-unmapped* product into a family.  If no family
+# can be established, the card remains unmapped for editorial review.
+PRODUCT_FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("packs", re.compile(r"(?:\b(?:pack|booster|box)\b|卡包|卡盒|卡组|卡組)", re.I)),
+    ("gacha", re.compile(r"(?:\b(?:gacha|capsule)\b|扭蛋|轉蛋|转蛋)", re.I)),
+    ("rewards", re.compile(r"(?:\b(?:reward|referral)\b|獎勵|奖励|推薦獎勵|推荐奖励)", re.I)),
+    ("index", re.compile(r"(?:\bindex\b|指數|指数)", re.I)),
+    ("tech", re.compile(r"(?:\b(?:assistant|analysis|air)\b|助手|分析工具)", re.I)),
+    ("store", re.compile(r"(?:\b(?:store|merch|redemption)\b|商店|兌換|兑换)", re.I)),
+    ("platform", re.compile(r"(?:\b(?:platform|binder|handling fee)\b|平台|卡冊|卡册|手續費|手续费)", re.I)),
+    ("vinci", re.compile(r"(?:\bvinci\b|社交大廳|社交大厅)", re.I)),
+)
 
 SBT_STATUSES = frozenset({"unknown", "upcoming", "available", "ended", "distributed"})
 RECORD_RESULT_KINDS = frozenset(
@@ -107,14 +124,91 @@ def canonical_routing_topics(value: Any) -> list[str]:
     return out
 
 
-def canonical_product_ids(value: Any) -> list[str]:
+def canonical_product_ids(value: Any, *, extra_ids: Any = None) -> list[str]:
     rows = value if isinstance(value, list) else []
+    dynamic_ids = {
+        str(item or "").strip().lower()
+        for item in (extra_ids if isinstance(extra_ids, (list, tuple, set, frozenset)) else [])
+        if str(item or "").strip()
+    }
     out: list[str] = []
     for raw in rows:
         product_id = str(raw or "").strip().lower()
-        if product_id in PRODUCT_IDS and product_id not in out:
-            out.append(product_id)
+        if product_id in PRODUCT_IDS or product_id in dynamic_ids:
+            if product_id not in out:
+                out.append(product_id)
     return out
+
+
+def _normalized_product_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+
+def _product_slug(value: Any) -> str:
+    tokens = re.findall(r"[a-z0-9]+", str(value or "").casefold())
+    if tokens:
+        return "-".join(tokens)[:64].strip("-")
+    normalized = _normalized_product_name(value)
+    if not normalized:
+        return ""
+    # Keep product IDs URL-safe while remaining stable for a non-Latin product
+    # name. The public display name is preserved separately.
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"product-{digest}"
+
+
+def _known_product_id_for_name(value: Any) -> str:
+    needle = _normalized_product_name(value)
+    if not needle:
+        return ""
+    for product_id, name in PRODUCT_CATALOG.items():
+        aliases = [product_id.replace("-", " "), *str(name).split("/")]
+        if needle in {_normalized_product_name(alias) for alias in aliases}:
+            return product_id
+    return ""
+
+
+def auto_product_definition(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Derive a safe product entity from verified product-progress evidence.
+
+    This is intentionally the primary product-onboarding rule, not a display
+    fallback. It only runs for an official card that has already passed the
+    four Product Progress evidence tests. Unknown names without a clear family
+    remain unmapped instead of being invented as a product card.
+    """
+
+    if str(payload.get("review_status") or "").strip().lower() == "admin_overridden":
+        return None
+    if str(payload.get("classified_by") or "").strip().lower() == "manual":
+        return None
+    if canonical_source_role(payload.get("source_role")) != "official":
+        return None
+    if canonical_card_type(payload.get("card_type"), source_role="official") != "product_progress":
+        return None
+    if str(payload.get("plan_status") or "").strip().lower() not in {"upcoming", "in_progress", "completed"}:
+        return None
+    evidence = normalize_product_progress_evidence(payload.get("product_progress_evidence"))
+    if not has_complete_product_progress_evidence(evidence):
+        return None
+    name = re.sub(r"\s+", " ", str(evidence.get("product_or_capability") or "").strip())[:96]
+    if not name:
+        return None
+    known_id = _known_product_id_for_name(name)
+    if known_id:
+        return {"id": known_id, "name": PRODUCT_CATALOG[known_id], "family_id": "", "owner_account": ""}
+    family_id = next((family for family, pattern in PRODUCT_FAMILY_PATTERNS if pattern.search(name)), "")
+    if family_id not in PRODUCT_FAMILY_IDS:
+        return None
+    product_id = _product_slug(name)
+    owner_account = normalize_handle(payload.get("account"))
+    if not product_id or not owner_account:
+        return None
+    return {
+        "id": product_id,
+        "name": name,
+        "family_id": family_id,
+        "owner_account": owner_account,
+    }
 
 
 def _canonical_date(value: Any) -> str:
@@ -285,6 +379,7 @@ def migrate_card_taxonomy_payload(payload: dict[str, Any], source_role: Any) -> 
         payload.get("card_type"),
         tuple(payload.get("routing_topics") or payload.get("topic_labels") or []),
         tuple(payload.get("product_ids") or []),
+        payload.get("product_definition"),
         tuple(
             (item.get("name"), item.get("status"))
             for item in (payload.get("sbt_entries") or [])
@@ -305,7 +400,21 @@ def migrate_card_taxonomy_payload(payload: dict[str, Any], source_role: Any) -> 
         classified_by=payload.get("classified_by"),
     )
     payload["routing_topics"] = canonical_routing_topics(current_topics)
-    payload["product_ids"] = canonical_product_ids(payload.get("product_ids"))
+    product_definition = auto_product_definition(payload)
+    dynamic_product_id = ""
+    if product_definition:
+        dynamic_product_id = str(product_definition.get("id") or "").strip().lower()
+        payload["product_ids"] = canonical_product_ids(
+            [*(payload.get("product_ids") or []), dynamic_product_id],
+            extra_ids=[dynamic_product_id] if dynamic_product_id and dynamic_product_id not in PRODUCT_IDS else [],
+        )
+        if dynamic_product_id not in PRODUCT_IDS:
+            payload["product_definition"] = product_definition
+        else:
+            payload.pop("product_definition", None)
+    else:
+        payload["product_ids"] = canonical_product_ids(payload.get("product_ids"))
+        payload.pop("product_definition", None)
     payload["sbt_entries"] = normalize_sbt_entries(
         payload.get("sbt_entries"),
         legacy_name=payload.get("sbt_name"),
@@ -331,6 +440,7 @@ def migrate_card_taxonomy_payload(payload: dict[str, Any], source_role: Any) -> 
         payload.get("card_type"),
         tuple(payload.get("routing_topics") or []),
         tuple(payload.get("product_ids") or []),
+        payload.get("product_definition"),
         tuple(
             (item.get("name"), item.get("status"))
             for item in (payload.get("sbt_entries") or [])

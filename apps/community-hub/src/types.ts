@@ -78,6 +78,12 @@ export interface FeedCard {
   plan_status_reason?: string;
   product_progress_group_key?: string;
   product_ids?: string[];
+  product_definition?: {
+    family_id?: string;
+    id?: string;
+    name?: string;
+    owner_account?: string;
+  } | null;
   product_progress_evidence?: {
     product_or_capability?: string;
     source_evidence?: string;

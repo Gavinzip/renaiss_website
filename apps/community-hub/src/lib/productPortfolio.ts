@@ -119,6 +119,31 @@ const PRODUCT_ENTITIES: ProductEntityDefinition[] = [
 
 export const PRODUCT_OPTIONS = PRODUCT_ENTITIES.map(({ id, name }) => ({ id, name }));
 
+function dynamicProductEntities(cards: FeedCard[]): ProductEntityDefinition[] {
+  const staticIds = new Set(PRODUCT_ENTITIES.map((definition) => definition.id));
+  const dynamic = new Map<string, ProductEntityDefinition>();
+  cards.forEach((card) => {
+    const definition = card.product_definition;
+    const id = String(definition?.id ?? "").trim().toLowerCase();
+    const name = String(definition?.name ?? "").trim();
+    const familyId = String(definition?.family_id ?? "").trim() as ProductFamilyId;
+    const ownerAccount = String(definition?.owner_account ?? "").trim().toLowerCase().replace(/^@+/, "");
+    const assignedIds = new Set((card.product_ids ?? []).map((value) => String(value).trim().toLowerCase()));
+    if (!id || !name || !ownerAccount || staticIds.has(id) || !FAMILY_ORDER.includes(familyId) || !assignedIds.has(id)) return;
+    if (!dynamic.has(id)) {
+      dynamic.set(id, {
+        id,
+        familyId,
+        name,
+        icon: FAMILY_ICONS[familyId],
+        priority: 100,
+        ownerAccounts: [ownerAccount],
+      });
+    }
+  });
+  return [...dynamic.values()];
+}
+
 const ONE_TIME_KINDS = new Set<ProductUpdateKind>(["proposal", "implementation", "adoption", "launch", "sold_out", "policy_change", "prototype", "announcement"]);
 const VERIFIED_STATE_CHANGE_KINDS = new Set<ProductUpdateKind>([
   "adoption",
@@ -239,18 +264,19 @@ function dedupeTimeline(events: ProductTimelineEvent[]): ProductTimelineEvent[] 
 }
 
 export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
+  const productDefinitions = [...PRODUCT_ENTITIES, ...dynamicProductEntities(cards)];
   const buckets = new Map<string, { definition: ProductEntityDefinition; standalone: FeedCard[]; timeline: ProductTimelineEvent[] }>();
   const relatedUpdates: ProductRelatedUpdate[] = [];
   const unassignedUpdates: FeedCard[] = [];
   const unmappedUpdates: ProductTimelineEvent[] = [];
-  PRODUCT_ENTITIES.forEach((definition) => buckets.set(definition.id, { definition, standalone: [], timeline: [] }));
+  productDefinitions.forEach((definition) => buckets.set(definition.id, { definition, standalone: [], timeline: [] }));
 
   cards.forEach((card) => {
     if (String(card.source_role ?? "").toLowerCase() !== "official") return;
     const account = normalizedAccount(card);
     const text = sourceText(card);
     const productIds = new Set((card.product_ids ?? []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
-    const matches = PRODUCT_ENTITIES.filter((definition) => productIds.has(definition.id));
+    const matches = productDefinitions.filter((definition) => productIds.has(definition.id));
     if (!matches.length) {
       if (text && String(card.card_type ?? "").toLowerCase() === "product_progress" && hasCompleteProductProgressEvidence(card)) {
         const kind = updateKind(card, `${text} ${String(card.title ?? "")}`);
@@ -340,7 +366,7 @@ export function buildProductPortfolio(cards: FeedCard[]): ProductPortfolio {
       bucket.ownedProductIds.add(product.id);
     });
   }));
-  const ownersByProductId = new Map(PRODUCT_ENTITIES.map((definition) => [definition.id, definition.ownerAccounts]));
+  const ownersByProductId = new Map(productDefinitions.map((definition) => [definition.id, definition.ownerAccounts]));
   sortedRelatedUpdates.forEach((update) => {
     ownersByProductId.get(update.productId)?.forEach(addSourceUpdate);
   });

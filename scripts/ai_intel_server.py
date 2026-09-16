@@ -42,6 +42,7 @@ from x_intel_core import (
     add_classification_feedback,
     add_classification_feedback_fields,
     add_manual_tweet,
+    auto_product_definition,
     attach_product_progress_group_keys,
     apply_manual_selection_to_feed_snapshot,
     feedback_memory_stats,
@@ -1684,7 +1685,13 @@ def _feed_needs_taxonomy_reclassification() -> bool:
             return True
         if "routing_topics" not in row or "product_ids" not in row or "sbt_entries" not in row or "record_result" not in row:
             return True
-        if card_type not in ALLOWED_CARD_TYPES or any(topic not in ALLOWED_ROUTING_TOPICS for topic in topics) or any(product_id not in ALLOWED_PRODUCT_IDS for product_id in product_ids):
+        product_definition = auto_product_definition(row)
+        allowed_product_ids = set(ALLOWED_PRODUCT_IDS)
+        if isinstance(product_definition, dict):
+            dynamic_id = str(product_definition.get("id") or "").strip().lower()
+            if dynamic_id:
+                allowed_product_ids.add(dynamic_id)
+        if card_type not in ALLOWED_CARD_TYPES or any(topic not in ALLOWED_ROUTING_TOPICS for topic in topics) or any(product_id not in allowed_product_ids for product_id in product_ids):
             return True
         if source_role not in {"official", "official_community", "other"}:
             return True
