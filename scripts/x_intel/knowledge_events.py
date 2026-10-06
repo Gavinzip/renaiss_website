@@ -23,6 +23,13 @@ def event_timing(source: dict[str, Any], now: datetime) -> str:
         return "ended"
     if role not in {"event_start", "schedule_update"}:
         # A post/registration date does not establish when the event happens.
+        # An explicit date in the separate event schedule can still establish
+        # that an old event has ended, even if the post is a signup announcement.
+        schedule = str((source.get("event_facts") or {}).get("schedule") or "")
+        schedule_dates = [_date(value, now) for value in re.findall(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", schedule)]
+        schedule_dates = [value for value in schedule_dates if value is not None]
+        if schedule_dates and now >= max(schedule_dates) + timedelta(days=1):
+            return "ended"
         # Unknown-time sources need actual event evidence, not a product demo.
         if re.search(r"\b(AMA|meetup|party|gathering|livestream|conference)\b|聚會|聚会|直播|卡展|線下活動|线下活动", text, re.I):
             return "timing_unconfirmed"

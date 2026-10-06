@@ -1,6 +1,6 @@
 # website RAG 修正與驗證 — 2026-10-06
 
-**程式修正完成；真實 OpenAI embedding／MiniMax 問答在現行服務的隔離程序完成。尚未由 Gavin 驗收，未 push、未部署。**
+**程式修正已獲 Gavin 同意 push，首次正式部署與 Fair 真實問答已確認。新手 Wiki 不新增 Fair 章節；末尾追加正式驗證與活動篩選補修正。尚未由 Gavin 驗收。**
 
 Merch 的 `server/hub/assistant.mjs` 呼叫 `https://renaiss.zeabur.app/api/intel/agent`，使用 `top_k: 4`、`lang: zh-Hant` 與 history。本次未修改 Merch、前端樣式、正式服務程式、正式資料或任何金鑰設定。
 
@@ -22,7 +22,7 @@ Merch 的 `server/hub/assistant.mjs` 呼叫 `https://renaiss.zeabur.app/api/inte
 - 每次測試啟動獨立 HTTP Handler，使用 loopback 隨機 port；社群記憶與向量只從正式資料讀取並複製到測試目錄。排程、還原、備份均關閉，資料根隔離。正式 Python 程式、資料、部署和服務設定均未修改。測試結束後關閉獨立 HTTP Server。
 - 一開始誤用同名舊 `renaiss / renaiss-website`，其記憶停在 9 月。該次 SBT 試跑不列入本次後測結論；已在現行服務重新驗證。
 - Before 是較早的正式 API 快照（156 筆社群，generated `2026-10-06T07:10:14.716959+00:00`）；After 使用後續現行版本（154 筆，generated `2026-10-06T09:46:19.821650+00:00`）。未宣稱兩份社群語料完全相同；後測來源與常駐索引版本完整列出。
-- 這是修正後程式的隔離驗證，**正式 `/api/intel/agent` 尚未套用此修正**。正式部署仍需 Gavin 明確同意 push，之後再做 live 驗證。
+- 本節記錄 push 前的隔離驗證。Gavin 隨後同意 push；正式 `/api/intel/agent` 已套用首版修正，追加的 live 驗證記錄位於本報告末尾。
 
 ## 檢查結果
 
@@ -562,3 +562,80 @@ Trace: mode=rag; elapsed=5.92s; social=154; candidates=228; eligible=1; history=
 - `/tmp/renaiss-rag-20261006-01a11023/scripts/x_intel/knowledge_events.py`
 - `/tmp/renaiss-rag-20261006-01a11023/scripts/x_intel/official_knowledge.py`
 - `/tmp/renaiss-rag-20261006-01a11023/scripts/x_intel/official_sources.json`
+
+## Push 與正式服務驗證追加記錄
+
+Gavin 已明確同意 push，並確認不用在新手 Wiki 新增 Fair 章節；目標是 Agent 能回答 Renaiss Fair。Wiki hash 維持不變，section 搜尋沒有新增 Fair。
+
+- 首次程式 commit：`b402184bd3e4c521de7e84375fba0e044f365b6d`，已 push `origin/main`。
+- 自動部署 `6ac4d81a2501bae5587e4fb3`，RUNNING，完成時間 `2026-10-06T11:15:54.209Z`。
+- `spec.source.dockerfile=null`；build log 先 `cloning repository https://github.com/Gavinzip/renaiss_website.git`，再 `load build definition from Dockerfile`；未修改覆寫或手動部署。
+- `/app/scripts` 內 5 個修改模組／manifest 的 SHA-256 與 push 的本機檔案完全相同。
+- 首頁、Wiki、client-release HTTP 200；HTML／API／release=no-store。hashed JS/CSS=gzip + 一年 immutable；439,290-byte JS 傳輸 132,360 bytes，130,901-byte CSS 傳輸 24,793 bytes。
+- 既有網站素材合計 34,521,701 bytes；最大既有 JS 747,371 bytes，最大圖片 2,766,675 bytes，沒有 MP4／WebM；本次未新增 public／dist 素材。
+- 正式 API cold index 建立成功：265 個常駐條目，同一常駐版本；後續 query index_cache_hit=true，回應 no-store。
+- 正式程序社群記憶此時為 157 筆，generated `2026-10-05T15:59:44.443204+00:00`；與隔離快照 154 筆不同。常駐 Wiki／官方文件版本相同，未宣稱社群快照完全一致。
+- 正式 SBT 不可交易題 HTTP 200、8.82 秒，引用 Wiki FAQ，未來用途保持條件。
+
+### 介紹一下 Renaiss Fair。
+
+Renaiss Fair 是一套強調可驗證公平性的抽卡（Gacha）機制，目標是讓玩家不需信任平台也能確認抽卡結果。
+
+**核心設計：三大支柱（Pillars）** [1][2][3]
+
+1. **Construction（建構）**：依據公開的 Fair Set Algorithm 產生卡包組合，每包都須符合固定的期望值（EV）範圍與各階稀有度的最小／最大張數限制，頂階收藏品保證出現，不會是「可能中、可能不中」。 [1][2]
+
+2. **Seal（封存）**：卡包從 Renaiss 收藏品總庫中抽出，並在上架前以 Merkle root 記錄於鏈上，確保開賣後組合無法被竄改、增刪或替換。 [1][2]
+
+3. **Draw（抽卡）**：每筆購買透過鏈上 post-commit 資料產生 ECVRF（elliptic curve verifiable random function，RFC 9381）輸出，再對剩餘卡片數取模數決定結果。任何人都能用公開金鑰重算並驗證該次抽取。 [1][2]
+
+**解決的信任問題** [3]
+傳統抽卡有兩個由平台獨自決定的環節：哪些卡進入卡包、買家實際拿到哪張。Renaiss Fair 透過公開規則與鏈上證據，讓「卡包組成」與「抽卡結果」都可獨立驗證。
+
+**與一般平台的差異** [2]
+- 一般平台：結果來自平台私有資料庫，玩家只能相信平台說法。
+- Renaiss Fair：種子來自付款後才存在的鏈上資料，連 Renaiss 本人也無法在付款前預知結果，買家可自行重算驗證。
+
+**補充說明**
+- 上述機制的白皮書目前為 working draft（v1.0.0，2026-08-28）[1]。
+- Renaiss 整體是部署於 BNB Chain 的 RWA 收藏品基礎設施，把實體 TCG 卡牌（如寶可夢、海賊王）轉為鏈上 NFT 資產[4]。Renaiss Fair 即是在此架構下，針對卡包開抽（gacha）環節所提供的可驗證方案。
+
+引用：
+
+- [Renaiss Fair — Gacha Whitepaper](https://fair.renaiss.xyz/whitepaper)
+- [Renaiss Fair](https://fair.renaiss.xyz/)
+- [Renaiss Fair — Gacha Whitepaper](https://fair.renaiss.xyz/whitepaper)
+- [Renaiss 新手教學 — Renaiss 是什麼](https://renaiss.zeabur.app/beginner.html?lang=zh-Hant&topic=start)
+
+HTTP=200; mode=rag; elapsed=27.03s; cache=no-store; official_index_cache_hit=false.
+
+### Renaiss Fair 的 Merkle root 和 VRF 分別驗證什麼？
+
+Merkle root 驗證「卡池組合是否被竄改」，VRF 驗證「抽到的確切卡牌是否可被重現」。
+
+**Merkle root（第二柱・封存）**
+- 將通過 Fair Set Algorithm 篩選的 Renaiss Collectibles 陣容在開賣前以 Merkle root 形式上鏈 commit [1][3]。
+- 任何新增、移除或替換卡片的行為都會使 root 不再吻合，竄改會自我暴露 [2]。
+- 它的作用是封存（seal）卡池組成，而非處理抽卡結果 [2]。
+
+**VRF（第三柱・抽卡）**
+- 付款後，以鏈上 post-commit 區塊資料產生種子，搭配 ECVRF 從仍可取得的收藏品中決定索引 [1][3]。
+- 種子在買家付款前不存在，連 Renaiss 都無法預先計算，且任何人都能重播驗證 [2][4]。
+- VRF 索引對應到 Merkle root 已 commit 的陣容中按唯一 token ID 排序的特定位置，證明指向「具體那一張卡」，而不只是稀有度 [2]。
+
+簡言之：Merkle root 保證「開賣前卡池沒被動過」；VRF 保證「開賣後抽到哪張卡可被公開重現」。
+
+引用：
+
+- [Renaiss Fair — Gacha Whitepaper](https://fair.renaiss.xyz/whitepaper)
+- [Renaiss Fair](https://fair.renaiss.xyz/)
+- [Renaiss Fair — Gacha Whitepaper](https://fair.renaiss.xyz/whitepaper)
+- [Renaiss Fair](https://fair.renaiss.xyz/)
+
+HTTP=200; mode=rag; elapsed=13.56s; cache=no-store; official_index_cache_hit=true.
+
+### 正式回歸發現的活動篩選漏網
+
+首版正式近期活動 query 還引用「9/6 台灣 Renaiss 社區聚會開放報名」。row 的 date_role=registration_open，但獨立 event_facts.schedule 明載 `2026-09-06（週日）`。舊規則避免把報名日期當活动日期，將此类 meetup 一律歸為 timing_unconfirmed；模型雖說過期，來源仍進入 context。
+
+補修正：只從獨立活動 schedule 的明確 ISO 年月日判斷已結束，不把發布／報名日期當活動日期；多日 schedule 取最後日期的隔日邊界。未來報名公告仍不直接提升為 confirmed active event，日期未知維持未知。5 項回歸通過（真實過期 row、未來公告、多日窗口、公告日期與活動日期不同、歷史查詢保留），另驗證 ISO 前綴／timestamp。inline 測試未生成持久測試檔，未新增 fallback。補修正隨本次授權 push，正式 follow-up query 結果另行回報。
