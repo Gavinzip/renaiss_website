@@ -68,6 +68,7 @@ from x_intel_core import (
     update_x_source_accounts,
 )
 from x_intel.knowledge_agent import answer_knowledge_question
+from beginner_wiki import WIKI_READ_LOCK, read_beginner_wiki_document
 from x_intel.community_metrics import (
     COMMUNITY_METRIC_ACCOUNTS,
     read_community_metrics_state,
@@ -152,7 +153,7 @@ SYNC_STATE_LOCK = Lock()
 BACKUP_STATE_LOCK = Lock()
 CONTENT_REFRESH_LOCK = Lock()
 COMMUNITY_METRICS_LOCK = Lock()
-BEGINNER_WIKI_LOCK = Lock()
+BEGINNER_WIKI_LOCK = WIKI_READ_LOCK
 PRIORITY_ACTIVITY_LOCK = Lock()
 PRIORITY_ACTIVITY: dict[str, object] = {
     "last_user_request_at": 0.0,
@@ -907,25 +908,7 @@ def _purge_runtime_source_references(accounts: list[str], card_ids: list[str]) -
 
 
 def _read_beginner_wiki_content() -> dict:
-    if directus_wiki_enabled():
-        return read_directus_beginner_wiki()
-    with BEGINNER_WIKI_LOCK:
-        if not BEGINNER_WIKI_CONTENT_PATH.exists():
-            return {"exists": False, "data": None, "meta": {"provider": "local"}}
-        try:
-            raw = json.loads(BEGINNER_WIKI_CONTENT_PATH.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise RuntimeError(f"failed to read beginner wiki content: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise RuntimeError("beginner wiki content format invalid")
-    data = raw.get("data")
-    if not isinstance(data, dict):
-        raise RuntimeError("beginner wiki data format invalid")
-    meta = {key: raw.get(key) for key in ["version", "updated_at", "updated_by", "updated_role", "revision"] if raw.get(key) is not None}
-    meta["provider"] = "local"
-    meta["source"] = "local-json"
-    meta["content_hash"] = wiki_data_hash(data)
-    return {"exists": True, "data": data, "meta": meta}
+    return read_beginner_wiki_document(DATA_ROOT, lock=BEGINNER_WIKI_LOCK)
 
 
 def _validate_beginner_wiki_data(data: object) -> dict:

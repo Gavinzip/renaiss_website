@@ -1,0 +1,6 @@
+[
+  {"id": "renaiss-fair", "title": "Renaiss Fair", "url": "https://fair.renaiss.xyz/", "language": "en", "status": "product"},
+  {"id": "renaiss-fair-whitepaper", "title": "Renaiss Fair — Gacha Whitepaper", "url": "https://fair.renaiss.xyz/whitepaper", "language": "en", "status": "working draft"},
+  {"id": "renaiss-index-api", "title": "Renaiss Index — Public API and reference prices", "url": "https://index.renaissos.com/en/api-docs", "language": "en", "status": "published"},
+  {"id": "renaiss-index-scope", "title": "Renaiss Index — Product scope and terms", "url": "https://index.renaissos.com/en/terms", "language": "en", "status": "published"}
+]

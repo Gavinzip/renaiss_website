@@ -50,8 +50,8 @@ def _cache_path() -> Path:
     return data_dir() / EMBED_CACHE_FILENAME
 
 
-def _load_cache() -> dict[str, Any]:
-    path = _cache_path()
+def _load_cache(path: Path | None = None) -> dict[str, Any]:
+    path = path or _cache_path()
     if not path.exists():
         return {"version": 1, "entries": {}, "updated_at": ""}
     try:
@@ -70,13 +70,15 @@ def _load_cache() -> dict[str, Any]:
     }
 
 
-def _save_cache(payload: dict[str, Any]) -> None:
-    path = _cache_path()
+def _save_cache(payload: dict[str, Any], path: Path | None = None) -> None:
+    path = path or _cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _semantic_text(row: dict[str, Any]) -> str:
+    if row.get("knowledge_kind") in {"wiki", "product_document"}:
+        return clean_text(str(row.get("semantic_text") or ""))
     title = clean_text(str(row.get("title") or ""))
     summary = clean_text(str(row.get("summary") or ""))
     raw_hint = _compact_point(strip_links_mentions(str(row.get("raw_hint") or "")), 420)
@@ -171,9 +173,10 @@ def ensure_embeddings_for_rows(
     timeout_seconds: int = 80,
     batch_size: int = 40,
     cache_max_entries: int = 8000,
+    cache_path: Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     fingerprint = _guard_embedding_auth(api_key)
-    cache_payload = _load_cache()
+    cache_payload = _load_cache(cache_path)
     cache_entries = cache_payload.get("entries")
     if not isinstance(cache_entries, dict):
         cache_entries = {}
@@ -271,7 +274,7 @@ def ensure_embeddings_for_rows(
         cache_payload["entries"] = cache_entries
 
     cache_payload["updated_at"] = _now_iso()
-    _save_cache(cache_payload)
+    _save_cache(cache_payload, cache_path)
     stats = {
         "mode": "embedding",
         "cache_hit": hit,
