@@ -35,6 +35,8 @@ function normalizeLanguage(value: string | null | undefined): Language {
 }
 
 function initialLanguage(): Language {
+  const requested = new URLSearchParams(window.location.search).get("lang");
+  if (requested) return normalizeLanguage(requested);
   try {
     return normalizeLanguage(localStorage.getItem(LANGUAGE_STORAGE_KEY) || document.documentElement.lang || navigator.language);
   } catch {
@@ -104,6 +106,19 @@ export function CommunityHubApp() {
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, lang); } catch { /* Storage can be unavailable in a private browser context. */ }
     return () => document.documentElement.classList.remove("community-hub-ui-ready");
   }, [lang]);
+
+  useEffect(() => {
+    const syncLanguage = () => setLang(initialLanguage());
+    window.addEventListener("popstate", syncLanguage);
+    return () => window.removeEventListener("popstate", syncLanguage);
+  }, []);
+
+  const changeLanguage = useCallback((next: Language) => {
+    setLang(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", next);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
 
   useEffect(() => {
     const title = route.view === "article" ? "Article" : text(lang, `nav.${route.view}`);
@@ -250,13 +265,13 @@ export function CommunityHubApp() {
   else if (route.view === "future") view = <Suspense fallback={<div className="community-hub-source-state"><strong>{text(lang, "status.loading")}</strong></div>}><ProductProgressView cards={cards} lang={lang} loading={loading} onOpenArticle={openArticle} onRefresh={refresh} translationPending={hasPendingTranslation} /></Suspense>;
   else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
-  else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;
+  else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} sectionId={route.section} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go(articleBackView.current)} />;
   else if (route.view === "records") view = <RecordsView cards={cards} lang={lang} onOpenArticle={openArticle} leaderboard={leaderboard} leaderboardLoading={leaderboardLoading} leaderboardError={leaderboardError} onRefreshLeaderboard={refresh} />;
   else if (route.view === "media") view = <MediaView {...shared} />;
-  else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={() => openGuide("overview")} />;
+  else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={openGuide} />;
   else if (route.view === "manage" && auth.permissions.admin) view = <Suspense fallback={<div className="community-hub-source-state"><strong>正在載入管理工具…</strong></div>}><AdminView cards={adminFeed?.cards ?? []} lang={lang} onRefresh={refresh} sourceError={adminFeedError} /></Suspense>;
   else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} />;
 
-  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={setLang} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
+  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={changeLanguage} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
 }

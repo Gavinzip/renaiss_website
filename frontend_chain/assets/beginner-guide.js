@@ -264,6 +264,8 @@
   }
 
   function sectionTopic(section, index) {
+    const route = wikiCmsState.meta.section_routes?.[currentLang()]?.[index];
+    if (route) return route.topic;
     const raw = String(section && section.topic || "").trim().toLowerCase();
     if (raw && Object.prototype.hasOwnProperty.call(TOPIC_SECTION_INDEXES, raw)) return raw;
     return topicForSectionIndex(index);
@@ -816,6 +818,8 @@
   }
 
   function sectionDomId(section, index) {
+    const route = wikiCmsState.meta.section_routes?.[currentLang()]?.[index];
+    if (route) return route.anchor;
     return sectionAnchorId(section) || `beginner-wiki-section-${index}`;
   }
 
@@ -1339,16 +1343,9 @@
     }
     if (!topicId) return [];
     const sections = Array.isArray(guide.sections) ? guide.sections : [];
-    const hasTaggedSections = sections.some((section) => section && section.topic);
-    if (hasTaggedSections) {
-      return sections
-        .map((section, index) => ({ section, index }))
-        .filter((item) => item.section && sectionTopic(item.section, item.index) === topicId);
-    }
-    const indexes = TOPIC_SECTION_INDEXES[topicId] || [];
-    return indexes
-      .map((index) => ({ section: guide.sections && guide.sections[index], index }))
-      .filter((item) => item.section);
+    return sections
+      .map((section, index) => ({ section, index }))
+      .filter((item) => item.section && sectionTopic(item.section, item.index) === topicId);
   }
 
   function updateTopicPanels(topicId) {
@@ -3124,6 +3121,18 @@
       scrollToGuideTop("auto");
     });
     observeSections();
+    scrollToCitationAnchor();
+    window.addEventListener("hashchange", scrollToCitationAnchor);
+  }
+
+  function scrollToCitationAnchor() {
+    const anchorId = window.location.hash.slice(1);
+    if (!anchorId.startsWith("beginner-")) return;
+    // The CMS content is rendered asynchronously, after native fragment scrolling.
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(anchorId);
+      if (target) target.scrollIntoView({ behavior: "instant", block: "start" });
+    });
   }
 
   bootBeginnerPage();

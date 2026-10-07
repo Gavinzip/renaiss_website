@@ -4,6 +4,7 @@ import { ViewHeader } from "@/components/AppShell";
 import { hasRecordResult } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { OPEN_MONITOR_LEADERBOARD_URL } from "@/lib/sources";
+import { guideHref } from "@/lib/wikiRoutes";
 import type { FeedCard, Language, PackLeaderboard, PackLeaderboardEntry } from "@/types";
 
 interface RecordsViewProps {
@@ -88,18 +89,21 @@ const toolGroups = [
     id: "guide",
     icon: "book-open-check",
     links: [
-      ["Beginner Wiki", "../beginner.html?topic=start"],
-      ["SBT Guide", "../beginner.html?topic=sbt"],
-      ["TCG Tools", "../beginner.html?topic=tools"],
-      ["FAQ", "../beginner.html?topic=faq"],
+      ["Beginner Wiki", "start"],
+      ["SBT Guide", "sbt"],
+      ["TCG Tools", "tools"],
+      ["FAQ", "faq"],
     ],
   },
 ] as const;
 
-export function KnowledgeView({ lang, onGuide }: { lang: Language; onGuide: () => void }) {
+export function KnowledgeView({ lang, onGuide }: { lang: Language; onGuide: (topic: string) => void }) {
   return <section className="community-hub-view is-active is-entering">
     <ViewHeader eyebrow="KNOWLEDGE" title={text(lang, "knowledge.title")} lead={text(lang, "knowledge.lead")} />
-    <div className="community-hub-knowledge-groups">{toolGroups.map((group) => <section className="community-hub-knowledge-group" key={group.id}><div className="community-hub-knowledge-group-head"><Icon name={group.icon} /><div><h3>{group.id === "product" ? "Renaiss" : text(lang, "guide.title")}</h3><p>{group.id === "product" ? "Official product surfaces" : text(lang, "guide.lead")}</p></div></div><nav className="community-hub-guide-list">{group.links.map(([label, href], index) => <a href={href} key={href}><span>{String(index + 1).padStart(2, "0")}</span><strong>{label}</strong><small>{href.startsWith("../beginner") ? text(lang, "guide.lead") : ""}</small><Icon name="arrow-up-right" /></a>)}</nav></section>)}</div>
-    <button type="button" className="community-hub-guide-launch community-hub-guide-launch--knowledge" onClick={onGuide}><span><Icon name="book-open-check" /><strong>{text(lang, "guide.title")}</strong><small>{text(lang, "guide.lead")}</small></span><Icon name="arrow-right" /></button>
+    <div className="community-hub-knowledge-groups">{toolGroups.map((group) => <section className="community-hub-knowledge-group" key={group.id}><div className="community-hub-knowledge-group-head"><Icon name={group.icon} /><div><h3>{group.id === "product" ? "Renaiss" : text(lang, "guide.title")}</h3><p>{group.id === "product" ? "Official product surfaces" : text(lang, "guide.lead")}</p></div></div><nav className="community-hub-guide-list">{group.links.map(([label, destination], index) => <a href={group.id === "guide" ? guideHref(destination, lang) : destination} key={destination} onClick={(event) => {
+      if (group.id !== "guide" || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); onGuide(destination);
+    }}><span>{String(index + 1).padStart(2, "0")}</span><strong>{label}</strong><small>{group.id === "guide" ? text(lang, "guide.lead") : ""}</small><Icon name="arrow-up-right" /></a>)}</nav></section>)}</div>
+    <button type="button" className="community-hub-guide-launch community-hub-guide-launch--knowledge" onClick={() => onGuide("overview")}><span><Icon name="book-open-check" /><strong>{text(lang, "guide.title")}</strong><small>{text(lang, "guide.lead")}</small></span><Icon name="arrow-right" /></button>
   </section>;
 }

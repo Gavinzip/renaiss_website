@@ -2,6 +2,7 @@ import type { Language } from "@/types";
 
 export const copy: Record<Language, Record<string, string>> = {
   "zh-Hant": {
+    "guide.sbtCatalog": "Wiki SBT 任務清單", "guide.sbtCatalogLead": "保留原始 Wiki 的完整清單；取得狀態請查看各項標示。",
     "card.pinned": "置頂",
     "app.legacy": "原始聚合器", "app.open": "Open Renaiss", "app.source": "社群情報", "app.wiki": "前往新手 Wiki", "app.agent": "詢問 Renaiss Agent", "auth.login": "登入編輯", "auth.logout": "登出", "auth.account": "Renaiss 帳號", "auth.checking": "確認登入",
     "nav.overview": "總覽", "nav.events": "活動", "nav.official": "官方動態", "nav.feed": "社群動態", "nav.future": "產品進度", "nav.sbt": "SBT", "nav.profile": "Profile", "nav.guide": "新手教學", "nav.records": "獎勵與紀錄", "nav.media": "新聞與媒體", "nav.knowledge": "知識與工具", "nav.manage": "內容管理",
@@ -20,6 +21,7 @@ export const copy: Record<Language, Record<string, string>> = {
     "article.published": "發布", "article.timeline": "內容日期", "article.facts": "活動資訊", "article.fact.schedule": "時間", "article.fact.location": "地點", "article.fact.participation": "參與方式", "article.fact.reward": "獎勵", "article.fact.audience": "適合對象", "article.highlights": "重點", "article.analysis": "完整整理", "article.details": "詳細內容", "article.sbt": "SBT 資訊", "article.plan": "產品進度判定", "article.sourceText": "原始內容", "article.partial": "完整原文暫時無法取得，以下僅保留可驗證的貼文預覽。", "article.tags": "文章分類",
   },
   "zh-Hans": {
+    "guide.sbtCatalog": "Wiki SBT 任务清单", "guide.sbtCatalogLead": "保留原始 Wiki 的完整清单；获取状态请查看各项标示。",
     "card.pinned": "置顶",
     "app.legacy": "原始聚合器", "app.open": "Open Renaiss", "app.source": "社群情报", "app.wiki": "前往新手 Wiki", "app.agent": "询问 Renaiss Agent", "auth.login": "登录编辑", "auth.logout": "退出登录", "auth.account": "Renaiss 帐号", "auth.checking": "确认登录",
     "nav.overview": "总览", "nav.events": "活动", "nav.official": "官方动态", "nav.feed": "社群动态", "nav.future": "产品进度", "nav.sbt": "SBT", "nav.profile": "Profile", "nav.guide": "新手教学", "nav.records": "奖励与纪录", "nav.media": "新闻与媒体", "nav.knowledge": "知识与工具", "nav.manage": "内容管理",
@@ -38,6 +40,7 @@ export const copy: Record<Language, Record<string, string>> = {
     "article.published": "发布", "article.timeline": "内容日期", "article.facts": "活动资讯", "article.fact.schedule": "时间", "article.fact.location": "地点", "article.fact.participation": "参与方式", "article.fact.reward": "奖励", "article.fact.audience": "适合对象", "article.highlights": "重点", "article.analysis": "完整整理", "article.details": "详细内容", "article.sbt": "SBT 资讯", "article.plan": "产品进度判定", "article.sourceText": "原始内容", "article.partial": "暂时无法取得完整原文，以下仅保留可验证的贴文预览。", "article.tags": "文章分类",
   },
   en: {
+    "guide.sbtCatalog": "Wiki SBT task catalog", "guide.sbtCatalogLead": "The complete original Wiki catalog. Check each item's acquisition status.",
     "card.pinned": "Pinned",
     "app.legacy": "Legacy aggregator", "app.open": "Open Renaiss", "app.source": "Community intelligence", "app.wiki": "Open beginner Wiki", "app.agent": "Ask Renaiss Agent", "auth.login": "Sign in to edit", "auth.logout": "Sign out", "auth.account": "Renaiss account", "auth.checking": "Checking sign-in",
     "nav.overview": "Overview", "nav.events": "Events", "nav.official": "Official updates", "nav.feed": "Community feed", "nav.future": "Product progress", "nav.sbt": "SBT", "nav.profile": "Profile", "nav.guide": "Beginner guide", "nav.records": "Rewards and records", "nav.media": "News and media", "nav.knowledge": "Knowledge and tools", "nav.manage": "Content management",
@@ -56,6 +59,7 @@ export const copy: Record<Language, Record<string, string>> = {
     "article.published": "Published", "article.timeline": "Content date", "article.facts": "Event information", "article.fact.schedule": "Schedule", "article.fact.location": "Location", "article.fact.participation": "How to join", "article.fact.reward": "Reward", "article.fact.audience": "Audience", "article.highlights": "Highlights", "article.analysis": "Full analysis", "article.details": "Details", "article.sbt": "SBT information", "article.plan": "Product progress decision", "article.sourceText": "Source content", "article.partial": "The full source is temporarily unavailable. Only the verified post preview is shown below.", "article.tags": "Article categories",
   },
   ko: {
+    "guide.sbtCatalog": "Wiki SBT 과제 목록", "guide.sbtCatalogLead": "원래 Wiki의 전체 목록입니다. 각 항목의 획득 상태를 확인하세요.",
     "card.pinned": "고정",
     "app.legacy": "기존 애그리게이터", "app.open": "Open Renaiss", "app.source": "커뮤니티 인텔리전스", "app.wiki": "초보자 Wiki 열기", "app.agent": "Renaiss Agent에게 묻기", "auth.login": "편집 로그인", "auth.logout": "로그아웃", "auth.account": "Renaiss 계정", "auth.checking": "로그인 확인 중",
     "nav.overview": "개요", "nav.events": "이벤트", "nav.official": "공식 업데이트", "nav.feed": "커뮤니티 피드", "nav.future": "제품 진행", "nav.sbt": "SBT", "nav.profile": "Profile", "nav.guide": "초보자 가이드", "nav.records": "보상 및 기록", "nav.media": "뉴스 및 미디어", "nav.knowledge": "지식 및 도구", "nav.manage": "콘텐츠 관리",

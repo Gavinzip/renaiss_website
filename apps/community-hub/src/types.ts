@@ -242,6 +242,7 @@ export interface LegacyBeginnerData {
 }
 
 export interface BeginnerWikiMeta {
+  section_routes?: Partial<Record<Language, Array<{ topic: string; anchor: string }>>>;
   auto_translate?: boolean;
   cache_seconds?: number;
   content_hash?: string;

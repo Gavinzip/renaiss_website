@@ -69,6 +69,7 @@ from x_intel_core import (
 )
 from x_intel.knowledge_agent import answer_knowledge_question
 from beginner_wiki import WIKI_READ_LOCK, read_beginner_wiki_document
+from beginner_wiki_routes import with_section_routes
 from x_intel.community_metrics import (
     COMMUNITY_METRIC_ACCOUNTS,
     read_community_metrics_state,
@@ -5788,9 +5789,10 @@ class Handler(SimpleHTTPRequestHandler):
                     auto_translate=auto_translate,
                 )
                 if saved.get("meta") is not None:
-                    self._send_json({"ok": True, "wiki": saved})
+                    self._send_json({"ok": True, "wiki": with_section_routes(saved)})
                 else:
-                    self._send_json({"ok": True, "wiki": {"exists": True, "data": saved["data"], "meta": {key: saved[key] for key in ["version", "revision", "updated_at", "updated_by", "updated_role", "content_hash"] if key in saved}}})
+                    document = {"exists": True, "data": saved["data"], "meta": {key: saved[key] for key in ["version", "revision", "updated_at", "updated_by", "updated_role", "content_hash"] if key in saved}}
+                    self._send_json({"ok": True, "wiki": with_section_routes(document)})
             except WikiEditConflictError as exc:
                 self._send_json({"ok": False, "error": str(exc), "code": "wiki_conflict"}, status=HTTPStatus.CONFLICT)
             except ValueError as exc:

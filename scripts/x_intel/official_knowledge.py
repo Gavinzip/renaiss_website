@@ -21,6 +21,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from beginner_wiki import read_beginner_wiki_document
+from beginner_wiki_routes import wiki_section_routes
 from .bootstrap import clean_text, data_dir
 from .embedding_cache import ensure_embeddings_for_rows
 
@@ -103,10 +104,12 @@ def wiki_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
         raise RuntimeError("official_knowledge_wiki_missing")
     data, meta = document["data"], document.get("meta") or {}
     version = str(meta.get("content_hash") or _hash(data))
+    routes = wiki_section_routes(data)
     result: list[dict[str, Any]] = []
 
-    def add(language: str, section: str, title: str, blocks: list[str], topic: str = "") -> None:
-        url = "/beginner.html?" + urlencode({"lang": language, **({"topic": topic} if topic else {})})
+    def add(language: str, section: str, title: str, blocks: list[str], topic: str = "", anchor: str = "") -> None:
+        url = "/community-hub/?" + urlencode({"lang": language, "guide": topic or "overview",
+                                             **({"section": anchor} if anchor else {})}) + "#guide"
         result.extend(_rows(document="beginner", title=f"Renaiss 新手教學 — {title}", blocks=blocks,
                             url=url, language=language, version=version,
                             provider=str(meta.get("provider") or ""), section=section, kind="wiki"))
@@ -115,29 +118,25 @@ def wiki_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(guide, dict):
             continue
         sections = guide.get("sections") or []
-        explicit_topics = {section.get("topic") for section in sections if isinstance(section, dict) and section.get("topic")}
         for index, section in enumerate(sections):
             if isinstance(section, dict):
-                # Mirror the published reader's grouping for the legacy Wiki,
-                # whose sections all carry topic=start in Directus.
-                topic = str(section.get("topic") or "") if len(explicit_topics) > 1 else (
-                    "start" if index <= 1 else "packs" if index <= 3 else "market" if index == 4 else "sbt" if index == 5 else "tcg")
+                route = routes[language][index]
                 add(language, f"section-{index}", str(section.get("title") or guide.get("title") or "Guide"),
-                    _text_blocks(section), topic)
+                    _text_blocks(section), route["topic"], route["anchor"])
         for index, faq in enumerate((data.get("faq") or {}).get(language) or []):
             blocks = _text_blocks(faq)
-            add(language, f"faq-{index}", str(faq[0]) if isinstance(faq, list) and faq else "FAQ", blocks, "faq")
+            add(language, f"faq-{index}", str(faq[0]) if isinstance(faq, list) and faq else "FAQ", blocks, "faq", f"beginner-faq-{index}")
         for index, item in enumerate(data.get("sbtItems") or []):
             if not isinstance(item, dict):
                 continue
             name = (item.get("name") or {}).get(language) or item.get("key") or "SBT"
             requirement = (item.get("requirement") or {}).get(language) or ""
             add(language, f"sbt-{index}", f"SBT — {name}",
-                [f"{name}: {requirement}", f"status={item.get('status') or ''}; difficulty={item.get('difficulty') or ''}"], "sbt")
+                [f"{name}: {requirement}", f"status={item.get('status') or ''}; difficulty={item.get('difficulty') or ''}"], "sbt", f"beginner-sbt-{index}")
         for index, item in enumerate(data.get("tools") or []):
             if isinstance(item, dict):
                 name = (item.get("name") or {}).get(language) or "Tool"
-                add(language, f"tool-{index}", name, [f"{name}: {item.get('link') or ''}; authors={', '.join(item.get('authors') or [])}"], "tools")
+                add(language, f"tool-{index}", name, [f"{name}: {item.get('link') or ''}; authors={', '.join(item.get('authors') or [])}"], "tools", f"beginner-tool-{index}")
         for index, item in enumerate(data.get("commands") or []):
             if not isinstance(item, dict):
                 continue
@@ -146,10 +145,10 @@ def wiki_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
                 return str(value.get(language) or "") if isinstance(value, dict) else str(value)
             name = localized("name")
             add(language, f"command-{index}", f"TCG Pro — {name}",
-                [" — ".join(localized(key) for key in ("name", "command", "meta", "desc") if localized(key))], "tools")
+                [" — ".join(localized(key) for key in ("name", "command", "meta", "desc") if localized(key))], "tools", f"beginner-command-{index}")
         captions = [str((image.get("caption") or {}).get(language) or "")
                     for image in (data.get("commandShowcase") or {}).get("images", []) if isinstance(image, dict)]
-        add(language, "command-showcase", "TCG Pro 分析流程", [text for text in captions if text], "tools")
+        add(language, "command-showcase", "TCG Pro 分析流程", [text for text in captions if text], "tools", "beginner-command-showcase")
     if not result:
         raise RuntimeError("official_knowledge_wiki_empty")
     return result

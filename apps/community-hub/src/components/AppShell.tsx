@@ -71,7 +71,7 @@ export function AppShell({ auth, authLoading, children, environment, lang, loadi
           <nav ref={navRef} className="community-hub-nav-list">
             {navItems.filter((item) => item.view !== "manage" || auth.permissions.admin).map((item) => <button key={item.view} type="button" className={`community-hub-nav-item${view === item.view ? " is-active" : ""}`} onClick={() => onNavigate(item.view)} aria-current={view === item.view ? "page" : undefined}><Icon name={item.icon} /><span>{text(lang, `nav.${item.view}`)}</span></button>)}
           </nav>
-          <div className="community-hub-sidebar-foot"><a href="../beginner.html?topic=start"><Icon name="book-marked" /><span>{text(lang, "app.wiki")}</span></a><a href="../agent.html"><Icon name="bot-message-square" /><span>{text(lang, "app.agent")}</span></a></div>
+          <div className="community-hub-sidebar-foot"><a href={`?guide=start&lang=${lang}#guide`}><Icon name="book-marked" /><span>{text(lang, "app.wiki")}</span></a><a href="../agent.html"><Icon name="bot-message-square" /><span>{text(lang, "app.agent")}</span></a></div>
         </aside>
         <section className="community-hub-main" aria-live="polite">
           <div className={`community-hub-live-status${loading ? " is-loading" : sourceState === "error" ? " is-error" : ""}`} role="status">{status}</div>

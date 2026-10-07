@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Icon } from "@/components/Icon";
 import { assets } from "@/data/legacy";
+import { guideSectionRoutes } from "@/lib/wikiRoutes";
 import type { GuideSection, Language, LegacyBeginnerData, LegacyGuideData, LegacySbtItem, LocalizedText } from "@/types";
 
 const SECTION_TYPES: Array<NonNullable<GuideSection["type"]>> = ["intro", "steps", "imageText", "cards", "sbtChecklist", "ratings"];
@@ -211,11 +212,8 @@ export function WikiInlineEditor({ data, lang, message, onCancel, onChange, onSa
   const topicRows = (data.topics?.[lang] ?? []).map((topic) => ({ id: topic.id, title: topic.title || topic.id }));
   const guide = data.guides?.[lang];
   const sections = guide?.sections ?? [];
-  const explicitTopics = new Set(sections.map((section) => section.topic).filter(Boolean));
-  const sectionIndexes = sections.map((section, index) => ({ section, index })).filter(({ section, index }) => {
-    const legacyTopic = [0, 1].includes(index) ? "start" : [2, 3].includes(index) ? "packs" : index === 4 ? "market" : index === 5 ? "sbt" : "tcg";
-    return (explicitTopics.size > 1 && section.topic ? section.topic : legacyTopic) === topicId;
-  }).map(({ index }) => index);
+  const routes = guideSectionRoutes(sections, lang);
+  const sectionIndexes = sections.map((_, index) => index).filter((index) => routes[index].topic === topicId);
   const addSection = () => {
     const next = clone(data);
     const rows = next.guides?.[lang]?.sections;
