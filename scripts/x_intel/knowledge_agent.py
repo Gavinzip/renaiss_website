@@ -14,6 +14,7 @@ from .knowledge_memory import knowledge_embedding_model, knowledge_memory_path, 
 from .sources import minimax_chat, minimax_model_name
 from .official_knowledge import authority_score, load_official_knowledge
 from .knowledge_events import eligible_event_sources
+from .knowledge_news import eligible_news_sources, no_recent_news_answer, recent_news_window
 
 
 EMBED_CACHE_FILENAME = "x_intel_embedding_cache.json"
@@ -262,6 +263,8 @@ def _effective_event_datetime(item: dict[str, Any], now: datetime) -> datetime |
 
 def _question_intent(question: str) -> dict[str, bool]:
     q = clean_text(question).lower()
+    now = _now_local()
+    question_dates = _extract_question_dates(q, now)
     event_terms = (
         "活動", "活动", "直播", "ama", "space", "event", "party", "聚會", "聚会", "報名", "报名", "參加", "参加",
         "participate", "join", "campfire", "plaza", "graduation",
@@ -277,7 +280,7 @@ def _question_intent(question: str) -> dict[str, bool]:
     sbt_terms = ("sbt", "徽章", "領取", "取得", "unlock", "badge")
     registration_terms = ("報名", "报名", "申請", "申请", "register", "registration", "sign up", "signup")
     has_event = any(term in q for term in event_terms)
-    has_time = any(term in q for term in near_terms) or bool(_extract_question_dates(q, _now_local()))
+    has_time = any(term in q for term in near_terms) or bool(question_dates)
     definition = any(term in q for term in ("是什麼", "是什么", "what is", "介紹", "介绍", "explain", "how does"))
     schedule = has_event and (has_time or any(term in q for term in (
         "何時", "什么时候", "什麼時候", "哪天", "時間", "时间", "when", "schedule", "有哪些活動", "有哪些活动", "有什麼活動", "有什么活动",
@@ -290,6 +293,7 @@ def _question_intent(question: str) -> dict[str, bool]:
         "official": any(term in q for term in official_terms),
         "sbt": any(term in q for term in sbt_terms),
         "registration": any(term in q for term in registration_terms),
+        "recent_news": not schedule and not question_dates and recent_news_window(q, now) is not None,
     }
 
 
@@ -341,7 +345,7 @@ def _score_memory_item(base_score: float, item: dict[str, Any], question: str, n
         elif intent["event"] and not intent["registration"] and date_role in EVENT_START_DATE_ROLES:
             score -= 0.22
             reasons.append("different_event_date")
-    if intent["near"] and event_dt:
+    if intent["near"] and not intent["recent_news"] and event_dt:
         days = (event_dt.date() - now.date()).days
         if date_role in EVENT_START_DATE_ROLES and days == 0:
             score += 0.24
@@ -479,6 +483,8 @@ def _event_days(source: dict[str, Any], now: datetime) -> int | None:
 
 def _filter_sources_for_intent(sources: list[dict[str, Any]], question: str) -> list[dict[str, Any]]:
     intent = _question_intent(question)
+    if intent.get("recent_news"):
+        return eligible_news_sources(sources, question, _now_local())
     if not sources or not intent.get("event_schedule"):
         return sources
     now = _now_local()
@@ -609,6 +615,7 @@ def _answer_with_minimax(
         "If the memory is insufficient, say that the current memory does not contain enough evidence. "
         "Do not invent dates, rewards, prices, official status, or UI steps absent from the sources. "
         "For definitions and product mechanisms, use the published Wiki and official product documents before social posts. Preserve qualifications such as possible future benefits and working draft status. "
+        "For recent news, use the supplied publication window and list updates newest first. Publication dates describe when the source was posted; they do not establish when an announced event or release happens. Do not present an undated Wiki section or an older post as recent news. "
         "For current or upcoming events, only ongoing/upcoming event_status establishes an active event. timing_unconfirmed means a real event announcement lacks a verified schedule; do not call it currently joinable or treat relative dates in an old post as relative to today. "
         "An old registration_open announcement does not prove registration is still open today; describe it as what the announcement said unless a current registration window is established. "
         "For a current event schedule question, if no ongoing/upcoming event is supplied, state only that the retrieved sources do not confirm an event that can currently be joined, not that no events exist. Do not replace missing events with staffing announcements, branding, product updates, or historical events. "
@@ -626,12 +633,15 @@ def _answer_with_minimax(
         instruction += " Reply in Korean unless the user asks otherwise."
     else:
         instruction += " Reply in English unless the user asks otherwise."
+    news_window = recent_news_window(question, _now_local()) if _question_intent(question).get("recent_news") else None
+    news_context = f"News publication window: {news_window[0].isoformat()} through {news_window[1].isoformat()}\n\n" if news_window else ""
     prompt = (
         f"{instruction}\n\n"
         f"Current UTC time: {_now_iso()}\n"
         f"Current Taipei time: {_now_local().isoformat()}\n"
         f"Recent conversation:\n{conversation or '(none)'}\n\n"
         f"Question: {question}\n\n"
+        f"{news_context}"
         f"Knowledge memory sources:\n{context}"
     )
     answer = minimax_chat(
@@ -727,9 +737,18 @@ def answer_knowledge_question(question: str, *, lang: str = "zh-Hant", top_k: in
         "official_knowledge": official_meta,
         "query_intent": _question_intent(cleaned_question),
     }
+    news_window = recent_news_window(cleaned_question, now) if retrieval_stats["query_intent"].get("recent_news") else None
+    if news_window:
+        retrieval_stats["news_window"] = {"start": news_window[0].isoformat(), "end": news_window[1].isoformat(), "date_basis": "published_at", "order": "newest_first"}
     if not credible_sources:
+        if news_window:
+            answer = no_recent_news_answer(lang, news_window)
+        elif retrieval_stats["query_intent"]["event_schedule"] and retrieval_stats["query_intent"]["near"]:
+            answer = "目前檢索資料沒有可確認正在或即將舉行、可參加的活動。"
+        else:
+            answer = "目前記憶庫裡沒有足夠接近的資料可以回答這個問題。"
         return {
-            "answer": "目前檢索資料沒有可確認正在或即將舉行、可參加的活動。" if _question_intent(cleaned_question)["event_schedule"] and _question_intent(cleaned_question)["near"] else "目前記憶庫裡沒有足夠接近的資料可以回答這個問題。",
+            "answer": answer,
             "sources": [],
             "mode": "no_relevant_memory",
             "stats": {
