@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -26,7 +26,7 @@ from .bootstrap import clean_text, data_dir
 from .embedding_cache import ensure_embeddings_for_rows
 
 INDEX_SCHEMA = 1
-DOCUMENT_PARSER_VERSION = 2
+DOCUMENT_PARSER_VERSION = 3
 CHUNK_SIZE = 1600
 INDEX_LOCK = RLock()
 
@@ -154,6 +154,19 @@ def wiki_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _html_document_blocks(html: str, url: str) -> list[str]:
+    """Keep FAQ questions and the destinations of official document links."""
+    soup = BeautifulSoup(html, "html.parser")
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    for node in main.select("script,style,nav,footer"):
+        node.decompose()
+    for link in main.select("a[href]"):
+        target = urljoin(url, str(link.get("href") or ""))
+        if link.get_text(strip=True) and urlparse(target).scheme in {"http", "https"}:
+            link.append(soup.new_string(f" ({target})"))
+    return [clean_text(text) for text in main.stripped_strings if clean_text(text)]
+
+
 def _product_document(source: dict[str, Any], root: Path) -> dict[str, Any]:
     path = root / "documents" / f"{source['id']}.json"
     cached = _read(path)
@@ -164,11 +177,7 @@ def _product_document(source: dict[str, Any], root: Path) -> dict[str, Any]:
     response.raise_for_status()
     if "text/html" not in response.headers.get("Content-Type", "") or len(response.content) > 4_000_000:
         raise RuntimeError(f"official_knowledge_invalid_document:{source['id']}")
-    soup = BeautifulSoup(response.text, "html.parser")
-    main = soup.find("main") or soup.find("article") or soup.body or soup
-    for node in main.select("script,style,nav,footer,button"):
-        node.decompose()
-    blocks = [clean_text(text) for text in main.stripped_strings if clean_text(text)]
+    blocks = _html_document_blocks(response.text, source["url"])
     if len(" ".join(blocks)) < 200:
         raise RuntimeError(f"official_knowledge_document_empty:{source['id']}")
     document = {"url": source["url"], "parser_version": DOCUMENT_PARSER_VERSION, "blocks": blocks, "content_hash": _hash(blocks),
