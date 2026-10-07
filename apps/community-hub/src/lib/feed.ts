@@ -30,7 +30,7 @@ export function toDate(value: unknown): Date | null {
   return Number.isNaN(date.valueOf()) ? null : date;
 }
 
-function toCalendarDay(value: unknown): Date | null {
+export function toCalendarDay(value: unknown): Date | null {
   const raw = String(value ?? "").trim();
   const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (dateOnly) {
@@ -99,6 +99,10 @@ export function sourceRole(card: FeedCard, accountProjects: AccountProjectMap = 
 
 export function isOfficial(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
   return sourceRole(card, accountProjects) === "official";
+}
+
+export function officialUpdateCards(cards: FeedCard[], accountProjects: AccountProjectMap = {}): FeedCard[] {
+  return cards.filter((card) => isOfficial(card, accountProjects) && !isEvent(card));
 }
 
 export function isProductProgressSource(card: FeedCard, accountProjects: AccountProjectMap = {}): boolean {
@@ -188,34 +192,6 @@ export function sortEventsByStatus(cards: FeedCard[], status: EventStatus): Feed
     if (Boolean(left.manual_pin) !== Boolean(right.manual_pin)) return left.manual_pin ? -1 : 1;
     return (dateValue(left) - dateValue(right)) * direction;
   });
-}
-
-export interface LimitedSbtCampaign {
-  acquisition: string;
-  end: Date;
-  names: string[];
-  source: string;
-  status: "active" | "upcoming";
-}
-
-export function limitedSbtCampaigns(cards: FeedCard[], accountProjects: AccountProjectMap = {}): LimitedSbtCampaign[] {
-  return cards
-    .filter((card) => isOfficial(card, accountProjects))
-    .filter(isSbt)
-    .flatMap((card) => {
-      const source = safeUrl(card.url);
-      if (!source) return [];
-      return (card.sbt_entries ?? []).flatMap((entry) => {
-        const entryStatus = String(entry.status ?? "unknown");
-        const status: LimitedSbtCampaign["status"] | "" = entryStatus === "available" ? "active" : entryStatus === "upcoming" ? "upcoming" : "";
-        const name = String(entry.name ?? "").trim();
-        const acquisition = String(entry.acquisition ?? "").trim();
-        const end = toDate(entry.end_date);
-        if (!status || !name || !acquisition || !end) return [];
-        return [{ acquisition, end, names: [name], source, status }];
-      });
-    })
-    .sort((left, right) => (left.status === right.status ? left.end.valueOf() - right.end.valueOf() : left.status === "active" ? -1 : 1));
 }
 
 export function translationPending(feed: IntelFeed | null, lang: Language): boolean {

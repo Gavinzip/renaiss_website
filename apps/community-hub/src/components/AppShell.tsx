@@ -58,11 +58,11 @@ export function AppShell({ auth, authLoading, children, environment, lang, loadi
           {environment ? <span className={`community-hub-environment is-${environment}`}><Icon name={environment === "production" ? "shield-alert" : "flask-conical"} />{environment.toUpperCase()}</span> : null}
           <a className="community-hub-legacy-link" href="../index.html#cat-events">{text(lang, "app.legacy")}</a>
           {auth.permissions.admin ? <button type="button" className="community-hub-manage-button" onClick={() => onNavigate("manage")}><Icon name="settings-2" /><span>{text(lang, "nav.manage")}</span></button> : null}
+          <a className="nav-action community-hub-open" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">{text(lang, "app.open")}</a>
+          <label className="lang-switcher" htmlFor="community-hub-lang-select"><Icon className="lang-icon" name="languages" /><select id="community-hub-lang-select" className="lang-select" value={lang} onChange={(event) => onLanguageChange(event.target.value as Language)} aria-label="Language"><option value="zh-Hant">繁體中文</option><option value="zh-Hans">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select></label>
           {auth.authenticated
             ? <button type="button" className="community-hub-auth-button is-authenticated" onClick={onLogout} title={text(lang, "auth.logout")}><Icon name="circle-user-round" /><span>{authName || text(lang, "auth.account")}</span><Icon name="log-out" /></button>
             : <button type="button" className="community-hub-auth-button" onClick={onLogin} disabled={authLoading || !auth.renaiss_sso_configured}><Icon name="log-in" /><span>{authLoading ? text(lang, "auth.checking") : text(lang, "auth.login")}</span></button>}
-          <label className="lang-switcher" htmlFor="community-hub-lang-select"><Icon className="lang-icon" name="languages" /><select id="community-hub-lang-select" className="lang-select" value={lang} onChange={(event) => onLanguageChange(event.target.value as Language)} aria-label="Language"><option value="zh-Hant">繁體中文</option><option value="zh-Hans">简体中文</option><option value="en">English</option><option value="ko">한국어</option></select></label>
-          <a className="nav-action community-hub-open" href="https://www.renaiss.xyz" target="_blank" rel="noreferrer">{text(lang, "app.open")}</a>
         </div>
       </header>
       <div className="community-hub-app">

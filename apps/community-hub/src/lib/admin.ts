@@ -1,4 +1,5 @@
 import { intelApiUrl } from "@/lib/api";
+import { readJson } from "@/lib/jsonRequest";
 import type { ProjectId } from "@/lib/projects";
 import type { FeedCard, IntelFeed, PlanStatus, RecordResult, SbtEntry } from "@/types";
 import { CARD_TYPES, ROUTING_TOPICS } from "@/lib/taxonomy";
@@ -98,6 +99,11 @@ interface JsonResponse {
 }
 
 async function requestJson(path: string, init?: RequestInit, signal?: AbortSignal): Promise<JsonResponse> {
+  if (!init?.method || init.method === "GET") {
+    const payload = await readJson(intelApiUrl(path), { credentials: "include", signal }) as JsonResponse;
+    if (!payload || payload.ok === false) throw new Error(payload?.error || "admin_request_failed");
+    return payload;
+  }
   const response = await fetch(intelApiUrl(path), {
     cache: "no-store",
     credentials: "include",

@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { ViewHeader } from "@/components/AppShell";
+import { GuideNavigation } from "@/components/GuideNavigation";
 import { CardMedia, ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
 import { Icon } from "@/components/Icon";
@@ -10,6 +11,7 @@ import type { HubAuthState } from "@/lib/auth";
 import { text } from "@/lib/copy";
 import { coverUrl, formatDate, isGuideArticle, isSbt, safeUrl, toDate } from "@/lib/feed";
 import { usePaginatedRows } from "@/lib/pagination";
+import type { AccountProjectMap } from "@/lib/projects";
 import { sbtAcquisitionSignals } from "@/lib/sbt";
 import { cloneWikiData, saveBeginnerWiki } from "@/lib/wiki";
 import { guideSectionRoutes } from "@/lib/wikiRoutes";
@@ -57,13 +59,26 @@ function InlineText({ value }: { value?: string }) {
 }
 
 function GuideSectionView({ data, section, anchor }: { data: LegacyBeginnerData; section: GuideSection; anchor: string }) {
+  const [mediaShape, setMediaShape] = useState<{ source: string; wide: boolean } | null>(null);
   if (!section.title) return null;
   const image = section.imageUrl || (Number.isInteger(section.image) ? assets.guideAsset(data.images?.[section.image ?? 0]) : "");
+  const wideMedia = mediaShape?.source === image && mediaShape.wide;
   const body = section.type === "steps" ? <ol className="community-hub-guide-steps">{(section.items ?? []).map(([title, copy], index) => <li key={`${title}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p><InlineText value={copy} /></p></div></li>)}</ol>
     : section.type === "cards" || section.type === "ratings" ? <>{section.intro ? <p className="community-hub-guide-copy"><InlineText value={section.intro} /></p> : null}<dl className="community-hub-guide-terms">{(section.items ?? []).map(([term, description]) => <div key={term}><dt>{term}</dt><dd><InlineText value={description} /></dd></div>)}</dl></>
       : section.type === "sbtChecklist" ? <div className="community-hub-guide-sbt"><p className="community-hub-section-index">{section.introTitle || "SBT"}</p><p className="community-hub-guide-copy"><InlineText value={section.text} /></p>{section.primer?.length ? <dl className="community-hub-guide-terms">{section.primer.map(([term, description]) => <div key={term}><dt>{term}</dt><dd><InlineText value={description} /></dd></div>)}</dl> : null}{section.bullets?.length ? <ul className="community-hub-guide-bullets">{section.bullets.map((row) => <li key={row}><InlineText value={row} /></li>)}</ul> : null}</div>
         : <>{section.text ? <p className="community-hub-guide-copy"><InlineText value={section.text} /></p> : null}{section.bullets?.length ? <ul className="community-hub-guide-bullets">{section.bullets.map((row) => <li key={row}><InlineText value={row} /></li>)}</ul> : null}</>;
-  return <section id={anchor} className={`community-hub-guide-section${image ? " has-media" : ""} is-layout-${section.layout || "image-left"}`}><div><h3>{section.title}</h3>{body}</div>{image ? <figure className="community-hub-guide-media"><img src={image} alt="" loading="lazy" /></figure> : null}</section>;
+  return <section id={anchor} className={`community-hub-guide-section${image ? " has-media" : ""}${wideMedia ? " has-wide-media" : ""} is-layout-${section.layout || "image-left"}`}>
+    <div><h3>{section.title}</h3>{body}</div>
+    {image ? <figure className="community-hub-guide-media"><img
+      src={image}
+      alt=""
+      loading="lazy"
+      onLoad={(event) => {
+        const img = event.currentTarget;
+        setMediaShape({ source: image, wide: img.naturalWidth / img.naturalHeight >= 2.4 });
+      }}
+    /></figure> : null}
+  </section>;
 }
 
 function GuideOverview({ data, lang }: { data: LegacyBeginnerData; lang: Language }) {
@@ -113,6 +128,7 @@ function compactSignalDate(value: string): string {
 }
 
 interface SbtViewProps {
+  accountProjects: AccountProjectMap;
   cards: FeedCard[];
   lang: Language;
   onOpenArticle: (source: string) => void;
@@ -120,8 +136,8 @@ interface SbtViewProps {
   wiki: BeginnerWikiDocument | null;
 }
 
-export function SbtView({ cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtViewProps) {
-  const acquisitions = sbtAcquisitionSignals(cards);
+export function SbtView({ accountProjects, cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtViewProps) {
+  const acquisitions = sbtAcquisitionSignals(cards, accountProjects);
   const cardBySource = new Map(cards.map((card) => [safeUrl(card.url), card]));
   const evergreenCount = wiki ? availableSbtRows(wiki.data, lang).length : null;
   const articles = cards.filter(isSbt);
@@ -149,7 +165,7 @@ export function SbtView({ cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtVi
 
       <section className="community-hub-sbt-catalog">
         <div className="community-hub-sbt-catalog-head">
-          <p className="community-hub-section-index">LIMITED / RECENT · {acquisitions.length}</p>
+          <p className="community-hub-section-index">LIMITED · {acquisitions.length}</p>
           <h3>{text(lang, "sbt.acquisition")}</h3>
           <p>{text(lang, "sbt.acquisitionLead")}</p>
         </div>
@@ -165,7 +181,7 @@ export function SbtView({ cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtVi
                     {acquisition.acquisition ? <small>{acquisition.acquisition}</small> : null}
                   </span>
                   <span className="community-hub-sbt-signal-meta">
-                    <time dateTime={acquisition.date}>{compactSignalDate(acquisition.date)}</time>
+                    <span className="community-hub-sbt-signal-period"><time dateTime={acquisition.startDate}>{compactSignalDate(acquisition.startDate)}</time> – <time dateTime={acquisition.date}>{compactSignalDate(acquisition.date)}</time></span>
                     <span className={`is-${acquisition.status}`}>{text(lang, `sbt.status.${acquisition.status}`)}</span>
                   </span>
                 </button>
@@ -173,7 +189,7 @@ export function SbtView({ cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtVi
               </li>
             })}
           </ol>
-        ) : <EmptyState title={text(lang, "sbt.availableEmpty")} />}
+        ) : <EmptyState title={text(lang, "sbt.none")} />}
       </section>
 
       <section className="community-hub-sbt-catalog">
@@ -274,9 +290,19 @@ export function GuideView({ auth, cards, lang, onOpenArticle, onTopicChange, onW
   else if (topic.id === "tools") content = <GuideTools data={data} lang={lang} />;
   else if (topic.id === "faq") content = <GuideFaq data={data} lang={lang} />;
   else content = <>{(guide?.sections ?? []).map((section, index) => sectionRoutes[index]?.topic === topic.id ? <GuideSectionView anchor={sectionRoutes[index].anchor} data={data} key={`${topic.id}-${index}`} section={section} /> : null)}{topic.id === "sbt" ? <EvergreenSbtCatalog data={data} lang={lang} /> : null}</>;
-  return <section className="community-hub-view is-active is-entering">
-    <ViewHeader eyebrow="GUIDE" title={text(lang, "guide.title")} lead={text(lang, "guide.lead")} action={auth.permissions.wiki_edit && wiki && !editing ? <button type="button" className="community-hub-wiki-edit-button" onClick={startEditing}><Icon name="pencil-line" />編輯 Wiki</button> : undefined} />
-    <div className="community-hub-guide-layout"><nav className="community-hub-guide-nav" aria-label={guide?.title || title}>{guideTopics.map((item, index) => { const [itemTitle, itemSubtitle] = data ? topicText(data, lang, item.id) : topicCopy[item.id][lang]; return <button type="button" key={item.id} className={item.id === topic.id ? "is-active" : ""} onClick={() => onTopicChange(item.id)} aria-current={item.id === topic.id ? "page" : undefined}><span>{String(index).padStart(2, "0")}</span><strong>{itemTitle}</strong><small>{itemSubtitle}</small></button>; })}</nav><article className={`community-hub-guide-article${editing ? " is-wiki-editing" : ""}`}><header><p className="community-hub-section-index">{topic.id === "overview" ? guide?.eyebrow || "GUIDE" : "WIKI ARTICLE"}</p><h2>{editing && !["overview", "articles"].includes(topic.id) ? <EditableText value={title} onCommit={(value) => commitTopicText("title", value)} /> : title}</h2><p>{editing && !["overview", "articles"].includes(topic.id) ? <EditableText multiline value={subtitle} onCommit={(value) => commitTopicText("subtitle", value)} /> : subtitle}</p></header>{content}</article></div>
+  const chapters = guideTopics.map((item) => {
+    const [chapterTitle, chapterSubtitle] = data ? topicText(data, lang, item.id) : topicCopy[item.id][lang];
+    return { id: item.id, title: chapterTitle, subtitle: chapterSubtitle };
+  });
+  return <section className="community-hub-view community-hub-guide-view is-active is-entering">
+    <article className={`community-hub-guide-article${editing ? " is-wiki-editing" : ""}`}>
+      <header className="community-hub-guide-heading">
+        <div><p className="community-hub-section-index">GUIDE · {text(lang, "guide.title")}</p><h2>{editing && !["overview", "articles"].includes(topic.id) ? <EditableText value={title} onCommit={(value) => commitTopicText("title", value)} /> : title}</h2><p>{editing && !["overview", "articles"].includes(topic.id) ? <EditableText multiline value={subtitle} onCommit={(value) => commitTopicText("subtitle", value)} /> : subtitle}</p></div>
+        {auth.permissions.wiki_edit && wiki && !editing ? <button type="button" className="community-hub-wiki-edit-button" onClick={startEditing}><Icon name="pencil-line" />編輯 Wiki</button> : null}
+      </header>
+      <GuideNavigation chapters={chapters} label={text(lang, "guide.title")} selected={topic.id} onChange={onTopicChange} />
+      <div id="community-hub-guide-panel" className="community-hub-guide-body" role="tabpanel" aria-labelledby={`guide-chapter-${topic.id}`}>{content}</div>
+    </article>
   </section>;
 }
 

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import date
 from typing import Any
+
+from .sbt_evidence import qualify_sbt_entries
 
 
 CARD_TYPES = frozenset(
@@ -215,9 +218,10 @@ def _canonical_date(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-" and raw.replace("-", "").isdigit():
-        return raw
-    return ""
+    try:
+        return date.fromisoformat(raw).isoformat() if len(raw) == 10 else ""
+    except ValueError:
+        return ""
 
 
 def normalize_sbt_entries(
@@ -253,6 +257,9 @@ def normalize_sbt_entries(
             "start_date": _canonical_date(raw.get("start_date")),
             "end_date": _canonical_date(raw.get("end_date")),
             "evidence": str(raw.get("evidence") or "").strip()[:800],
+            "acquisition_evidence": str(raw.get("acquisition_evidence") or "").strip()[:800],
+            "period_evidence": str(raw.get("period_evidence") or "").strip()[:800],
+            "campaign": str(raw.get("campaign") or "").strip()[:160],
         }
         if not item["name"] or not item["evidence"]:
             continue
@@ -304,8 +311,8 @@ def normalize_sbt_entries(
             "name": name,
             "acquisition": acquisition,
             "status": "unknown",
-            "start_date": _canonical_date(timeline_date),
-            "end_date": _canonical_date(timeline_end_date),
+            "start_date": "",
+            "end_date": "",
             "evidence": evidence,
         }
         for name in names[:8]
@@ -415,7 +422,7 @@ def migrate_card_taxonomy_payload(payload: dict[str, Any], source_role: Any) -> 
     else:
         payload["product_ids"] = canonical_product_ids(payload.get("product_ids"))
         payload.pop("product_definition", None)
-    payload["sbt_entries"] = normalize_sbt_entries(
+    payload["sbt_entries"] = qualify_sbt_entries(normalize_sbt_entries(
         payload.get("sbt_entries"),
         legacy_name=payload.get("sbt_name"),
         legacy_names=payload.get("sbt_names"),
@@ -424,7 +431,7 @@ def migrate_card_taxonomy_payload(payload: dict[str, Any], source_role: Any) -> 
         raw_text=payload.get("raw_text"),
         timeline_date=payload.get("timeline_date"),
         timeline_end_date=payload.get("timeline_end_date"),
-    )
+    ), payload.get("raw_text"))
     payload["record_result"] = normalize_record_result(payload.get("record_result")) or None
     payload.pop("topic_labels", None)
     payload.pop("sbt_name", None)

@@ -1,4 +1,5 @@
 import { intelApiUrl } from "@/lib/api";
+import { readJson } from "@/lib/jsonRequest";
 
 export interface HubAuthState {
   authenticated: boolean;
@@ -39,10 +40,9 @@ function normalizeAuth(payload: Partial<HubAuthState>): HubAuthState {
   };
 }
 
-export async function readAuthState(): Promise<HubAuthState> {
-  const response = await fetch(intelApiUrl("/api/auth/me"), { cache: "no-store", credentials: "include" });
-  const payload = await response.json().catch(() => ({})) as Partial<HubAuthState> & { ok?: boolean; error?: string };
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+export async function readAuthState(signal?: AbortSignal): Promise<HubAuthState> {
+  const payload = await readJson(intelApiUrl("/api/auth/me"), { credentials: "include", signal }) as Partial<HubAuthState> & { ok?: boolean; error?: string };
+  if (!payload || payload.ok === false) throw new Error(payload?.error || "auth_request_failed");
   return normalizeAuth(payload);
 }
 

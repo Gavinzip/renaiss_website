@@ -351,11 +351,25 @@ def _upsert_item(collection: str, filters: dict[str, Any], payload: dict[str, An
 
 
 _RELATION_FIELDS = {"page", "section", "tool", "faq"}
-_INTEGER_FIELDS = {"sort", "image_index"}
+_INTEGER_FIELDS = {"sort"}
 _JSON_FIELDS = set(PAGE_JSON_FIELDS.values())
 
 
+def _image_index(value: Any) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError) as exc:
+        raise DirectusWikiError("Wiki image index must be a non-negative integer") from exc
+    if isinstance(value, bool) or index < 0 or (isinstance(value, float) and not value.is_integer()):
+        raise DirectusWikiError("Wiki image index must be a non-negative integer")
+    return index
+
+
 def _field_equal(field: str, existing_value: Any, desired_value: Any) -> bool:
+    if field == "image_index":
+        return _image_index(existing_value) == _image_index(desired_value)
     if field in _JSON_FIELDS:
         existing_json = json.dumps(existing_value or None, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         desired_json = json.dumps(desired_value or None, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -528,17 +542,14 @@ def _build_beginner_wiki(slug: str) -> dict[str, Any]:
     section_base: dict[Any, dict[str, Any]] = {}
     for section in section_rows:
         section_key = _id_key(section.get("id"))
-        image_index = section.get("image_index")
-        try:
-            image_index = int(image_index)
-        except Exception:
-            image_index = 0
+        image_index = _image_index(section.get("image_index"))
         base = {
             "type": _text(section, "type") or "intro",
             "topic": _text(section, "topic") or "start",
-            "image": image_index,
             "layout": _text(section, "layout") or "image-left",
         }
+        if image_index is not None:
+            base["image"] = image_index
         image_url = _text(section, "image_url") or _directus_asset_url(section.get("image_file"))
         if image_url:
             base["imageUrl"] = image_url
@@ -822,6 +833,10 @@ def write_directus_beginner_wiki(
     safe_slug = slug or directus_wiki_slug()
     source = _normalize_lang(source_lang or "zh-Hant")
     canonical_lang, sections = _canonical_sections(guides, source)
+    section_image_indexes = [
+        _image_index(section.get("image", section.get("image_index")))
+        for section in sections
+    ]
     page = _page_item(collections, safe_slug)
     page_id = page.get("id")
     status = _env("DIRECTUS_WIKI_STATUS", "published") or "published"
@@ -920,11 +935,7 @@ def write_directus_beginner_wiki(
     created_sections: list[dict[str, Any]] = []
     for index, base_section in enumerate(sections):
         section_type = str(base_section.get("type") or "intro")
-        image_raw = base_section.get("image", base_section.get("image_index", 0))
-        try:
-            image_index = int(image_raw)
-        except Exception:
-            image_index = 0
+        image_index = section_image_indexes[index]
         image_url = str(base_section.get("imageUrl") or base_section.get("image_url") or "").strip()
         payload = {
             "page": page_id,

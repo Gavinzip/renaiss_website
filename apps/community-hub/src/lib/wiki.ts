@@ -1,4 +1,5 @@
 import { intelApiUrl } from "@/lib/api";
+import { readJson } from "@/lib/jsonRequest";
 import type { BeginnerWikiDocument, Language, LegacyBeginnerData } from "@/types";
 
 interface WikiApiPayload {
@@ -28,13 +29,8 @@ function normalizeDocument(payload: WikiApiPayload): BeginnerWikiDocument {
 }
 
 export async function readBeginnerWiki(signal?: AbortSignal): Promise<BeginnerWikiDocument> {
-  const response = await fetch(intelApiUrl("/api/wiki/beginner"), {
-    cache: "no-store",
-    credentials: "include",
-    signal,
-  });
-  const payload = await response.json().catch(() => ({})) as WikiApiPayload;
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+  const payload = await readJson(intelApiUrl("/api/wiki/beginner"), { credentials: "include", signal }) as WikiApiPayload;
+  if (!payload || payload.ok === false) throw new Error(payload?.error || "wiki_request_failed");
   return normalizeDocument(payload);
 }
 

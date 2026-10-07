@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+from .sbt_evidence import qualify_sbt_entries
+
 from . import bootstrap as _bootstrap
 from . import editorial as _editorial
 from .taxonomy import (
@@ -271,7 +273,7 @@ def _set_ai_review_queue(
 ) -> None:
     card.classified_by = "ai"
     card.ai_model = model or minimax_model_name()
-    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_version = classification_version_for_source(card.raw_text)
     card.ai_status = "needs_review"
     card.review_status = AI_REVIEW_ADMIN_QUEUE
     card.classification_error = clean_text(str(error or "ai_needs_review"))[:220]
@@ -387,7 +389,7 @@ def _finalize_ai_semantics(card: StoryCard, parsed: dict[str, Any], *, model: st
     event_facts = normalize_event_facts(parsed.get("event_facts"))
     product_progress_evidence = normalize_product_progress_evidence(parsed.get("product_progress_evidence"))
     raw_sbt_entries = parsed.get("sbt_entries")
-    sbt_entries = normalize_sbt_entries(raw_sbt_entries)
+    sbt_entries = qualify_sbt_entries(normalize_sbt_entries(raw_sbt_entries), card.raw_text)
     raw_record_result = parsed.get("record_result")
     record_result = normalize_record_result(raw_record_result)
     timeline_date = _valid_ai_date(parsed.get("timeline_date"))
@@ -468,7 +470,7 @@ def _finalize_ai_semantics(card: StoryCard, parsed: dict[str, Any], *, model: st
     card.number_facts = number_facts
     card.classified_by = "ai"
     card.ai_model = model
-    card.ai_version = AI_CLASSIFICATION_VERSION
+    card.ai_version = classification_version_for_source(card.raw_text)
     card.ai_confidence = card.confidence
     card.ai_status = "semantic_ok"
     card.review_status = AI_REVIEW_ADMIN_QUEUE
@@ -564,7 +566,7 @@ def build_ai_pending_card(
         product_ids=[],
         classified_by="ai",
         ai_model=minimax_model_name(),
-        ai_version=AI_CLASSIFICATION_VERSION,
+        ai_version=classification_version_for_source(text),
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,
         classification_error="ai_not_run",
@@ -1121,7 +1123,7 @@ def apply_minimax_story_refine(
             "\"event_facts\":{\"participation\":\"\",\"audience\":\"\",\"location\":\"\",\"schedule\":\"\"},"
             "\"routing_topics\":[\"collectibles\"],"
             "\"product_ids\":[],"
-            "\"sbt_entries\":[{\"name\":\"\",\"acquisition\":\"\",\"status\":\"unknown|upcoming|available|ended|distributed\",\"start_date\":\"YYYY-MM-DD或空字串\",\"end_date\":\"YYYY-MM-DD或空字串\",\"evidence\":\"\"}],"
+            "\"sbt_entries\":[{\"name\":\"\",\"acquisition\":\"\",\"status\":\"unknown|upcoming|available|ended|distributed\",\"start_date\":\"YYYY-MM-DD或空字串\",\"end_date\":\"YYYY-MM-DD或空字串\",\"evidence\":\"原文逐字引句\",\"acquisition_evidence\":\"原文明確連結SBT與取得動作的逐字引句\",\"period_evidence\":\"原文明確寫出該SBT起訖日期的逐字引句\",\"campaign\":\"原文活動或卡包名稱，無則空字串\"}],"
             "\"record_result\":null或{\"kind\":\"competition_result|draw_result|reward_claim|reward_distributed|milestone_record\",\"status\":\"confirmed|claim_open|distributed|completed\",\"subject\":\"\",\"evidence\":\"\"},"
             "\"product_progress_evidence\":{\"product_or_capability\":\"\",\"state_change\":\"\",\"user_or_platform_impact\":\"\",\"source_evidence\":\"\"},"
             "\"timeline_date\":\"YYYY-MM-DD或空字串\",\"timeline_end_date\":\"YYYY-MM-DD或空字串\","
@@ -1160,6 +1162,9 @@ def apply_minimax_story_refine(
             "25) 若不符合 collectibles，routing_topics 輸出空陣列；SBT 必須寫入 sbt_entries，不得再寫成 routing topic；"
             "25a) 官方 pack/drop/sale/release、Costume Pack、SBT unlock、badge、claim、one-pull 或 S-card 公告，若沒有四問完整證據，card_type 用 announcement；"
             "原文明確出現 SBT 或 Soul Bound Token 才建立 sbt_entries；每筆必須有 name、status 與貼近原文的 evidence；原文只寫 SBT 時 name 可原樣填 SBT，沒有原文詞時不得自行命名；"
+            "25b) acquisition 必須由 acquisition_evidence 逐字原文證明該 SBT 的取得條件，引句須在同一敘述明確連結該 SBT 名稱與動作；不得把附近的回購、價格、卡池獎勵條件當作 SBT 條件，也不得由 One Pull/S-Card/Tier 名稱猜取得方式；條件不明就留空、status=unknown。此限制同樣適用 title/summary/bullets/detail_lines，不得把不明的 SBT 條件寫成已確認。"
+            "start_date/end_date 只填該 SBT 明確起訖日期，period_evidence 必須逐字引用包含 SBT 與完整期間的敘述；公告日期、卡包發售日、一般 timeline 不等於 SBT 期限，無明確期間就兩者留空。"
+            "暫停、tạm dừng、suspended、closed、ended 必須標 ended，不得標 upcoming；campaign 只填原文明示的活動或卡包名，不能自行編造；"
             "record_result 只用於已公布或已發生的比賽結果、抽獎結果、獎勵領取/發放或正式里程碑；只提到未來獎勵、參與條件或 completed 字樣時必須為 null；"
             "寶可夢卡牌內容可加 collectibles；"
             "這類有發售日期但沒有 join/register/直播/聚會參與流程時，不要標 event；"
@@ -2481,7 +2486,7 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         product_ids=[],
         classified_by="ai",
         ai_model=last.ai_model or first.ai_model or minimax_model_name(),
-        ai_version=AI_CLASSIFICATION_VERSION,
+        ai_version=classification_version_for_source(merged_raw),
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,
         classification_error="ai_not_run",

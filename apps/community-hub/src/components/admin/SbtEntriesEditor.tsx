@@ -31,6 +31,9 @@ export function SbtEntriesEditor({ entries, onChange }: { entries: SbtEntry[]; o
       <label><span>結束日</span><input type="date" value={entry.end_date} onChange={(event) => updateEntry(index, "end_date", event.target.value)} /></label>
       <label><span>取得方式</span><textarea rows={2} value={entry.acquisition} onChange={(event) => updateEntry(index, "acquisition", event.target.value)} /></label>
       <label><span>原文證據</span><textarea rows={2} value={entry.evidence} onChange={(event) => updateEntry(index, "evidence", event.target.value)} /></label>
+      <label><span>取得條件原文（需明確提及 SBT 與動作）</span><textarea rows={2} value={entry.acquisition_evidence ?? ""} onChange={(event) => updateEntry(index, "acquisition_evidence", event.target.value)} /></label>
+      <label><span>起訖日期原文（不得使用公告日期）</span><textarea rows={2} value={entry.period_evidence ?? ""} onChange={(event) => updateEntry(index, "period_evidence", event.target.value)} /></label>
+      <label><span>活動／卡包原名</span><input value={entry.campaign ?? ""} onChange={(event) => updateEntry(index, "campaign", event.target.value)} /></label>
       <button type="button" onClick={() => onChange(entries.filter((_, entryIndex) => entryIndex !== index))}><Icon name="trash-2" />移除這筆 SBT</button>
     </div>)}
     <button type="button" onClick={() => onChange([...entries, { ...EMPTY_ENTRY }])}><Icon name="plus" />新增 SBT</button>

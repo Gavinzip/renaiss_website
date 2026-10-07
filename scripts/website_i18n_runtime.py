@@ -1014,7 +1014,9 @@ def _collect_feed_i18n_entries(node: object) -> list[tuple[str, str]]:
             for idx, item in enumerate(_iter_limited(sbt_entries)):
                 if not isinstance(item, dict):
                     continue
-                for key in ("name", "acquisition", "evidence"):
+                # Evidence stays verbatim so all languages can verify it
+                # against raw_text; only the display copy is translated.
+                for key in ("name", "acquisition"):
                     value = item.get(key)
                     if isinstance(value, str):
                         _push(f"{card_path}.sbt_entries[{idx}].{key}", value, key)

@@ -1,11 +1,13 @@
-import { isSbt, safeUrl, toDate } from "@/lib/feed";
-import type { FeedCard, SbtEntryStatus } from "@/types";
+import { isOfficial, isSbt, safeUrl, toCalendarDay, toDate } from "@/lib/feed";
+import type { AccountProjectMap } from "@/lib/projects";
+import type { FeedCard, SbtEntry } from "@/types";
 
-export type SbtSignalStatus = "pending" | "claimable" | "expired";
+export type SbtSignalStatus = "upcoming" | "claimable";
 
 export interface SbtAcquisitionSignal {
   acquisition: string;
   date: string;
+  startDate: string;
   name: string;
   publishedAt: string;
   source: string;
@@ -13,65 +15,54 @@ export interface SbtAcquisitionSignal {
   title: string;
 }
 
-interface CandidateRow extends SbtAcquisitionSignal {
-  sortTime: number;
+function sourceQuote(value: string | undefined, card: FeedCard): boolean {
+  const normalize = (text: string) => text.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return Boolean(value?.trim() && normalize(card.raw_text ?? "").includes(normalize(value)));
 }
 
-function signalStatus(status: SbtEntryStatus | undefined): SbtSignalStatus {
-  if (status === "available") return "claimable";
-  if (status === "ended" || status === "distributed") return "expired";
-  return "pending";
+function campaignKey(entry: SbtEntry, card: FeedCard): string {
+  if (sourceQuote(entry.campaign, card)) return String(entry.campaign).normalize("NFKC").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  // Product membership is an existing canonical feed fact, never inferred
+  // from a translated title. A generic SBT without one stays source-scoped.
+  const packs = (card.product_ids ?? []).filter((id) => id.endsWith("-pack"));
+  return packs.length === 1 ? packs[0] : "";
 }
 
-function rowsForCard(card: FeedCard): CandidateRow[] {
-  const source = safeUrl(card.url);
-  const publishedAt = String(card.published_at ?? "").trim();
-  if (!source || !publishedAt) return [];
-  return (card.sbt_entries ?? []).flatMap((entry) => {
-    const name = String(entry.name ?? "").trim();
-    if (!name) return [];
-    const date = String(entry.end_date || entry.start_date || publishedAt).trim();
-    return [{
-      acquisition: String(entry.acquisition ?? "").trim(),
-      date,
-      name,
-      publishedAt,
-      source,
-      status: signalStatus(entry.status),
-      title: String(card.title ?? "Renaiss"),
-      sortTime: Number(toDate(date) ?? toDate(publishedAt) ?? 0),
-    }];
-  });
-}
+export function sbtAcquisitionSignals(cards: FeedCard[], accountProjects: AccountProjectMap = {}, referenceDate = new Date()): SbtAcquisitionSignal[] {
+  const today = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+  const latest = new Map<string, { entry: SbtEntry; card: FeedCard; campaign: string }>();
+  const closedCampaigns = new Map<string, number>();
+  const official = cards.filter((card) => isOfficial(card, accountProjects) && isSbt(card))
+    .sort((left, right) => Number(toDate(right.published_at)) - Number(toDate(left.published_at)));
 
-function betterRow(current: CandidateRow, incoming: CandidateRow): CandidateRow {
-  if (incoming.status !== current.status) {
-    const rank: Record<SbtSignalStatus, number> = { claimable: 3, pending: 2, expired: 1 };
-    return rank[incoming.status] > rank[current.status] ? incoming : current;
+  for (const card of official) {
+    const published = toDate(card.published_at);
+    const source = safeUrl(card.url);
+    if (!published || !source) continue;
+    for (const entry of card.sbt_entries ?? []) {
+      const name = entry.name.trim().toLowerCase();
+      if (!name) continue;
+      const campaign = campaignKey(entry, card);
+      const key = `${campaign || (/^(?:sbt|soulbound token)$/i.test(name) ? source : "named")}:${name}`;
+      if (!latest.has(key)) latest.set(key, { entry, card, campaign });
+      if (campaign && ["ended", "distributed"].includes(entry.status) && sourceQuote(entry.evidence, card)) {
+        closedCampaigns.set(campaign, Math.max(closedCampaigns.get(campaign) ?? 0, published.valueOf()));
+      }
+    }
   }
-  if (incoming.acquisition.length !== current.acquisition.length) {
-    return incoming.acquisition.length > current.acquisition.length ? incoming : current;
-  }
-  return incoming.sortTime >= current.sortTime ? incoming : current;
-}
 
-export function sbtAcquisitionSignals(cards: FeedCard[]): SbtAcquisitionSignal[] {
-  const recentAfter = new Date();
-  recentAfter.setDate(recentAfter.getDate() - 30);
-  const grouped = new Map<string, CandidateRow>();
-
-  cards.filter(isSbt).forEach((card) => {
-    const publishedAt = toDate(card.published_at);
-    if (!publishedAt || publishedAt < recentAfter) return;
-    rowsForCard(card).forEach((row) => {
-      const key = row.name.toLowerCase();
-      const previous = grouped.get(key);
-      grouped.set(key, previous ? betterRow(previous, row) : row);
-    });
-  });
-
-  return [...grouped.values()]
-    .sort((left, right) => right.sortTime - left.sortTime)
-    .slice(0, 10)
-    .map(({ sortTime: _sortTime, ...row }) => row);
+  return [...latest.values()].flatMap(({ entry, card, campaign }): SbtAcquisitionSignal[] => {
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(entry.start_date) ? toCalendarDay(entry.start_date) : null;
+    const end = /^\d{4}-\d{2}-\d{2}$/.test(entry.end_date) ? toCalendarDay(entry.end_date) : null;
+    const published = Number(toDate(card.published_at));
+    if (!start || !end || start > end || end < today || !entry.acquisition.trim()) return [];
+    if (!sourceQuote(entry.acquisition_evidence, card) || !sourceQuote(entry.period_evidence, card)) return [];
+    if (!["available", "upcoming"].includes(entry.status) || (closedCampaigns.get(campaign) ?? 0) >= published) return [];
+    // "Upcoming" is not automatically promoted to live after its date passes;
+    // a new official confirmation is required.
+    if (entry.status === "upcoming" && start <= today) return [];
+    return [{ acquisition: entry.acquisition, date: entry.end_date, startDate: entry.start_date,
+      name: entry.name, publishedAt: String(card.published_at), source: safeUrl(card.url),
+      status: start > today ? "upcoming" : "claimable", title: card.title || "Renaiss" }];
+  }).sort((left, right) => left.status === right.status ? left.date.localeCompare(right.date) : left.status === "claimable" ? -1 : 1);
 }

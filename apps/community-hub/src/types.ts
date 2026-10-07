@@ -11,8 +11,11 @@ export type RecordResultStatus = "confirmed" | "claim_open" | "distributed" | "c
 
 export interface SbtEntry {
   acquisition: string;
+  acquisition_evidence?: string;
+  campaign?: string;
   end_date: string;
   evidence: string;
+  period_evidence?: string;
   name: string;
   start_date: string;
   status: SbtEntryStatus;
@@ -42,11 +45,16 @@ export interface FeedCard {
   article_title?: string;
   bullets?: string[];
   card_type?: string;
+  canonical_story_id?: string;
   classified_by?: string;
   cover_image?: string;
   dedupe_status?: string;
   detail_lines?: string[];
   detail_summary?: string;
+  date_role?: string;
+  effective_event_date?: string;
+  event_group_key?: string;
+  event_status?: string;
   event_facts?: {
     audience?: string;
     location?: string;

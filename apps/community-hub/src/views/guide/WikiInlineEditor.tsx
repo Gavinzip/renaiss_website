@@ -130,7 +130,10 @@ function SectionEditor({ data, index, lang, onChange, topics }: { data: LegacyBe
     <div className="community-hub-wiki-media-editor">
       {image ? <figure className="community-hub-guide-media"><img src={image} alt="" /></figure> : <div className="community-hub-wiki-empty-media"><Icon name="image-plus" /><span>尚未設定圖片</span></div>}
       <label><span>圖片網址</span><input type="url" value={section.imageUrl ?? ""} onChange={(event) => update((target) => { target.imageUrl = event.target.value; })} placeholder="https://..." /></label>
-      <label><span>素材編號</span><input type="number" min="0" value={section.image ?? 0} onChange={(event) => update((target) => { target.image = Number(event.target.value || 0); })} /></label>
+      <label><span>素材編號</span><input type="number" min="0" placeholder="不放圖片" value={section.image ?? ""} onChange={(event) => update((target) => {
+        if (event.target.value === "") delete target.image;
+        else target.image = Number(event.target.value);
+      })} /></label>
     </div>
   </section>;
 }
@@ -218,7 +221,7 @@ export function WikiInlineEditor({ data, lang, message, onCancel, onChange, onSa
     const next = clone(data);
     const rows = next.guides?.[lang]?.sections;
     if (!rows) return;
-    rows.push({ type: "intro", topic: topicId, title: "新段落", text: "在這裡輸入內容。", bullets: ["新增重點"], layout: "image-left", image: 0 });
+    rows.push({ type: "intro", topic: topicId, title: "新段落", text: "在這裡輸入內容。", bullets: ["新增重點"], layout: "image-left" });
     onChange(next);
   };
   let content = null;

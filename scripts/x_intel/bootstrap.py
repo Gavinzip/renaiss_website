@@ -116,6 +116,17 @@ REQUIRED_X_ACCOUNT_LABELS = ("renaissxyz", *REGIONAL_COMMUNITY_X_HANDLE_LABELS)
 OFFICIAL_DISCORD_CHANNEL_IDS = {"1478788250687766796"}
 DISCORD_CHANNEL_RE = re.compile(r"discord\.com/channels/[^/]+/(\d+)/\d+", re.I)
 AI_CLASSIFICATION_VERSION = "20260908-structured-semantics1"
+SBT_CLASSIFICATION_VERSION = "20261007-sbt-source-period1"
+
+
+def classification_version_for_source(raw_text: Any) -> str:
+    # Only SBT sources need the new proof schema. Ordinary updates keep their
+    # current version, avoiding an unrelated full-feed reclassification.
+    if re.search(r"\bSBTs?\b|soul\s*bound|soulbound|靈魂綁定|灵魂绑定", str(raw_text or ""), re.I):
+        return SBT_CLASSIFICATION_VERSION
+    return AI_CLASSIFICATION_VERSION
+
+
 PLAN_STATUS_CLASSIFICATION_VERSION = "20260823-main-product-progress1"
 EVENT_REGION_CLASSIFICATION_VERSION = "20260824-event-region2"
 PLAN_STATUSES = {"upcoming", "in_progress", "completed", "cancelled", "not_plan", "needs_review"}

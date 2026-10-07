@@ -1860,7 +1860,7 @@ def _mark_manual_classification(card: StoryCard) -> None:
     card.classification_error = ""
     card.classification_reason = "管理員手動覆寫分類。"
     if not card.ai_version:
-        card.ai_version = AI_CLASSIFICATION_VERSION
+        card.ai_version = classification_version_for_source(card.raw_text)
 
 
 def _apply_card_type_override(card: StoryCard, card_type: str) -> bool:
@@ -2223,7 +2223,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     if not card.ai_model:
         card.ai_model = minimax_model_name()
     if not card.ai_version:
-        card.ai_version = AI_CLASSIFICATION_VERSION
+        card.ai_version = classification_version_for_source(card.raw_text)
     card.classification_error = clean_text(reason_key or "admin_queue")[:220]
     existing_tags = [str(x).strip() for x in (card.tags or []) if str(x).strip() and str(x).strip() != label]
     card.tags = [label, *existing_tags][:3]
@@ -2884,6 +2884,26 @@ def dedupe_existing_public_events(
         return cards, []
     kept = [card for card in cards if str(card.id or "").strip() not in dropped_ids]
     return kept, queued
+
+
+def public_event_metadata(item: dict[str, Any]) -> dict[str, str]:
+    """Expose the same event identity and date semantics used by retrieval."""
+    if item.get("card_type") != "event":
+        return {}
+    from .knowledge_memory import infer_date_role, event_group_key_for_card
+    from .knowledge_events import event_timing
+
+    card = _story_card_from_payload(item)
+    role = str(infer_date_role(card).get("role") or "unknown")
+    metadata = {
+        "date_role": role,
+        "event_group_key": event_group_key_for_card(card, role),
+        "effective_event_date": str(card.timeline_date or ""),
+    }
+    metadata["event_status"] = event_timing(
+        {**item, **metadata, "raw_hint": item.get("raw_text")}, datetime.now(timezone.utc)
+    )
+    return metadata
 
 
 def public_event_duplicate_ids(card_payloads: list[dict[str, Any]]) -> set[str]:
@@ -4001,7 +4021,7 @@ def sync_accounts(
         card
         for card in existing_cards
         if _is_ai_semantic_source_card(card, manual_source_ids)
-        and str(card.ai_version or "").strip() != AI_CLASSIFICATION_VERSION
+        and str(card.ai_version or "").strip() != classification_version_for_source(card.raw_text)
     ][:reclassify_limit]
     plan_status_reclassified_count = 0
     event_region_reclassified_count = 0

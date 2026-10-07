@@ -8,7 +8,7 @@ import { OfficialSummaryDialog } from "@/components/OfficialSummaryDialog";
 import { Pagination } from "@/components/Pagination";
 import { ProjectFilterNav } from "@/components/ProjectFilterNav";
 import { ViewHeader } from "@/components/AppShell";
-import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isUpcomingEventWithinDisplayWindow, sortEventsByStatus } from "@/lib/feed";
+import { eventStatus, isCommunity, isEvent, isMedia, isOfficial, isPastEventWithinDisplayWindow, isUpcomingEventWithinDisplayWindow, officialUpdateCards, sortEventsByStatus } from "@/lib/feed";
 import { text } from "@/lib/copy";
 import { usePaginatedRows } from "@/lib/pagination";
 import { projectIdForCard, type AccountProjectMap, type ProjectId } from "@/lib/projects";
@@ -68,10 +68,6 @@ function selectCommunityCards(cards: FeedCard[], accountProjects: AccountProject
   return cards.filter((card) => isCommunity(card, accountProjects)).filter((card) => !isOfficial(card, accountProjects));
 }
 
-function selectOfficialCards(cards: FeedCard[], accountProjects: AccountProjectMap): FeedCard[] {
-  return cards.filter((card) => isOfficial(card, accountProjects)).filter((card) => !isEvent(card, accountProjects));
-}
-
 export function CommunityView(props: SharedViewProps) {
   const [mapOpen, setMapOpen] = useState(false);
   const [regionFilter, setRegionFilter] = useState<"all" | EventRegionId>("all");
@@ -114,13 +110,13 @@ export function CommunityView(props: SharedViewProps) {
 export function OfficialView(props: SharedViewProps) {
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [projectFilter, setProjectFilter] = useState<"all" | ProjectId>("all");
-  const officialCards = useMemo(() => selectOfficialCards(props.cards, props.accountProjects), [props.accountProjects, props.cards]);
+  const officialCards = useMemo(() => officialUpdateCards(props.cards, props.accountProjects), [props.accountProjects, props.cards]);
   const projectCounts = useMemo(() => officialCards.reduce((counts, card) => {
     const projectId = projectIdForCard(card, props.accountProjects);
     if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
     return counts;
   }, new Map<ProjectId, number>()), [officialCards, props.accountProjects]);
-  const selectRows = useCallback((cards: FeedCard[]) => selectOfficialCards(cards, props.accountProjects).filter((card) => (
+  const selectRows = useCallback((cards: FeedCard[]) => officialUpdateCards(cards, props.accountProjects).filter((card) => (
     projectFilter === "all" || projectIdForCard(card, props.accountProjects) === projectFilter
   )), [projectFilter, props.accountProjects]);
   const projectFilters = <ProjectFilterNav

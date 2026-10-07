@@ -74,12 +74,13 @@ export function ContentCard({ card, lang, onOpenArticle, sourceLabel, status = "
 
 interface FeatureCardProps {
   card: FeedCard;
+  date?: string;
   lang: Language;
   status: string;
 }
 
-export function FeatureCard({ card, lang, status }: FeatureCardProps) {
+export function FeatureCard({ card, date, lang, status }: FeatureCardProps) {
   const source = safeUrl(card.url);
-  const content = <><CardMedia card={card} className="community-hub-feature-media" label={text(lang, "card.defaultCover")} /><div><p className="community-hub-feature-meta">{status} · {formatDate(card.timeline_date || card.published_at, lang)}</p><h3>{card.title || "Renaiss"}</h3></div></>;
+  const content = <><CardMedia card={card} className="community-hub-feature-media" label={text(lang, "card.defaultCover")} /><div><p className="community-hub-feature-meta">{status} · {formatDate(date || card.timeline_date || card.published_at, lang)}</p><h3>{card.title || "Renaiss"}</h3></div></>;
   return source ? <a className="community-hub-feature-link" href={source} target="_blank" rel="noreferrer">{content}</a> : <div className="community-hub-feature-link">{content}</div>;
 }

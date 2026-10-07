@@ -1,14 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppShell } from "@/components/AppShell";
+import { AppShell, ViewHeader } from "@/components/AppShell";
 import { AdminToolsProvider } from "@/components/admin/AdminToolsContext";
 import { EMPTY_AUTH_STATE, logout, readAuthState, renaissLoginUrl, type HubAuthState } from "@/lib/auth";
 import { intelApiUrl } from "@/lib/api";
 import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
+import { FeedRequestError, readIntelFeed } from "@/lib/feedRequest";
+import { JsonRequestError } from "@/lib/jsonRequest";
 import { useHubRoute } from "@/lib/routes";
 import { readBeginnerWiki } from "@/lib/wiki";
 import { readAdminFeed } from "@/lib/admin";
-import type { BeginnerWikiDocument, FeedResponse, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
+import type { BeginnerWikiDocument, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
 import { CommunityView, EventsView, MediaView, OfficialView } from "@/views/FeedViews";
 import { OverviewView } from "@/views/OverviewView";
 import { KnowledgeView, RecordsView } from "@/views/SecondaryViews";
@@ -51,6 +53,7 @@ export function CommunityHubApp() {
   const [adminFeed, setAdminFeed] = useState<IntelFeed | null>(null);
   const [adminFeedError, setAdminFeedError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [recovering, setRecovering] = useState(false);
   const [sourceError, setSourceError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [translationRetries, setTranslationRetries] = useState(0);
@@ -66,6 +69,7 @@ export function CommunityHubApp() {
   const articleBackView = useRef<Exclude<HubView, "article">>("overview");
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
   const hasPendingTranslation = translationPending(feed, lang);
+  const needsFeed = route.view !== "profile";
 
   useEffect(() => {
     if (!previewEnvironment) return;
@@ -81,9 +85,10 @@ export function CommunityHubApp() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
     let mounted = true;
     setAuthLoading(true);
-    void readAuthState()
+    void readAuthState(controller.signal)
       .then((state) => { if (mounted) setAuth(state); })
       .catch(() => { if (mounted) setAuth(EMPTY_AUTH_STATE); })
       .finally(() => { if (mounted) setAuthLoading(false); });
@@ -92,7 +97,7 @@ export function CommunityHubApp() {
       url.searchParams.delete("auth");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
-    return () => { mounted = false; };
+    return () => { mounted = false; controller.abort(); };
   }, []);
 
   const refresh = useCallback(() => {
@@ -132,36 +137,33 @@ export function CommunityHubApp() {
   }, [auth.permissions.admin, authLoading, navigate, route.view]);
 
   useEffect(() => {
-    if (route.view === "profile") {
+    if (!needsFeed) {
       setLoading(false);
       setSourceError("");
       return;
     }
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 45_000);
     let mounted = true;
     setLoading(true);
+    setRecovering(false);
     setSourceError("");
-    void fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(lang)}`), { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({})) as FeedResponse;
-        if (!response.ok || !payload.ok || !payload.feed || !Array.isArray(payload.feed.cards)) throw new Error(payload.error || `HTTP ${response.status}`);
-        if (mounted) setFeed(payload.feed);
-      })
+    void readIntelFeed(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(lang)}`), {
+      signal: controller.signal, onRetry: () => { if (mounted) setRecovering(true); },
+    })
+      .then((nextFeed) => { if (mounted) setFeed(nextFeed); })
       .catch((error: unknown) => {
         if (!mounted || (error instanceof DOMException && error.name === "AbortError")) return;
         setFeed(null);
-        setSourceError(error instanceof Error ? error.message : "request_failed");
+        setSourceError(error instanceof FeedRequestError || error instanceof JsonRequestError ? text(lang, `status.${error.failure}`) : error instanceof Error ? error.message : text(lang, "status.transfer"));
       })
       .finally(() => {
         if (mounted) setLoading(false);
       });
     return () => {
       mounted = false;
-      window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [lang, refreshKey]);
+  }, [lang, needsFeed, refreshKey]);
 
   useEffect(() => {
     if (!auth.permissions.admin) {
@@ -219,7 +221,7 @@ export function CommunityHubApp() {
       .catch((error: unknown) => {
         if (!mounted || (error instanceof DOMException && error.name === "AbortError")) return;
         setWiki(null);
-        setWikiError(error instanceof Error ? error.message : "wiki_request_failed");
+        setWikiError(error instanceof JsonRequestError ? text(lang, `status.${error.failure}`) : error instanceof Error ? error.message : "wiki_request_failed");
       })
       .finally(() => { if (mounted) setWikiLoading(false); });
     return () => {
@@ -255,7 +257,7 @@ export function CommunityHubApp() {
       .finally(() => setAuthLoading(false));
   }, []);
   const sourceState = sourceError ? "error" : feed ? "live" : "idle";
-  const status = route.view === "profile" ? "" : loading ? text(lang, "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
+  const status = route.view === "profile" ? "" : loading ? text(lang, recovering ? "status.reconnecting" : "status.loading") : sourceError ? `${text(lang, "status.error")} · ${sourceError}` : feed ? `${text(lang, "status.live")} · ${cards.length} ${text(lang, "status.cards")}${hasPendingTranslation ? ` · ${text(lang, "status.translating")}${translationCoverage(feed) ? ` ${translationCoverage(feed)}` : ""}` : ""}` : "";
 
   let view = null;
   const shared = { accountProjects: feed?.account_projects ?? {}, cards, communityMetrics: feed?.community_metrics, officialOverview: feed?.official_overview, lang, loading, onOpenArticle: openArticle, onRefresh: refresh, translationPending: hasPendingTranslation };
@@ -263,7 +265,7 @@ export function CommunityHubApp() {
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
   else if (route.view === "future") view = <Suspense fallback={<div className="community-hub-source-state"><strong>{text(lang, "status.loading")}</strong></div>}><ProductProgressView cards={cards} lang={lang} loading={loading} onOpenArticle={openArticle} onRefresh={refresh} translationPending={hasPendingTranslation} /></Suspense>;
-  else if (route.view === "sbt") view = <SbtView cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
+  else if (route.view === "sbt") view = <SbtView accountProjects={shared.accountProjects} cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
   else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} sectionId={route.section} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go(articleBackView.current)} />;
@@ -272,6 +274,16 @@ export function CommunityHubApp() {
   else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={openGuide} />;
   else if (route.view === "manage" && auth.permissions.admin) view = <Suspense fallback={<div className="community-hub-source-state"><strong>正在載入管理工具…</strong></div>}><AdminView cards={adminFeed?.cards ?? []} lang={lang} onRefresh={refresh} sourceError={adminFeedError} /></Suspense>;
   else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} />;
+
+  // A failed or unfinished request is not an empty feed. Independent Wiki and
+  // profile screens remain usable while the social feed is unavailable.
+  if (!feed && (loading || sourceError) && !["profile", "guide", "knowledge", "manage"].includes(route.view)) {
+    view = <section className="community-hub-view is-active">
+      <ViewHeader eyebrow={route.view.toUpperCase()} title={text(lang, `nav.${route.view}`)} lead="" action={
+        <button type="button" className="community-hub-refresh" disabled={loading} onClick={refresh}>{text(lang, "action.refresh")}</button>
+      } />
+    </section>;
+  }
 
   return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={changeLanguage} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
 }

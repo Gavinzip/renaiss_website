@@ -18,8 +18,15 @@ function fileName(value: string): string {
   return value.split("/").pop() ?? "";
 }
 
+// Saved Wiki documents still use these original names; the shipped assets are AVIF.
+const migratedGuideAssetNames: Record<string, string> = {
+  "report_Zekrom_ex_profile.png": "report_Zekrom_ex_profile.avif",
+  "report_Zekrom_ex_data.png": "report_Zekrom_ex_data.avif",
+};
+
 function assetFor(value: string | undefined): string {
-  const target = fileName(value ?? "");
+  const originalName = fileName(value ?? "");
+  const target = migratedGuideAssetNames[originalName] ?? originalName;
   const match = Object.entries(guideAssets).find(([path]) => path.endsWith(`/${target}`));
   return match?.[1] ?? "";
 }

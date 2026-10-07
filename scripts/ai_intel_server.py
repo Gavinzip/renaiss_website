@@ -37,7 +37,7 @@ from x_intel_core import (
     ALLOWED_CARD_TYPES,
     ALLOWED_PRODUCT_IDS,
     ALLOWED_ROUTING_TOPICS,
-    AI_CLASSIFICATION_VERSION,
+    classification_version_for_source,
     OFFICIAL_DISCORD_CHANNEL_IDS,
     add_classification_feedback,
     add_classification_feedback_fields,
@@ -58,6 +58,7 @@ from x_intel_core import (
     refresh_card_content,
     resolve_minimax_key,
     public_event_duplicate_ids,
+    public_event_metadata,
     set_manual_selection,
     sync_accounts,
     update_card_classification_fields,
@@ -1631,6 +1632,7 @@ def _attach_x_source_metadata(feed: dict) -> dict:
         if discord_match and str(discord_match.group(1) or "") in OFFICIAL_DISCORD_CHANNEL_IDS:
             source_role = "official"
         migrate_card_taxonomy_payload(row, source_role)
+        row.update(public_event_metadata(row))
         canonical_cards.append(row)
     enriched["cards"] = canonical_cards
     enriched["total_cards"] = len(canonical_cards)
@@ -1682,7 +1684,7 @@ def _feed_needs_taxonomy_reclassification() -> bool:
         if (
             str(row.get("classified_by") or "").strip().lower() != "manual"
             and str(row.get("review_status") or "").strip() != "admin_overridden"
-            and str(row.get("ai_version") or "").strip() != AI_CLASSIFICATION_VERSION
+            and str(row.get("ai_version") or "").strip() != classification_version_for_source(row.get("raw_text"))
         ):
             return True
     return False
