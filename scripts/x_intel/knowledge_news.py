@@ -4,12 +4,16 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .knowledge_intent import historical_question, product_update_question
+
 
 def recent_news_window(question: str, now: datetime) -> tuple[date, date] | None:
     q = question.casefold()
+    if historical_question(q):
+        return None
     news = ("消息", "新聞", "新闻", "動態", "动态", "更新", "近況", "近况", "news", "update", "소식", "뉴스", "업데이트")
     recent = ("最近", "近期", "最新", "今天", "今日", "本週", "本周", "recent", "latest", "today", "this week", "최근", "최신", "오늘", "이번 주")
-    implicit = any(term in q for term in ("what's new", "what’s new", "what is new"))
+    implicit = product_update_question(q) or any(term in q for term in ("what's new", "what’s new", "what is new"))
     if not implicit and not (any(term in q for term in news) and any(term in q for term in recent)):
         return None
     today = now.date()
@@ -38,7 +42,11 @@ def eligible_news_sources(sources: list[dict[str, Any]], question: str, now: dat
         published = published.replace(tzinfo=now.tzinfo) if published.tzinfo is None else published.astimezone(now.tzinfo)
         if not start <= published.date() <= end or published > now:
             continue
-        eligible.append((published, {**source, "rank_reasons": [*(source.get("rank_reasons") or []), "recent_publication"]}))
+        eligible.append((published, {
+            **source,
+            "published_local_date": published.date().isoformat(),
+            "rank_reasons": [*(source.get("rank_reasons") or []), "recent_publication"],
+        }))
     eligible.sort(key=lambda row: (row[0], float(row[1].get("score") or 0)), reverse=True)
     return [source for _, source in eligible]
 

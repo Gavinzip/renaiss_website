@@ -24,6 +24,7 @@ from beginner_wiki import read_beginner_wiki_document
 from beginner_wiki_routes import wiki_section_routes
 from .bootstrap import clean_text, data_dir
 from .embedding_cache import ensure_embeddings_for_rows
+from .knowledge_intent import product_update_question
 
 INDEX_SCHEMA = 1
 DOCUMENT_PARSER_VERSION = 3
@@ -234,7 +235,7 @@ def authority_score(item: dict[str, Any], question: str, semantic_score: float) 
     q = clean_text(question).lower()
     # Only concept/usage questions prefer evergreen evidence. Recent updates keep
     # their social ranking; temporal eligibility is handled before top-k.
-    if any(term in q for term in ("最近", "最新", "今天", "recent", "latest", "today")):
+    if product_update_question(q) or any(term in q for term in ("最近", "最新", "今天", "recent", "latest", "today")):
         return 0.0, []
     title = str(item.get("title") or "").lower()
     terms = {term for term in re.findall(r"[a-z][a-z0-9-]+", q) if term not in {"renaiss", "the", "what", "is", "a", "an", "of", "about"}}
