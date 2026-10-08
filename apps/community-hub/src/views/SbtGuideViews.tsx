@@ -4,6 +4,9 @@ import { GuideNavigation } from "@/components/GuideNavigation";
 import { CardMedia, ContentCard } from "@/components/ContentCard";
 import { EmptyState } from "@/components/EmptyState";
 import { Icon } from "@/components/Icon";
+import { LimitedPackSbt } from "@/components/LimitedPackSbt";
+import type { LimitedPackSbtSnapshot } from "@/lib/limitedPackSbt";
+import { limitedPackSbtCopy } from "@/lib/limitedPackSbtCopy";
 import { InlineCardAdmin } from "@/components/admin/InlineCardAdmin";
 import { Pagination } from "@/components/Pagination";
 import { assets, sbtIconUrl } from "@/data/legacy";
@@ -128,6 +131,7 @@ function compactSignalDate(value: string): string {
 }
 
 interface SbtViewProps {
+  limitedPackSbt: LimitedPackSbtSnapshot;
   accountProjects: AccountProjectMap;
   cards: FeedCard[];
   lang: Language;
@@ -136,7 +140,7 @@ interface SbtViewProps {
   wiki: BeginnerWikiDocument | null;
 }
 
-export function SbtView({ accountProjects, cards, lang, onOpenArticle, onOpenGuide, wiki }: SbtViewProps) {
+export function SbtView({ accountProjects, cards, lang, onOpenArticle, onOpenGuide, wiki, limitedPackSbt }: SbtViewProps) {
   const acquisitions = sbtAcquisitionSignals(cards, accountProjects);
   const cardBySource = new Map(cards.map((card) => [safeUrl(card.url), card]));
   const evergreenCount = wiki ? availableSbtRows(wiki.data, lang).length : null;
@@ -165,12 +169,20 @@ export function SbtView({ accountProjects, cards, lang, onOpenArticle, onOpenGui
 
       <section className="community-hub-sbt-catalog">
         <div className="community-hub-sbt-catalog-head">
+          <p className="community-hub-section-index">WEEKLY PACKS</p>
+          <h3>{limitedPackSbtCopy[lang].title}</h3>
+          <p>{limitedPackSbtCopy[lang].lead}</p>
+        </div>
+        <LimitedPackSbt snapshot={limitedPackSbt} cards={cards} accountProjects={accountProjects} lang={lang} />
+      </section>
+
+      {acquisitions.length ? <section className="community-hub-sbt-catalog">
+        <div className="community-hub-sbt-catalog-head">
           <p className="community-hub-section-index">LIMITED · {acquisitions.length}</p>
           <h3>{text(lang, "sbt.acquisition")}</h3>
           <p>{text(lang, "sbt.acquisitionLead")}</p>
         </div>
-        {acquisitions.length ? (
-          <ol className="community-hub-sbt-signal-list">
+        <ol className="community-hub-sbt-signal-list">
             {acquisitions.map((acquisition, index) => {
               const sourceCard = cardBySource.get(safeUrl(acquisition.source));
               return <li key={`${acquisition.name}-${acquisition.acquisition}`}>
@@ -188,9 +200,8 @@ export function SbtView({ accountProjects, cards, lang, onOpenArticle, onOpenGui
                 {sourceCard ? <InlineCardAdmin card={sourceCard} sbtFocus /> : null}
               </li>
             })}
-          </ol>
-        ) : <EmptyState title={text(lang, "sbt.none")} />}
-      </section>
+        </ol>
+      </section> : null}
 
       <section className="community-hub-sbt-catalog">
         <div className="community-hub-sbt-catalog-head">

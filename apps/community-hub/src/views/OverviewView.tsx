@@ -1,5 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { FeatureCard } from "@/components/ContentCard";
+import { LimitedPackSbt } from "@/components/LimitedPackSbt";
+import type { LimitedPackSbtSnapshot } from "@/lib/limitedPackSbt";
 import { eventStatus, formatDate } from "@/lib/feed";
 import { recentHighlights } from "@/lib/highlights";
 import { sbtAcquisitionSignals } from "@/lib/sbt";
@@ -11,10 +13,11 @@ interface OverviewViewProps {
   accountProjects: AccountProjectMap;
   cards: FeedCard[];
   lang: Language;
+  limitedPackSbt: LimitedPackSbtSnapshot;
   onNavigate: (view: Exclude<HubView, "article">) => void;
 }
 
-export function OverviewView({ accountProjects, cards, lang, onNavigate }: OverviewViewProps) {
+export function OverviewView({ accountProjects, cards, lang, onNavigate, limitedPackSbt }: OverviewViewProps) {
   const highlights = recentHighlights(cards, accountProjects);
   const limitedSbt = sbtAcquisitionSignals(cards, accountProjects).slice(0, 4);
   const routes: Array<{ icon: string; label: string; sub: string; view: Exclude<HubView, "article"> }> = [
@@ -47,8 +50,9 @@ export function OverviewView({ accountProjects, cards, lang, onNavigate }: Overv
 
     <section className="community-hub-overview-section">
       <div className="community-hub-section-head"><div><p className="community-hub-section-index">02</p><h2>{text(lang, "overview.limitedSbt")}</h2></div><button type="button" className="community-hub-text-button" onClick={() => onNavigate("sbt")}>{text(lang, "overview.allSbt")}</button></div>
+      <LimitedPackSbt snapshot={limitedPackSbt} cards={cards} accountProjects={accountProjects} lang={lang} />
       <div className="community-hub-overview-sbt-list">
-        {limitedSbt.length ? limitedSbt.map((campaign) => <a key={`${campaign.source}-${campaign.name}`} className="community-hub-overview-sbt-link" href={campaign.source} target="_blank" rel="noreferrer"><span className="community-hub-overview-sbt-icon"><Icon name="badge-check" /></span><span className="community-hub-overview-sbt-copy"><small>{text(lang, `sbt.status.${campaign.status}`)} · {formatDate(campaign.startDate, lang)} – {formatDate(campaign.date, lang)}</small><strong>{campaign.name}</strong><em>{campaign.acquisition}</em></span><Icon className="community-hub-overview-sbt-arrow" name="arrow-up-right" /></a>) : <div className="community-hub-empty"><strong>{text(lang, "overview.limitedEmpty")}</strong></div>}
+        {limitedSbt.map((campaign) => <a key={`${campaign.source}-${campaign.name}`} className="community-hub-overview-sbt-link" href={campaign.source} target="_blank" rel="noreferrer"><span className="community-hub-overview-sbt-icon"><Icon name="badge-check" /></span><span className="community-hub-overview-sbt-copy"><small>{text(lang, `sbt.status.${campaign.status}`)} · {formatDate(campaign.startDate, lang)} – {formatDate(campaign.date, lang)}</small><strong>{campaign.name}</strong><em>{campaign.acquisition}</em></span><Icon className="community-hub-overview-sbt-arrow" name="arrow-up-right" /></a>)}
       </div>
     </section>
 

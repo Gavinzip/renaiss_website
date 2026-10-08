@@ -69,6 +69,7 @@ from x_intel_core import (
     update_x_source_accounts,
 )
 from x_intel.knowledge_agent import answer_knowledge_question
+from limited_pack_sbt import limited_pack_sbt_source
 from beginner_wiki import WIKI_READ_LOCK, read_beginner_wiki_document
 from beginner_wiki_routes import with_section_routes
 from x_intel.community_metrics import (
@@ -3331,7 +3332,10 @@ class Handler(SimpleHTTPRequestHandler):
         if path.endswith("/page-prefetch.js"):
             return "no-store"
         filename = path.rsplit("/", 1)[-1]
-        if re.search(r"-[A-Za-z0-9_-]{8,}\.(?:css|js|json|svg|avif|webp|png|jpe?g|gif|ico|woff2?|mp4)$", filename, re.IGNORECASE):
+        # Named scripts can contain long hyphenated words too. Only the build
+        # output directory publishes hashed JS/CSS; source modules must revalidate.
+        is_hashed_asset = re.search(r"-[A-Za-z0-9_-]{8,}\.(?:css|js|json|svg|avif|webp|png|jpe?g|gif|ico|woff2?|mp4)$", filename, re.IGNORECASE)
+        if is_hashed_asset and (path.startswith("/community-hub/assets/") or not path.endswith((".js", ".css"))):
             return "public, max-age=31536000, immutable"
         if path.endswith((".js", ".css")):
             return "no-cache, max-age=0, must-revalidate"
@@ -5493,6 +5497,9 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to read leaderboard: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if path == "/api/intel/limited-pack-sbt":
+            self._send_json(limited_pack_sbt_source.snapshot())
+            return
         if path == "/api/intel/feed":
             if not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
@@ -6147,6 +6154,7 @@ def main() -> int:
         )
     start_website_backup_scheduler(DATA_ROOT, ROOT.parent)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    limited_pack_sbt_source.start()
     print(f"[ai-intel] serving api={ROOT} static={STATIC_ROOT} at http://{args.host}:{args.port}")
     if retired_cache_files:
         print(f"[ai-intel] removed retired intel cache files: {','.join(retired_cache_files)}")

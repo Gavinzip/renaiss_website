@@ -7365,3 +7365,7 @@
     }
 
     @media (hover: hover) {
+
+    /* Weekly pack tasks retain the existing SBT name/acquisition row layout. */
+    a.sbt-acq-row { text-decoration: none; }
+    .sbt-pack-note { margin: .7rem .2rem .1rem; color: #607b9a; font-size: .76rem; line-height: 1.65; }

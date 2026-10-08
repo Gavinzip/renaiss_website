@@ -1,3 +1,16 @@
+    let limitedPackSbtModel = null;
+    let limitedPackSbtSnapshot = { status: "loading", campaigns: [] };
+    let limitedPackSbtBoundaryTimer;
+    Promise.all([import("./limited-pack-sbt.js"), import("./limited-pack-sbt-client.js")]).then(([model, client]) => {
+      limitedPackSbtModel = model;
+      client.subscribePackSnapshot(intelApiUrl("/api/intel/limited-pack-sbt"), (snapshot) => {
+        limitedPackSbtSnapshot = snapshot;
+        if (intelLazyRenderContext) renderSbtAcquisitionSummary(intelLazyRenderContext.routed.sbt, intelLazyRenderContext.cards);
+      });
+    }).catch(() => {
+      limitedPackSbtSnapshot = { status: "unavailable", campaigns: [] };
+    });
+
     const LOCALIZED_DYNAMIC_REGION_IDS = Object.freeze([
       "intel-master-rail",
       "intel-master-stage",
@@ -1680,9 +1693,34 @@
         const prev = grouped.get(groupKey);
         grouped.set(groupKey, prev ? pickBetterSbtSummaryRow(prev, row) : row);
       }
-      const rows = Array.from(grouped.values())
-        .sort((a, b) => sbtRowTimeMs(b.card) - sbtRowTimeMs(a.card))
-        .slice(0, 10);
+      const packCopy = limitedPackSbtModel?.limitedPackSbtCopy[normalizeUiLang(currentUiLang)];
+      const packCampaigns = limitedPackSbtModel ? limitedPackSbtModel.weeklyPackCampaigns(limitedPackSbtSnapshot,
+        allCards.filter((card) => card.source_role === "official"), new Date()) : [];
+      const packRows = packCampaigns.flatMap((pack) => limitedPackSbtModel.packSbtPair(pack, normalizeUiLang(currentUiLang)).map((task) => ({
+        key: task.key, name: task.name, names: [task.name], acquisition: task.acquisition, packName: task.pack_name,
+        sourceUrl: pack.source_url, preview: !task.official, cardId: "",
+        status: { expired: false, label: packCopy[pack.status], date: limitedPackSbtModel.packDateTime(pack.earning_start, normalizeUiLang(currentUiLang)) + " UTC+8" },
+      })));
+      const packSources = new Set(packCampaigns.map((pack) => pack.source_url));
+      const rows = [...packRows, ...Array.from(grouped.values()).filter((row) => !packSources.has(row.card?.url))
+        .sort((a, b) => sbtRowTimeMs(b.card) - sbtRowTimeMs(a.card)).slice(0, 10)];
+      // Reapply the existing weekly gate at exact opening/end boundaries as well
+      // as API updates. Do not promote an elapsed announcement into a live pack.
+      clearTimeout(limitedPackSbtBoundaryTimer);
+      if (limitedPackSbtModel && !sbtAcqEditMode) {
+        const now = Date.now();
+        const boundaries = [limitedPackSbtModel.taipeiWeek(new Date())[1], ...packCampaigns.flatMap((pack) => [pack.earning_start, pack.earning_end]
+          .map((date) => Date.parse(date)).filter((date) => date > now))];
+        limitedPackSbtBoundaryTimer = setTimeout(() => {
+          if (intelLazyRenderContext) renderSbtAcquisitionSummary(intelLazyRenderContext.routed.sbt, intelLazyRenderContext.cards);
+        }, Math.max(0, Math.min(60_000, Math.min(...boundaries) - now)) + 25);
+      }
+      const packState = document.getElementById("intel-sbt-pack-state");
+      if (packState && packCopy) {
+        packState.textContent = limitedPackSbtSnapshot.status !== "ready" ? packCopy[limitedPackSbtSnapshot.status]
+          : packRows.some((row) => row.preview) ? packCopy.pendingBadges : "";
+        packState.hidden = !packState.textContent;
+      }
       const cardsForSelect = (Array.isArray(allCards) ? allCards : [])
         .map((card, idx) => {
           const id = String(card?.id || "").trim();
@@ -1700,17 +1738,18 @@
       count.textContent = String(rows.length);
       list.innerHTML = rows.map((row, idx) => `
         <div class="sbt-acq-row-wrap" data-sbt-row="${escapeHtml(row.key)}">
-          <button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.jumpKey || row.key)}">
+          ${row.sourceUrl ? `<a class="sbt-acq-row" href="${escapeHtml(row.sourceUrl)}" target="_blank" rel="noreferrer">` : `<button type="button" class="sbt-acq-row" data-sbt-jump-card="${escapeHtml(row.jumpKey || row.key)}">`}
             <span class="sbt-acq-index">#${idx + 1}</span>
             <span class="sbt-acq-main">
               <span class="sbt-acq-name">${escapeHtml(row.name)}</span>
-              ${row.acquisition ? `<span class="sbt-acq-method">${escapeHtml(row.acquisition)}</span>` : ""}
+              ${row.acquisition ? `<span class="sbt-acq-method">${row.packName ? `${escapeHtml(packCopy.acquisitionLabel)}：` : ""}${escapeHtml(row.acquisition)}</span>` : ""}
+              ${row.packName ? `<span class="sbt-acq-method">${escapeHtml(packCopy.packLabel)}：${escapeHtml(row.packName)}</span>` : ""}
             </span>
             <span class="sbt-acq-meta">
               <span>${escapeHtml(row.status.date || "--")}</span>
               <span class="sbt-acq-status ${row.status.expired ? "is-expired" : (row.status.label === uiLabel("sbtStatusClaimable") ? "is-claimable" : "")}">${escapeHtml(row.status.label)}</span>
             </span>
-          </button>
+          ${row.sourceUrl ? "</a>" : "</button>"}
           ${adminMode && sbtAcqEditMode && row.cardId ? `<button type="button" class="sbt-acq-edit-btn" data-sbt-edit-open="${escapeHtml(row.key)}">${escapeHtml("編輯")}</button>` : ""}
           ${adminMode && sbtAcqEditMode && row.cardId ? `<div class="sbt-acq-editor" data-sbt-editor="${escapeHtml(row.key)}" hidden>
             <div class="sbt-acq-editor-fields">
@@ -1766,7 +1805,7 @@
         `);
       }
       empty.style.display = rows.length ? "none" : "block";
-      panel.style.display = (rows.length || (adminMode && sbtAcqEditMode)) ? "block" : "none";
+      panel.style.display = (rows.length || limitedPackSbtSnapshot.status !== "ready" || (adminMode && sbtAcqEditMode)) ? "block" : "none";
     }
 
     function closeIntelDetailModal() {

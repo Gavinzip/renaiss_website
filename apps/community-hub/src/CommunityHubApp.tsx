@@ -7,6 +7,7 @@ import { text } from "@/lib/copy";
 import { normalizeCards, translationCoverage, translationPending } from "@/lib/feed";
 import { FeedRequestError, readIntelFeed } from "@/lib/feedRequest";
 import { JsonRequestError } from "@/lib/jsonRequest";
+import { useLimitedPackSbt } from "@/lib/limitedPackSbt";
 import { useHubRoute } from "@/lib/routes";
 import { readBeginnerWiki } from "@/lib/wiki";
 import { readAdminFeed } from "@/lib/admin";
@@ -66,6 +67,7 @@ export function CommunityHubApp() {
   const [wikiLoading, setWikiLoading] = useState(false);
   const [wikiError, setWikiError] = useState("");
   const { route, navigate } = useHubRoute();
+  const limitedPackSbt = useLimitedPackSbt(route.view === "overview" || route.view === "sbt", refreshKey);
   const articleBackView = useRef<Exclude<HubView, "article">>("overview");
   const cards = useMemo(() => normalizeCards(feed, lang), [feed, lang]);
   const hasPendingTranslation = translationPending(feed, lang);
@@ -265,7 +267,7 @@ export function CommunityHubApp() {
   else if (route.view === "feed") view = <CommunityView {...shared} />;
   else if (route.view === "events") view = <EventsView {...shared} />;
   else if (route.view === "future") view = <Suspense fallback={<div className="community-hub-source-state"><strong>{text(lang, "status.loading")}</strong></div>}><ProductProgressView cards={cards} lang={lang} loading={loading} onOpenArticle={openArticle} onRefresh={refresh} translationPending={hasPendingTranslation} /></Suspense>;
-  else if (route.view === "sbt") view = <SbtView accountProjects={shared.accountProjects} cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} />;
+  else if (route.view === "sbt") view = <SbtView accountProjects={shared.accountProjects} cards={cards} lang={lang} onOpenArticle={openArticle} onOpenGuide={() => openGuide("sbt")} wiki={wiki} limitedPackSbt={limitedPackSbt} />;
   else if (route.view === "profile") view = <ProfileView lang={lang} />;
   else if (route.view === "guide") view = <GuideView auth={auth} cards={cards} lang={lang} onOpenArticle={openArticle} onTopicChange={openGuide} onWikiChange={setWiki} sectionId={route.section} topicId={route.guide} wiki={wiki} wikiError={wikiError} wikiLoading={wikiLoading} />;
   else if (route.view === "article") view = <ArticleView articleUrl={route.article} cards={cards} lang={lang} onBack={() => go(articleBackView.current)} />;
@@ -273,7 +275,7 @@ export function CommunityHubApp() {
   else if (route.view === "media") view = <MediaView {...shared} />;
   else if (route.view === "knowledge") view = <KnowledgeView lang={lang} onGuide={openGuide} />;
   else if (route.view === "manage" && auth.permissions.admin) view = <Suspense fallback={<div className="community-hub-source-state"><strong>正在載入管理工具…</strong></div>}><AdminView cards={adminFeed?.cards ?? []} lang={lang} onRefresh={refresh} sourceError={adminFeedError} /></Suspense>;
-  else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} />;
+  else view = <OverviewView accountProjects={feed?.account_projects ?? {}} cards={cards} lang={lang} onNavigate={go} limitedPackSbt={limitedPackSbt} />;
 
   // A failed or unfinished request is not an empty feed. Independent Wiki and
   // profile screens remain usable while the social feed is unavailable.
