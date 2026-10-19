@@ -30,9 +30,18 @@ class ExpoProfileStore:
     """
 
     def __init__(self, db_path: Path, database_url: str | None = None):
-        postgres_url = normalize_database_url(database_url or profile_database_url_from_env())
-        self.backend = PostgresExpoProfileStore(postgres_url) if postgres_url else SQLiteExpoProfileStore(db_path)
-        self.storage_key = self.backend.storage_key
+        self._postgres_url = normalize_database_url(database_url or profile_database_url_from_env())
+        self._db_path = db_path
+        self._backend = None
+        self._backend_lock = Lock()
+        self.storage_key = 'postgres' if self._postgres_url else db_path.name
+
+    @property
+    def backend(self):
+        with self._backend_lock:
+            if self._backend is None:
+                self._backend = PostgresExpoProfileStore(self._postgres_url) if self._postgres_url else SQLiteExpoProfileStore(self._db_path)
+            return self._backend
 
     def __getattr__(self, name: str):
         return getattr(self.backend, name)

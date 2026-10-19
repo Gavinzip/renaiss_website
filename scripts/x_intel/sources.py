@@ -657,7 +657,7 @@ def x_source_config_path() -> Path:
 
 def read_x_source_config() -> dict[str, Any]:
     path = x_source_config_path()
-    raw = read_json(path, {}) if path.exists() else {}
+    raw = read_json(path, {})
     configured = isinstance(raw, dict) and isinstance(raw.get("x_accounts"), list)
     accounts = ensure_required_x_accounts(normalize_x_accounts(raw.get("x_accounts") if configured else DEFAULT_ACCOUNTS))
     account_categories = normalize_x_account_categories(
@@ -1000,7 +1000,14 @@ def minimax_chat(
         json=payload,
         timeout=(connect_timeout, read_timeout),
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            error_data = resp.json()
+            error = error_data.get('error') or error_data.get('base_resp') or {}
+            message = error.get('message') or error.get('status_msg') or error.get('type') or '' if isinstance(error,dict) else str(error)
+        except ValueError:
+            message = 'provider returned a non-JSON error'
+        raise RuntimeError(f'MiniMax HTTP {resp.status_code}: {str(message)[:220]}')
     data = resp.json()
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
@@ -1325,7 +1332,7 @@ def apply_minimax_story_refine(
         except Exception as exc:
             _set_ai_review_queue(
                 card,
-                f"ai_request_failed:{type(exc).__name__}",
+                f"ai_request_failed:{type(exc).__name__}:{str(exc)[:240]}",
                 model=model_name,
                 preserve_semantics=semantic_ok,
             )
@@ -2229,6 +2236,9 @@ def collect_account_cards(
                 existing.add(sid)
                 ids.append(sid)
 
+    fresh_source_available = bool(ids or cards)
+    successful_status_fetches = 0
+    refreshed_providers: dict[str, int] = {}
     # fallback: keep previously cached IDs for stability when profile page is rate-limited
     if not ids:
         if isinstance(cached_cards_raw, list):
@@ -2287,6 +2297,9 @@ def collect_account_cards(
             continue
 
         status_markdown, provider, tweet_meta = fetch_status_markdown(username, tweet_id)
+        if status_markdown:
+            successful_status_fetches += 1
+            refreshed_providers[provider] = refreshed_providers.get(provider, 0) + 1
         if isinstance(tweet_meta, dict):
             reply_to_id = str(tweet_meta.get("reply_to_id") or tweet_meta.get("parent_id") or "").strip()
             reply_to_account = str(tweet_meta.get("reply_to_account") or tweet_meta.get("parent_account") or "").strip().lower().lstrip("@")
@@ -2354,6 +2367,9 @@ def collect_account_cards(
             "account": username,
             "elapsed_ms": max(0, int(round((time.monotonic() - scan_started) * 1000))),
             "discovered_ids": len(ids),
+            "fresh_source_available": fresh_source_available,
+            "successful_status_fetches": successful_status_fetches,
+            "refreshed_providers": refreshed_providers,
             "cached_cards": len(cached_cards),
             "result_cards": min(len(cards), max_posts),
             "errors": list(dict.fromkeys(scan_errors))[:6],
@@ -2761,6 +2777,9 @@ def build_card_from_url(tweet_url: str, api_key: str | None = None) -> StoryCard
 
 
 def read_json(path: Path, default: Any) -> Any:
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode() and path.is_relative_to(data_dir()):
+        return snapshot_store().json(path.relative_to(data_dir()).as_posix(), default)
     if not path.exists():
         return default
     try:

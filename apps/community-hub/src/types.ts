@@ -253,6 +253,7 @@ export interface BeginnerWikiMeta {
   section_routes?: Partial<Record<Language, Array<{ topic: string; anchor: string }>>>;
   auto_translate?: boolean;
   cache_seconds?: number;
+  cache_pending?: boolean;
   content_hash?: string;
   provider?: string;
   revision?: number;

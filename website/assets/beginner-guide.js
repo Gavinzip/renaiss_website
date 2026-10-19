@@ -81,7 +81,7 @@
     Help: "lucide:circle-help",
   };
   const WIKI_AUTH_TOKEN_KEY = "intel_admin_bearer_token_v1";
-  const DEFAULT_WIKI_API_BASE = "https://renaiss.zeabur.app";
+  const DEFAULT_WIKI_API_BASE = window.location.origin;
   const wikiCmsState = {
     auth: {
       ready: false,
@@ -408,6 +408,7 @@
   }
 
   function wikiApiBaseCandidates() {
+    if (window.location.hostname.endsWith(".vercel.app")) return [window.location.origin];
     const explicit = explicitWikiApiBase();
     if (explicit) return [explicit];
     const origin = normalizeApiBase(window.location.origin || "");
@@ -1657,11 +1658,10 @@
       try {
         const response = await fetch(wikiApiUrl("/api/wiki/beginner"), {
           method: "GET",
-          cache: "no-store",
-          credentials: "include",
-          headers: wikiAuthHeaders(),
+          cache: "default",
+          credentials: "omit",
         });
-        const payload = await response.json().catch(() => ({}));
+        const payload = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
         if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
         const wiki = payload.wiki || {};
         if (wiki.exists && wiki.data && typeof wiki.data === "object") {
@@ -1689,7 +1689,7 @@
         credentials: "include",
         headers: wikiAuthHeaders(),
       });
-      const payload = await response.json().catch(() => ({}));
+      const payload = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
       const token = String(payload.token || "").trim();
       if (token) saveWikiAuthToken(token);
@@ -1723,14 +1723,9 @@
     return Boolean(wikiCmsState.auth.authenticated && wikiCmsState.auth.permissions && wikiCmsState.auth.permissions.wiki_edit);
   }
 
-  function isDirectusWiki() {
+  function isManagedWiki() {
     const meta = wikiCmsState.meta || {};
-    return String(meta.provider || meta.source || "").toLowerCase() === "directus";
-  }
-
-  function directusStudioUrl() {
-    const meta = wikiCmsState.meta || {};
-    return String(meta.studio_url || meta.studioUrl || "").trim();
+    return meta.editable === true;
   }
 
   function legacyInlineEditorEnabled() {
@@ -1738,7 +1733,7 @@
   }
 
   function updateWikiCreatorUi() {
-    if (isDirectusWiki()) {
+    if (isManagedWiki()) {
       const editable = canEditWiki();
       if (wikiLoginBtn) wikiLoginBtn.hidden = editable;
       if (wikiLogoutBtn) wikiLogoutBtn.hidden = !wikiCmsState.auth.authenticated;
@@ -1786,7 +1781,7 @@
       headers: wikiAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ username, password }),
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
     if (payload.token) saveWikiAuthToken(payload.token);
     await fetchWikiAuthState();
@@ -2387,7 +2382,7 @@
         headers: wikiAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ lang: targetLang, texts: chunk }),
       });
-      const payload = await response.json().catch(() => ({}));
+      const payload = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || `翻譯失敗 HTTP ${response.status}`);
       items.push(...(Array.isArray(payload.items) ? payload.items : chunk));
       modes.push(String(payload.mode || ""));
@@ -2451,7 +2446,7 @@
       headers: wikiAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
     if (!response.ok || !payload?.ok) {
       if (response.status === 401 || response.status === 403) {
         clearWikiAuthToken();
@@ -2464,7 +2459,7 @@
     }
     const wiki = payload.wiki || {};
     if (wiki.data && typeof wiki.data === "object") data = mergeWikiData(staticWikiSeed, wiki.data);
-    wikiCmsState.meta = wiki.meta || {};
+    wikiCmsState.meta = { ...(wiki.meta || {}), cache_pending: payload.cache?.pending === true };
     return payload;
   }
 
@@ -2662,7 +2657,7 @@
       setWikiMessage(
         wikiInlineMessage,
         wikiCmsState.meta?.auto_translate
-          ? `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`
+          ? (wikiCmsState.meta.cache_pending ? "內容已儲存；公開快取更新待重試，最晚下次半小時排程再處理。" : `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`)
           : "已儲存並更新 Wiki。",
         "ok"
       );
@@ -3019,7 +3014,7 @@
           renderStaticPage(currentLang());
           fillWikiEditor();
           const modes = Array.isArray(wikiCmsState.meta?.translation_modes) ? wikiCmsState.meta.translation_modes.join(", ") : "";
-          setWikiMessage(wikiEditorMessage, `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`, "ok");
+          setWikiMessage(wikiEditorMessage, (wikiCmsState.meta.cache_pending ? "內容已儲存；公開快取更新待重試，最晚下次半小時排程再處理。" : `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`), "ok");
         } catch (error) {
           setWikiMessage(wikiEditorMessage, String(error?.message || error), "error");
         } finally {
@@ -3041,7 +3036,7 @@
           renderStaticPage(currentLang());
           fillWikiEditor();
           const modes = Array.isArray(wikiCmsState.meta?.translation_modes) ? wikiCmsState.meta.translation_modes.join(", ") : "";
-          setWikiMessage(wikiEditorMessage, `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`, "ok");
+          setWikiMessage(wikiEditorMessage, (wikiCmsState.meta.cache_pending ? "內容已儲存；公開快取更新待重試，最晚下次半小時排程再處理。" : `已儲存，翻譯 agent 已同步其他語言${modes ? `。模式：${modes}` : "。"}`), "ok");
         } catch (error) {
           setWikiMessage(wikiEditorMessage, String(error?.message || error), "error");
         } finally {

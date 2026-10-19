@@ -15,6 +15,7 @@ interface JsonRequestOptions {
   idleTimeoutMs?: number;
   onRetry?: () => void;
   request?: typeof fetch;
+  cache?: RequestCache;
 }
 
 async function readAttempt(url: string, signal: AbortSignal, options: JsonRequestOptions): Promise<unknown> {
@@ -40,7 +41,7 @@ async function readAttempt(url: string, signal: AbortSignal, options: JsonReques
     try {
       progress();
       const response = await (options.request ?? fetch)(url, {
-        cache: "no-store", credentials: options.credentials, headers: options.headers, signal: controller.signal,
+        cache: options.cache ?? "no-store", credentials: options.credentials, headers: options.headers, signal: controller.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       progress();

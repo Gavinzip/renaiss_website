@@ -92,15 +92,9 @@ from website_i18n_runtime import (
     resume_pending_i18n_from_feed,
     translate_texts,
 )
-from directus_wiki import (
-    DirectusWikiError,
-    directus_wiki_enabled,
-    read_directus_beginner_wiki,
-    translate_directus_beginner_wiki,
-    wiki_data_hash,
-    write_directus_beginner_wiki,
-)
-from admin_session_store import AuthStateStore
+from wiki_content import WikiEditConflictError
+from wiki_editing import save_beginner_wiki
+from admin_session_store import create_auth_state_store
 from expo_profile_store import ExpoProfileStore, ProfileIdentity
 from privy_auth import PrivyAuthError, claims_from_authorization_header
 from renaiss_wallet_client import sync_wallet_cards
@@ -144,10 +138,8 @@ I18N_FEED_PATH = DATA_ROOT / "x_intel_feed_i18n.json"
 KNOWLEDGE_MEMORY_PATH = DATA_ROOT / "x_intel_knowledge_memory.json"
 JOBS_PATH = DATA_ROOT / "x_intel_jobs.json"
 PUBLIC_FEEDBACK_PATH = DATA_ROOT / "public_feedback.json"
-BEGINNER_WIKI_CONTENT_PATH = DATA_ROOT / "beginner_wiki_content.json"
-BEGINNER_WIKI_HISTORY_PATH = DATA_ROOT / "beginner_wiki_history.jsonl"
 PROFILE_STORE = ExpoProfileStore(DATA_ROOT / "expo_profile.sqlite3")
-AUTH_STATE_STORE = AuthStateStore(DATA_ROOT / "community_hub_auth.sqlite3")
+AUTH_STATE_STORE = create_auth_state_store(DATA_ROOT / "community_hub_auth.sqlite3")
 configure_auth_state_store(AUTH_STATE_STORE)
 configure_i18n_runtime(DATA_ROOT, FEED_PATH)
 JOBS_LOCK = Lock()
@@ -460,7 +452,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
 I18N_WARM_ON_STARTUP = _env_flag("I18N_WARM_ON_STARTUP", False)
 I18N_WATCHDOG_ENABLED = _env_flag("I18N_WATCHDOG_ENABLED", True)
 I18N_WATCHDOG_INTERVAL_SECONDS = max(30, int(os.getenv("I18N_WATCHDOG_INTERVAL_SECONDS", "60") or "60"))
-DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE = _env_flag("DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE", True)
 BACKGROUND_PRIORITY_ENABLED = _env_flag("BACKGROUND_PRIORITY_ENABLED", True)
 BACKGROUND_PRIORITY_RECENT_SECONDS = max(0.0, float(os.getenv("BACKGROUND_PRIORITY_RECENT_SECONDS", "8") or 8))
 BACKGROUND_PRIORITY_SLEEP_SECONDS = max(0.1, float(os.getenv("BACKGROUND_PRIORITY_SLEEP_SECONDS", "1.5") or 1.5))
@@ -856,6 +847,10 @@ def _auth_result_path(return_to: str, status: str) -> str:
 
 
 def _read_jobs_unlocked() -> dict:
+    from hub_snapshot_store import postgres_mode
+    if postgres_mode():
+        from hub_job_store import job_store
+        return {"jobs": {row['id']: row for row in job_store().recent()}}
     if not JOBS_PATH.exists():
         return {"jobs": {}}
     try:
@@ -914,485 +909,15 @@ def _read_beginner_wiki_content() -> dict:
     return read_beginner_wiki_document(DATA_ROOT, lock=BEGINNER_WIKI_LOCK)
 
 
-def _validate_beginner_wiki_data(data: object) -> dict:
-    if not isinstance(data, dict):
-        raise ValueError("data must be an object")
-    guides = data.get("guides")
-    if not isinstance(guides, dict) or not guides:
-        raise ValueError("data.guides must be a non-empty object")
-    for lang, guide in guides.items():
-        if not isinstance(guide, dict):
-            raise ValueError(f"data.guides.{lang} must be an object")
-        sections = guide.get("sections")
-        if not isinstance(sections, list):
-            raise ValueError(f"data.guides.{lang}.sections must be an array")
-    return data
-
-
-class WikiEditConflictError(RuntimeError):
-    """Raised when a creator saves from a stale Wiki snapshot."""
-
-
-def _wiki_target_langs(source_lang: str) -> list[str]:
-    source = _normalize_lang_tag(source_lang)
-    return [lang for lang in I18N_MONITOR_LANGS if lang != source]
-
-
-def _wiki_translator(rows: list[str], lang: str) -> tuple[list[str], str]:
-    return translate_texts(
-        [str(row or "").strip()[:TRANSLATE_MAX_CHARS] for row in rows],
-        lang=_normalize_lang_tag(lang),
-    )
-
-
-def _should_translate_wiki_text(value: object) -> bool:
-    text = str(value or "").strip()
-    if not text or re.match(r"^https?://", text, re.I):
-        return False
-    return bool(re.search(r"[A-Za-z\u3400-\u9fff\uac00-\ud7af]", text))
-
-
-def _translate_wiki_values(values: list[object], target_lang: str) -> tuple[list[str], str]:
-    rows = [str(value or "") for value in values]
-    indexed = [(idx, value) for idx, value in enumerate(rows) if _should_translate_wiki_text(value)]
-    if not indexed:
-        return rows, "empty"
-    translated_rows, mode = _wiki_translator([value for _, value in indexed], target_lang)
-    if mode == "no-key":
-        raise RuntimeError("missing_minimax_api_key")
-    out = list(rows)
-    for offset, (idx, fallback) in enumerate(indexed):
-        candidate = str(translated_rows[offset] if offset < len(translated_rows) else fallback).strip()
-        out[idx] = candidate or fallback
-    return out, mode
-
-
-_MISSING = object()
-
-
-def _path_value(node: object, path: tuple[object, ...]) -> object:
-    cur = node
-    for part in path:
-        if isinstance(cur, dict) and isinstance(part, str) and part in cur:
-            cur = cur[part]
-            continue
-        if isinstance(cur, list) and isinstance(part, int) and 0 <= part < len(cur):
-            cur = cur[part]
-            continue
-        return _MISSING
-    return cur
-
-
-def _collect_wiki_translation_refs(
-    node: object,
-    refs: list[tuple[object, object, tuple[object, ...]]],
-    skip_keys: set[str],
-    parent: object | None = None,
-    key: object | None = None,
-    path: tuple[object, ...] = (),
-) -> list[tuple[object, object, tuple[object, ...]]]:
-    if isinstance(node, str):
-        if parent is not None and key is not None and str(key) not in skip_keys and _should_translate_wiki_text(node):
-            refs.append((parent, key, path))
-        return refs
-    if isinstance(node, list):
-        for index, item in enumerate(node):
-            _collect_wiki_translation_refs(item, refs, skip_keys, node, index, (*path, index))
-        return refs
-    if isinstance(node, dict):
-        for child_key, value in node.items():
-            if str(child_key) in skip_keys:
-                continue
-            _collect_wiki_translation_refs(value, refs, skip_keys, node, child_key, (*path, child_key))
-    return refs
-
-
-def _translate_wiki_clone(
-    value: object,
-    target_lang: str,
-    skip_keys: set[str] | None = None,
-    previous_source: object | None = None,
-    current_target: object | None = None,
-) -> tuple[object, list[str]]:
-    cloned = copy.deepcopy(value)
-    refs: list[tuple[object, object, tuple[object, ...]]] = []
-    _collect_wiki_translation_refs(cloned, refs, skip_keys or set())
-    translate_jobs: list[tuple[object, object, str]] = []
-    for parent, key, path in refs:
-        source_value = str(parent[key] or "")  # type: ignore[index]
-        previous_value = _path_value(previous_source, path) if previous_source is not None else _MISSING
-        target_value = _path_value(current_target, path) if current_target is not None else _MISSING
-        if previous_value is not _MISSING and str(previous_value or "") == source_value and target_value is not _MISSING and str(target_value or "").strip():
-            parent[key] = str(target_value)  # type: ignore[index]
-            continue
-        translate_jobs.append((parent, key, source_value))
-    translated, mode = _translate_wiki_values([job[2] for job in translate_jobs], target_lang)
-    for index, (parent, key, fallback) in enumerate(translate_jobs):
-        parent[key] = translated[index] if index < len(translated) else fallback  # type: ignore[index]
-    return cloned, [mode] if mode and mode != "empty" else []
-
-
-def _set_localized_value(row: dict, field: str, lang: str, value: str) -> None:
-    current = row.get(field)
-    if not isinstance(current, dict):
-        current = {}
-    current[lang] = value
-    row[field] = current
-
-
-def _auto_translate_localized_rows(
-    rows: list,
-    previous_rows: list,
-    source: str,
-    target: str,
-    fields: list[str],
-) -> list[str]:
-    modes: list[str] = []
-    for field in fields:
-        jobs: list[tuple[int, str]] = []
-        for index, row in enumerate(rows):
-            if not isinstance(row, dict):
-                continue
-            previous_row = previous_rows[index] if index < len(previous_rows) and isinstance(previous_rows[index], dict) else {}
-            source_value = _localized_source_value(row.get(field), source)
-            previous_value = _localized_source_value(previous_row.get(field), source)
-            target_value = _localized_source_value(row.get(field), target)
-            if source_value == previous_value and target_value:
-                _set_localized_value(row, field, target, target_value)
-            else:
-                jobs.append((index, source_value))
-        translated_values, field_mode = _translate_wiki_values([value for _, value in jobs], target)
-        modes.append(field_mode)
-        for offset, (index, fallback) in enumerate(jobs):
-            if index < len(rows) and isinstance(rows[index], dict):
-                _set_localized_value(rows[index], field, target, translated_values[offset] if offset < len(translated_values) else fallback)
-    return modes
-
-
-def _auto_translate_wiki_data(data: dict, source_lang: str, previous_data: dict | None = None) -> tuple[dict, list[str]]:
-    source = _normalize_lang_tag(source_lang)
-    translated_data = copy.deepcopy(data)
-    guides = translated_data.get("guides") if isinstance(translated_data.get("guides"), dict) else {}
-    labels = translated_data.get("labels") if isinstance(translated_data.get("labels"), dict) else {}
-    topics = translated_data.get("topics") if isinstance(translated_data.get("topics"), dict) else {}
-    menu_labels = translated_data.get("menuLabels") if isinstance(translated_data.get("menuLabels"), dict) else {}
-    faq = translated_data.get("faq") if isinstance(translated_data.get("faq"), dict) else {}
-    tools = translated_data.get("tools") if isinstance(translated_data.get("tools"), list) else []
-    commands = translated_data.get("commands") if isinstance(translated_data.get("commands"), list) else []
-    command_showcase = translated_data.get("commandShowcase") if isinstance(translated_data.get("commandShowcase"), dict) else {}
-    sbt_items = translated_data.get("sbtItems") if isinstance(translated_data.get("sbtItems"), list) else []
-    previous = previous_data if isinstance(previous_data, dict) else {}
-    previous_guides = previous.get("guides") if isinstance(previous.get("guides"), dict) else {}
-    previous_labels = previous.get("labels") if isinstance(previous.get("labels"), dict) else {}
-    previous_topics = previous.get("topics") if isinstance(previous.get("topics"), dict) else {}
-    previous_menu_labels = previous.get("menuLabels") if isinstance(previous.get("menuLabels"), dict) else {}
-    previous_faq = previous.get("faq") if isinstance(previous.get("faq"), dict) else {}
-    previous_tools = previous.get("tools") if isinstance(previous.get("tools"), list) else []
-    previous_commands = previous.get("commands") if isinstance(previous.get("commands"), list) else []
-    previous_command_showcase = previous.get("commandShowcase") if isinstance(previous.get("commandShowcase"), dict) else {}
-    previous_sbt_items = previous.get("sbtItems") if isinstance(previous.get("sbtItems"), list) else []
-    source_guide = guides.get(source)
-    if not isinstance(source_guide, dict):
-        raise ValueError(f"data.guides.{source} is required for translation")
-
-    modes: list[str] = []
-    source_labels = labels.get(source) if isinstance(labels.get(source), dict) else None
-    source_topics = topics.get(source) if isinstance(topics.get(source), list) else None
-    source_menu_labels = menu_labels.get(source) if isinstance(menu_labels.get(source), dict) else None
-    source_faq = faq.get(source) if isinstance(faq.get(source), list) else []
-    skip_section_keys = {"type", "topic", "image", "image_index", "imageUrl", "image_url", "layout"}
-    for target in _wiki_target_langs(source):
-        target_guide, guide_modes = _translate_wiki_clone(
-            source_guide,
-            target,
-            skip_section_keys,
-            previous_source=previous_guides.get(source),
-            current_target=guides.get(target),
-        )
-        guides[target] = target_guide
-        modes.extend(guide_modes)
-        if isinstance(source_labels, dict):
-            target_labels, label_modes = _translate_wiki_clone(
-                source_labels,
-                target,
-                previous_source=previous_labels.get(source),
-                current_target=labels.get(target),
-            )
-            labels[target] = target_labels
-            modes.extend(label_modes)
-        if isinstance(source_topics, list):
-            target_topics, topic_modes = _translate_wiki_clone(
-                source_topics,
-                target,
-                skip_keys={"id", "anchor", "icon"},
-                previous_source=previous_topics.get(source),
-                current_target=topics.get(target),
-            )
-            topics[target] = target_topics
-            modes.extend(topic_modes)
-        if isinstance(source_menu_labels, dict):
-            target_menu, menu_modes = _translate_wiki_clone(
-                source_menu_labels,
-                target,
-                skip_keys={"ids", "icon"},
-                previous_source=previous_menu_labels.get(source),
-                current_target=menu_labels.get(target),
-            )
-            menu_labels[target] = target_menu
-            modes.extend(menu_modes)
-        if isinstance(source_faq, list):
-            target_faq, faq_modes = _translate_wiki_clone(
-                source_faq,
-                target,
-                previous_source=previous_faq.get(source),
-                current_target=faq.get(target),
-            )
-            faq[target] = target_faq
-            modes.extend(faq_modes)
-        if tools:
-            name_jobs: list[tuple[int, str]] = []
-            label_jobs: list[tuple[int, str]] = []
-            for index, tool in enumerate(tools):
-                if not isinstance(tool, dict):
-                    continue
-                previous_tool = previous_tools[index] if index < len(previous_tools) and isinstance(previous_tools[index], dict) else {}
-                source_name = _localized_source_value(tool.get("name"), source)
-                previous_name = _localized_source_value(previous_tool.get("name"), source)
-                target_name = _localized_source_value(tool.get("name"), target)
-                if source_name == previous_name and target_name:
-                    _set_localized_value(tool, "name", target, target_name)
-                else:
-                    name_jobs.append((index, source_name))
-                source_label = _localized_source_value(tool.get("linkLabel"), source)
-                previous_label = _localized_source_value(previous_tool.get("linkLabel"), source)
-                target_label = _localized_source_value(tool.get("linkLabel"), target)
-                if source_label == previous_label and target_label:
-                    _set_localized_value(tool, "linkLabel", target, target_label)
-                else:
-                    label_jobs.append((index, source_label))
-            translated_names, name_mode = _translate_wiki_values([value for _, value in name_jobs], target)
-            translated_labels, label_mode = _translate_wiki_values([value for _, value in label_jobs], target)
-            modes.extend([name_mode, label_mode])
-            for offset, (index, fallback) in enumerate(name_jobs):
-                if index < len(tools) and isinstance(tools[index], dict):
-                    _set_localized_value(tools[index], "name", target, translated_names[offset] if offset < len(translated_names) else fallback)
-            for offset, (index, fallback) in enumerate(label_jobs):
-                if index < len(tools) and isinstance(tools[index], dict):
-                    _set_localized_value(tools[index], "linkLabel", target, translated_labels[offset] if offset < len(translated_labels) else fallback)
-        if commands:
-            modes.extend(_auto_translate_localized_rows(commands, previous_commands, source, target, ["name", "desc", "meta"]))
-        showcase_images = command_showcase.get("images") if isinstance(command_showcase.get("images"), list) else []
-        previous_showcase_images = previous_command_showcase.get("images") if isinstance(previous_command_showcase.get("images"), list) else []
-        if showcase_images:
-            modes.extend(_auto_translate_localized_rows(showcase_images, previous_showcase_images, source, target, ["caption"]))
-        if sbt_items:
-            modes.extend(_auto_translate_localized_rows(sbt_items, previous_sbt_items, source, target, ["name", "requirement", "badge"]))
-
-    translated_data["guides"] = guides
-    translated_data["labels"] = labels
-    translated_data["topics"] = topics
-    translated_data["menuLabels"] = menu_labels
-    translated_data["faq"] = faq
-    translated_data["tools"] = tools
-    translated_data["commands"] = commands
-    translated_data["commandShowcase"] = command_showcase
-    translated_data["sbtItems"] = sbt_items
-    return translated_data, sorted(set(mode for mode in modes if mode and mode != "empty"))
-
-
-def _localized_source_value(value: object, source_lang: str) -> str:
-    if isinstance(value, dict):
-        return str(value.get(source_lang) or value.get("zh-Hant") or value.get("en") or "")
-    return str(value or "")
-
-
-def _merge_localized_source_field(latest_value: object, draft_value: object, source_lang: str) -> dict:
-    merged = copy.deepcopy(latest_value) if isinstance(latest_value, dict) else {}
-    merged[source_lang] = _localized_source_value(draft_value, source_lang)
-    return merged
-
-
-def _merge_source_language_map(latest: dict, draft: dict, key: str, source: str) -> None:
-    latest_map = latest.get(key) if isinstance(latest.get(key), dict) else {}
-    draft_map = draft.get(key) if isinstance(draft.get(key), dict) else {}
-    merged = dict(latest_map)
-    if source in draft_map:
-        merged[source] = copy.deepcopy(draft_map[source])
-    latest[key] = merged
-
-
-def _merge_localized_row_list(
-    latest_rows: list,
-    draft_rows: list,
-    source: str,
-    fields: list[str],
-) -> list[dict]:
-    merged_rows: list[dict] = []
-    for index, draft_row in enumerate(draft_rows):
-        if not isinstance(draft_row, dict):
-            continue
-        latest_row = latest_rows[index] if index < len(latest_rows) and isinstance(latest_rows[index], dict) else {}
-        merged_row = copy.deepcopy(draft_row)
-        for field in fields:
-            merged_row[field] = _merge_localized_source_field(latest_row.get(field), draft_row.get(field), source)
-        merged_rows.append(merged_row)
-    return merged_rows
-
-
-def _merge_wiki_source_language(latest_data: object, draft_data: dict, source_lang: str) -> dict:
-    """Apply only the creator's current source language onto the latest Wiki.
-
-    The browser still submits a full draft because it is editing a rich page,
-    but the server must not trust stale sibling translations from that draft.
-    """
-
-    source = _normalize_lang_tag(source_lang)
-    latest = copy.deepcopy(latest_data) if isinstance(latest_data, dict) else {}
-    draft = copy.deepcopy(draft_data)
-
-    latest_guides = latest.get("guides") if isinstance(latest.get("guides"), dict) else {}
-    draft_guides = draft.get("guides") if isinstance(draft.get("guides"), dict) else {}
-    source_guide = draft_guides.get(source)
-    if not isinstance(source_guide, dict):
-        raise ValueError(f"data.guides.{source} is required for source language save")
-    latest["guides"] = dict(latest_guides)
-    latest["guides"][source] = source_guide
-
-    for key in ["labels", "topics", "menuLabels"]:
-        _merge_source_language_map(latest, draft, key, source)
-    if isinstance(draft.get("images"), list):
-        latest["images"] = copy.deepcopy(draft["images"])
-
-    latest_faq = latest.get("faq") if isinstance(latest.get("faq"), dict) else {}
-    draft_faq = draft.get("faq") if isinstance(draft.get("faq"), dict) else {}
-    latest["faq"] = dict(latest_faq)
-    if isinstance(draft_faq.get(source), list):
-        latest["faq"][source] = copy.deepcopy(draft_faq[source])
-
-    latest_tools = latest.get("tools") if isinstance(latest.get("tools"), list) else []
-    draft_tools = draft.get("tools") if isinstance(draft.get("tools"), list) else []
-    latest["tools"] = _merge_localized_row_list(latest_tools, draft_tools, source, ["name", "linkLabel"])
-
-    if isinstance(draft.get("commands"), list):
-        latest_commands = latest.get("commands") if isinstance(latest.get("commands"), list) else []
-        latest["commands"] = _merge_localized_row_list(latest_commands, draft["commands"], source, ["name", "desc", "meta"])
-
-    if isinstance(draft.get("commandShowcase"), dict):
-        latest_showcase = latest.get("commandShowcase") if isinstance(latest.get("commandShowcase"), dict) else {}
-        draft_showcase = copy.deepcopy(draft["commandShowcase"])
-        latest_images = latest_showcase.get("images") if isinstance(latest_showcase.get("images"), list) else []
-        draft_images = draft_showcase.get("images") if isinstance(draft_showcase.get("images"), list) else []
-        draft_showcase["images"] = _merge_localized_row_list(latest_images, draft_images, source, ["caption"])
-        latest["commandShowcase"] = draft_showcase
-
-    latest_sbt = latest.get("sbtItems") if isinstance(latest.get("sbtItems"), list) else []
-    draft_sbt = draft.get("sbtItems") if isinstance(draft.get("sbtItems"), list) else []
-    merged_sbt = _merge_localized_row_list(latest_sbt, draft_sbt, source, ["name", "requirement", "badge"])
-    if merged_sbt:
-        latest["sbtItems"] = merged_sbt
-    return latest
-
-
-def _append_beginner_wiki_history(record: dict) -> None:
-    BEGINNER_WIKI_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with BEGINNER_WIKI_HISTORY_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-
-def _write_beginner_wiki_content(
-    data: dict,
-    user: str,
-    role: str,
-    source_lang: str = "",
-    base_hash: str = "",
-    auto_translate: bool = True,
-) -> dict:
-    clean_data = _validate_beginner_wiki_data(data)
-    if directus_wiki_enabled():
-        source = _normalize_lang_tag(source_lang or "zh-Hant")
-        should_translate = bool(auto_translate and DIRECTUS_WIKI_AUTO_TRANSLATE_ON_SAVE)
-        if should_translate and any(lang not in {"zh-Hant", "zh-Hans"} for lang in _wiki_target_langs(source)):
-            load_environment()
-            if not resolve_minimax_key():
-                raise RuntimeError("missing_minimax_api_key")
-        with BEGINNER_WIKI_LOCK:
-            current = read_directus_beginner_wiki(force=True)
-            current_meta = current.get("meta") if isinstance(current, dict) else {}
-            current_hash = str((current_meta or {}).get("content_hash") or "").strip()
-            expected_hash = str(base_hash or "").strip()
-            if expected_hash and current_hash and not hmac.compare_digest(expected_hash, current_hash):
-                raise WikiEditConflictError("Wiki 已被其他人更新，請重新載入後再儲存，避免覆蓋對方。")
-            merged_data = _merge_wiki_source_language(current.get("data"), clean_data, source)
-            translation_modes: list[str] = []
-            if should_translate:
-                merged_data, translation_modes = _auto_translate_wiki_data(
-                    merged_data,
-                    source,
-                    previous_data=current.get("data") if isinstance(current, dict) else None,
-                )
-            saved = write_directus_beginner_wiki(
-                merged_data,
-                user=user,
-                role=role,
-                source_lang=source,
-            )
-            saved_meta = saved.get("meta") if isinstance(saved, dict) else {}
-            if isinstance(saved_meta, dict):
-                saved_meta["auto_translate"] = bool(should_translate)
-                saved_meta["translation_modes"] = translation_modes
-                saved_meta["content_hash"] = wiki_data_hash(saved.get("data"))
-            return saved
-    now = _now_iso()
-    current = _read_beginner_wiki_content()
-    current_meta = current.get("meta") if isinstance(current, dict) else {}
-    current_hash = str((current_meta or {}).get("content_hash") or "").strip()
-    expected_hash = str(base_hash or "").strip()
-    if expected_hash and current_hash and not hmac.compare_digest(expected_hash, current_hash):
-        raise WikiEditConflictError("Wiki 已被其他人更新，請重新載入後再儲存，避免覆蓋對方。")
-    revision = int((current_meta or {}).get("revision") or 0) + 1
-    payload = {
-        "version": 1,
-        "revision": revision,
-        "updated_at": now,
-        "updated_by": str(user or "unknown"),
-        "updated_role": str(role or "creator"),
-        "content_hash": wiki_data_hash(clean_data),
-        "data": clean_data,
-    }
-    with BEGINNER_WIKI_LOCK:
-        BEGINNER_WIKI_CONTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = BEGINNER_WIKI_CONTENT_PATH.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_path, BEGINNER_WIKI_CONTENT_PATH)
-        _append_beginner_wiki_history(
-            {
-                "revision": revision,
-                "updated_at": now,
-                "updated_by": payload["updated_by"],
-                "updated_role": payload["updated_role"],
-                "languages": sorted(str(x) for x in clean_data.get("guides", {}).keys()),
-            }
-        )
-    return payload
+def _write_beginner_wiki_content(data: dict, user: str, role: str, source_lang: str = "",
+                                 base_hash: str = "", auto_translate: bool = True) -> dict:
+    return save_beginner_wiki(data, user=user, role=role, source_lang=source_lang,
+                              base_hash=base_hash, auto_translate=auto_translate)
 
 
 def _beginner_wiki_history(limit: int = 20) -> list[dict]:
-    safe_limit = max(1, min(int(limit or 20), 100))
-    if not BEGINNER_WIKI_HISTORY_PATH.exists():
-        return []
-    try:
-        lines = BEGINNER_WIKI_HISTORY_PATH.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return []
-    items: list[dict] = []
-    for line in reversed(lines[-safe_limit:]):
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
-    return items
+    from postgres_wiki_store import wiki_store
+    return wiki_store().history(limit)
 
 
 def _trim_jobs_unlocked(jobs: dict) -> None:
@@ -1410,12 +935,16 @@ def _clean_public_feedback_text(value: object, max_len: int) -> str:
 
 
 def _read_public_feedback_unlocked() -> dict:
-    if not PUBLIC_FEEDBACK_PATH.exists():
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        raw = snapshot_store().json("public_feedback.json", {})
+    elif not PUBLIC_FEEDBACK_PATH.exists():
         return {"updated_at": "", "items": []}
-    try:
-        raw = json.loads(PUBLIC_FEEDBACK_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {"updated_at": "", "items": []}
+    else:
+        try:
+            raw = json.loads(PUBLIC_FEEDBACK_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {"updated_at": "", "items": []}
     if not isinstance(raw, dict):
         return {"updated_at": "", "items": []}
     items = raw.get("items")
@@ -1500,6 +1029,11 @@ def _normalize_lang_tag(lang: str | None) -> str:
 
 
 def _read_feed_snapshot() -> dict:
+    if str(os.getenv("WEBSITE_STORAGE_BACKEND") or "filesystem").strip().lower() == "postgres":
+        from neon_feed_store import feed_store_from_environment
+
+        raw = feed_store_from_environment().read()
+        return _attach_x_source_metadata(_attach_knowledge_memory_stats(raw)) if raw else {}
     if not FEED_PATH.exists():
         return {}
     try:
@@ -1546,12 +1080,16 @@ def _public_feed_snapshot(feed: dict, *, hidden_event_duplicate_ids: set[str] | 
 
 
 def _read_knowledge_memory_stats() -> dict:
-    if not KNOWLEDGE_MEMORY_PATH.exists():
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        raw = snapshot_store().json("x_intel_knowledge_memory.json", {})
+    elif not KNOWLEDGE_MEMORY_PATH.exists():
         return {}
-    try:
-        raw = json.loads(KNOWLEDGE_MEMORY_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    else:
+        try:
+            raw = json.loads(KNOWLEDGE_MEMORY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
     if not isinstance(raw, dict):
         return {}
     stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
@@ -1596,61 +1134,8 @@ def _attach_knowledge_memory_stats(feed: dict) -> dict:
 
 
 def _attach_x_source_metadata(feed: dict) -> dict:
-    if not isinstance(feed, dict):
-        return feed
-    source_config = read_x_source_config()
-    account_projects = source_config.get("account_projects")
-    if not isinstance(account_projects, dict):
-        account_projects = {}
-    account_source_roles = source_config.get("account_categories")
-    if not isinstance(account_source_roles, dict):
-        account_source_roles = {}
-    roles_by_handle = {
-        normalize_account_handle(account): str(role or "other")
-        for account, role in account_source_roles.items()
-        if normalize_account_handle(account)
-    }
-    enriched = dict(feed)
-    enriched["account_projects"] = {
-        str(account): str(project_id)
-        for account, project_id in account_projects.items()
-        if str(account).strip() and str(project_id).strip()
-    }
-    enriched["account_source_roles"] = {
-        str(account): str(role)
-        for account, role in account_source_roles.items()
-        if str(account).strip() and str(role).strip()
-    }
-    cards = feed.get("cards") if isinstance(feed.get("cards"), list) else []
-    canonical_cards: list[dict] = []
-    for raw in cards:
-        if not isinstance(raw, dict) or is_retired_source_handle(raw.get("account")):
-            continue
-        row = dict(raw)
-        account = normalize_account_handle(row.get("account"))
-        source_role = roles_by_handle.get(account, row.get("source_role") or "other")
-        discord_match = re.search(r"discord\.com/channels/[^/]+/(\d+)/\d+", str(row.get("url") or ""), re.I)
-        if discord_match and str(discord_match.group(1) or "") in OFFICIAL_DISCORD_CHANNEL_IDS:
-            source_role = "official"
-        migrate_card_taxonomy_payload(row, source_role)
-        row.update(public_event_metadata(row))
-        canonical_cards.append(row)
-    enriched["cards"] = canonical_cards
-    enriched["total_cards"] = len(canonical_cards)
-    enriched["accounts"] = [
-        str(account)
-        for account in (feed.get("accounts") or [])
-        if str(account).strip() and not is_retired_source_handle(account)
-    ]
-    for key in ("source_stats", "source_quality"):
-        values = feed.get(key)
-        if isinstance(values, dict):
-            enriched[key] = {
-                account: value
-                for account, value in values.items()
-                if not is_retired_source_handle(account)
-            }
-    return enriched
+    from website_feed_source import canonical_feed_source
+    return canonical_feed_source(feed)
 
 
 def _feed_needs_taxonomy_reclassification() -> bool:
@@ -1729,6 +1214,9 @@ def _latest_card_time(cards: list[dict]) -> str:
 
 
 def _read_i18n_bundle_snapshot() -> dict:
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        return snapshot_store().json("x_intel_feed_i18n.json", {})
     if not I18N_FEED_PATH.exists():
         return {}
     try:
@@ -2834,13 +2322,33 @@ def _build_admin_status(limit: int = 10) -> dict:
     cards: list[dict] = cards_raw if isinstance(cards_raw, list) else []
     card_rows = [x for x in cards if isinstance(x, dict)]
     sync_state = _sync_state_snapshot()
+    from hub_snapshot_store import postgres_mode
+    if postgres_mode():
+        from hub_job_store import job_store
+        sync_jobs = [j for j in job_store().recent() if j['kind']=='sync']
+        if sync_jobs:
+            latest=sync_jobs[0]
+            sync_state.update(status=latest['status'],stage_label=latest.get('phase'),last_error=latest.get('error'),last_success_at=latest.get('finished_at') if latest['status']=='done' else '')
+        schedules = job_store().schedule_status()
+        schedule = next((r for r in schedules if r['name']=='source-sync'),{})
+        sync_state.update(schedule_enabled=schedule.get('enabled',False),next_run_at=schedule.get('next_run_at',''),schedule_interval_hours=schedule.get('interval_seconds',1800)/3600)
     jobs = _collect_jobs_snapshot(limit=limit)
+    job_control = None
+    if postgres_mode() and os.getenv('HUB_JOB_CONTROL') == 'vercel':
+        job_control = job_store().dashboard()
+        rows = job_control.pop('jobs')
+        jobs = {'items': rows, 'total': len(rows), 'counts': {key: sum(j['status']==key for j in rows) for key in ['queued','running','done','failed']}}
     content_refresh = _content_refresh_snapshot(limit=limit)
     i18n_state = i18n_state_snapshot()
     i18n_alignment = _compute_i18n_alignment(feed, i18n_state)
     memory_stats = feedback_memory_stats()
     backup_status = get_website_backup_status(DATA_ROOT)
     backup_state = _backup_state_snapshot()
+    if postgres_mode():
+        from hub_restore_points import latest_restore_point
+        point=latest_restore_point()
+        backup_status={'enabled':True,'provider':'neon','has_pat':False,'last_restore_point':point}
+        backup_state={'status':'ok' if point else 'idle','last_backup':point}
     community_metrics_state = _community_metrics_state_snapshot()
     community_metrics_payload = feed.get("community_metrics") if isinstance(feed.get("community_metrics"), dict) else {}
     x_source_config = read_x_source_config()
@@ -2848,6 +2356,9 @@ def _build_admin_status(limit: int = 10) -> dict:
 
     discord_info = feed.get("discord_monitor")
     discord_info = discord_info if isinstance(discord_info, dict) else {}
+    if str(os.getenv("DISCORD_MONITOR_ENABLED") or "").strip().lower() in {"0", "false", "off", "no"}:
+        # Imported scan history may predate the current source setting.
+        discord_info = {**discord_info, "enabled": False}
 
     generated_at = str(feed.get("generated_at") or "").strip()
     latest_source_at = _latest_card_time(card_rows)
@@ -2885,6 +2396,7 @@ def _build_admin_status(limit: int = 10) -> dict:
 
     return {
         "server_time": _now_iso(),
+        "job_control": job_control,
         "sync": {
             "status": str(sync_state.get("status") or "idle"),
             "started_at": str(sync_state.get("started_at") or ""),
@@ -3113,10 +2625,22 @@ def _enqueue_analyze_job(url: str) -> dict:
     return job
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=2)
+def _postgres_cover_names(_time_bucket: int) -> set[str]:
+    from hub_snapshot_store import snapshot_store
+    return {row['name'] for row in snapshot_store().manifest() if row['name'].startswith('generated_covers/')}
+
+
 def _generated_cover_exists(path: str) -> bool:
     raw_path = unquote(str(path or "").strip())
     if not raw_path.startswith("/data/generated_covers/"):
         return True
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        return raw_path.removeprefix("/data/") in _postgres_cover_names(int(time.monotonic() // 10))
     rel = raw_path.removeprefix("/data/").lstrip("/")
     root = (DATA_ROOT / "generated_covers").resolve()
     target = (DATA_ROOT / rel).resolve()
@@ -5501,7 +5025,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(limited_pack_sbt_source.snapshot())
             return
         if path == "/api/intel/feed":
-            if not FEED_PATH.exists():
+            postgres_feed = str(os.getenv("WEBSITE_STORAGE_BACKEND") or "filesystem").strip().lower() == "postgres"
+            if not postgres_feed and not FEED_PATH.exists():
                 self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -5511,7 +5036,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 request_lang = "zh-Hant"
             try:
-                feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
+                if postgres_feed:
+                    from neon_feed_store import feed_store_from_environment
+
+                    feed = feed_store_from_environment().read()
+                    if feed is None:
+                        self._send_json({"ok": False, "error": "feed not found"}, status=HTTPStatus.NOT_FOUND)
+                        return
+                else:
+                    feed = json.loads(FEED_PATH.read_text(encoding="utf-8"))
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to read feed: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
@@ -5589,7 +5122,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/intel/translate-texts",
             "/api/intel/public-feedback",
             "/api/wiki/beginner",
-            "/api/wiki/directus/translate",
             "/api/card-scan/recognize",
             "/api/card-scan/recognize-cards",
         }:
@@ -5611,7 +5143,7 @@ class Handler(SimpleHTTPRequestHandler):
             )
         body = self._read_request_body(
             length,
-            max_bytes=CARD_SCAN_PROXY_MAX_BYTES if is_card_scan_path else None,
+            max_bytes=CARD_SCAN_PROXY_MAX_BYTES if is_card_scan_path else (2 * 1024 * 1024 if path == "/api/wiki/beginner" else None),
             upload_timeout=is_card_scan_path,
         )
         if body is None:
@@ -5632,6 +5164,10 @@ class Handler(SimpleHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8")) if body else {}
         except Exception:
             payload = {}
+
+        if path == "/api/wiki/beginner" and not isinstance(payload, dict):
+            self._send_json({"ok": False, "error": "Request must be an object"}, status=HTTPStatus.BAD_REQUEST)
+            return
 
         if path.startswith("/api/expo-profile/"):
             self._handle_profile_post(path, payload if isinstance(payload, dict) else {})
@@ -5797,8 +5333,10 @@ class Handler(SimpleHTTPRequestHandler):
                     base_hash=str(payload.get("base_hash") or payload.get("content_hash") or "").strip(),
                     auto_translate=auto_translate,
                 )
+                from hub_cache import flush_after_publication
+                cache_status = flush_after_publication()
                 if saved.get("meta") is not None:
-                    self._send_json({"ok": True, "wiki": with_section_routes(saved)})
+                    self._send_json({"ok": True, "wiki": with_section_routes(saved), "cache": cache_status})
                 else:
                     document = {"exists": True, "data": saved["data"], "meta": {key: saved[key] for key in ["version", "revision", "updated_at", "updated_by", "updated_role", "content_hash"] if key in saved}}
                     self._send_json({"ok": True, "wiki": with_section_routes(document)})
@@ -5808,47 +5346,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as exc:
                 self._send_json({"ok": False, "error": f"failed to save beginner wiki: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-
-        if path == "/api/wiki/directus/translate":
-            expected = str(os.getenv("DIRECTUS_WIKI_FLOW_SECRET") or "").strip()
-            provided = str(self.headers.get("X-Renaiss-Wiki-Secret") or payload.get("secret") or "").strip()
-            if not expected:
-                self._send_json({"ok": False, "error": "DIRECTUS_WIKI_FLOW_SECRET is not configured"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
-                return
-            if not provided or not hmac.compare_digest(provided, expected):
-                self._send_json({"ok": False, "error": "Unauthorized Directus flow"}, status=HTTPStatus.UNAUTHORIZED)
-                return
-            source_lang = _normalize_lang_tag(payload.get("source_lang") or payload.get("lang") or "zh-Hant")
-            raw_targets = payload.get("target_langs")
-            if isinstance(raw_targets, str):
-                target_langs = [part.strip() for part in raw_targets.split(",") if part.strip()]
-            elif isinstance(raw_targets, list):
-                target_langs = [str(part or "").strip() for part in raw_targets if str(part or "").strip()]
-            else:
-                target_langs = ["zh-Hans", "en", "ko"]
-            slug = str(payload.get("slug") or os.getenv("DIRECTUS_WIKI_SLUG") or "beginner").strip() or "beginner"
-            if any(_normalize_lang_tag(lang) not in {"zh-Hant", "zh-Hans"} for lang in target_langs):
-                load_environment()
-                if not resolve_minimax_key():
-                    self._send_json({"ok": False, "error": "missing_minimax_api_key"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
-                    return
-
-            def _wiki_translator(rows: list[str], lang: str) -> tuple[list[str], str]:
-                return translate_texts(rows, lang=_normalize_lang_tag(lang))
-
-            try:
-                result = translate_directus_beginner_wiki(
-                    source_lang=source_lang,
-                    target_langs=target_langs,
-                    translator=_wiki_translator,
-                    slug=slug,
-                )
-                self._send_json({"ok": True, "directus_wiki_translate": result})
-            except DirectusWikiError as exc:
-                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
-            except Exception as exc:
-                self._send_json({"ok": False, "error": f"failed to translate Directus wiki: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if not self._require_admin(path):
@@ -6191,7 +5688,7 @@ def main() -> int:
         "POST /api/intel/sync, POST /api/intel/analyze-url, POST /api/intel/pick, "
         "POST /api/intel/timeline, POST /api/intel/event-wall, POST /api/intel/sbt-fields, "
         "POST /api/intel/feedback, POST /api/intel/editorial, POST /api/intel/refresh-content, POST /api/intel/source-config, POST /api/intel/job-status, POST /api/intel/backup, POST /api/intel/restore, POST /api/intel/retranslate, POST /api/intel/agent, "
-        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/wiki/directus/translate, POST /api/card-scan/recognize, "
+        "POST /api/intel/translate-texts, GET/POST /api/intel/public-feedback, POST /api/card-scan/recognize, "
         "POST /api/card-scan/recognize-cards, "
         "GET /api/card-scan/snkr-history, GET /api/card-scan/renaiss-market, "
         "GET /api/card-profile/wallet-collection, GET /api/card-profile/catalog-search, GET /api/tcg-profile"

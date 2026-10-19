@@ -1,8 +1,10 @@
+import { completePipelineRequest, type PipelineEnvelope } from "@/lib/pipelineJob";
 import { intelApiUrl } from "@/lib/api";
 import { readJson } from "@/lib/jsonRequest";
 import type { BeginnerWikiDocument, Language, LegacyBeginnerData } from "@/types";
 
-interface WikiApiPayload {
+interface WikiApiPayload extends PipelineEnvelope {
+  cache?: { pending?: boolean };
   code?: string;
   error?: string;
   ok?: boolean;
@@ -24,12 +26,12 @@ function normalizeDocument(payload: WikiApiPayload): BeginnerWikiDocument {
   return {
     data: wiki.data,
     exists: true,
-    meta: wiki.meta && typeof wiki.meta === "object" ? wiki.meta : {},
+    meta: { ...(wiki.meta && typeof wiki.meta === "object" ? wiki.meta : {}), cache_pending: payload.cache?.pending === true },
   };
 }
 
 export async function readBeginnerWiki(signal?: AbortSignal): Promise<BeginnerWikiDocument> {
-  const payload = await readJson(intelApiUrl("/api/wiki/beginner"), { credentials: "include", signal }) as WikiApiPayload;
+  const payload = await readJson(intelApiUrl("/api/wiki/beginner"), { credentials: "omit", cache: "default", signal }) as WikiApiPayload;
   if (!payload || payload.ok === false) throw new Error(payload?.error || "wiki_request_failed");
   return normalizeDocument(payload);
 }
@@ -51,7 +53,8 @@ export async function saveBeginnerWiki(
       ...(baseHash ? { base_hash: baseHash } : {}),
     }),
   });
-  const payload = await response.json().catch(() => ({})) as WikiApiPayload;
+  const initial = await response.json().catch(() => ({})) as WikiApiPayload;
+  const payload = await completePipelineRequest(initial);
   if (response.status === 409 || payload.code === "wiki_conflict") {
     throw new WikiConflictError(payload.error || "Wiki 已被其他人更新，請重新載入後再儲存。");
   }

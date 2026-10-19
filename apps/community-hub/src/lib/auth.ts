@@ -2,6 +2,7 @@ import { intelApiUrl } from "@/lib/api";
 import { readJson } from "@/lib/jsonRequest";
 
 export interface HubAuthState {
+  password_login_available?: boolean;
   authenticated: boolean;
   mode: string;
   permissions: { admin: boolean; wiki_edit: boolean };
@@ -60,5 +61,15 @@ export async function logout(): Promise<HubAuthState> {
   });
   const payload = await response.json().catch(() => ({})) as Partial<HubAuthState> & { ok?: boolean; error?: string };
   if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
-  return normalizeAuth(payload);
+  return readAuthState();
+}
+
+export async function passwordLogin(username: string, password: string): Promise<HubAuthState> {
+  const response = await fetch(intelApiUrl("/api/auth/login"), {
+    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const payload = await response.json() as Partial<HubAuthState> & { error?: string };
+  if (!response.ok || !payload.authenticated) throw new Error(payload.error || "登入失敗");
+  return normalizeAuth({ ...payload, password_login_available: true });
 }

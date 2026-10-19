@@ -42,7 +42,7 @@ def wiki_section_routes(data: dict[str, Any]) -> dict[str, list[dict[str, str]]]
 
 
 def with_section_routes(document: dict[str, Any]) -> dict[str, Any]:
-    """Add derived routing metadata without mutating Directus's cached document."""
+    """Add derived routing metadata without mutating the stored publication."""
     if not document.get("exists") or not isinstance(document.get("data"), dict):
         return document
     return {**document, "meta": {**(document.get("meta") or {}),

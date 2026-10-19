@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ViewHeader } from "@/components/AppShell";
 import { ContentCard } from "@/components/ContentCard";
 import { Icon } from "@/components/Icon";
-import { readAdminStatus, readEditorialHistory, triggerIntelSync, updateTrackedAccount, type AdminStatus, type EditorialHistoryItem } from "@/lib/admin";
+import { readAdminStatus, readAdminJobProgress, readEditorialHistory, triggerIntelSync, updateTrackedAccount, type AdminStatus, type EditorialHistoryItem } from "@/lib/admin";
 import { formatUpdate } from "@/lib/feed";
 import { PROJECTS, projectIdForAccount, projectLabel, type ProjectId } from "@/lib/projects";
 import type { FeedCard, Language } from "@/types";
@@ -26,7 +26,7 @@ function needsReview(card: FeedCard): boolean {
 
 function statusText(value: unknown): string {
   const raw = String(value ?? "idle").toLowerCase();
-  return ({ idle: "待命", running: "處理中", queued: "排隊中", ok: "完成", failed: "失敗" } as Record<string, string>)[raw] ?? raw;
+  return ({ idle: "待命", running: "處理中", queued: "排隊中", done: "完成", ok: "完成", failed: "失敗" } as Record<string, string>)[raw] ?? raw;
 }
 
 function StatusMetric({ detail, label, value }: { detail: string; label: string; value: string }) {
@@ -36,6 +36,7 @@ function StatusMetric({ detail, label, value }: { detail: string; label: string;
 function useAdminStatus() {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [error, setError] = useState("");
+  const hadActive = useRef(false);
   const load = async () => {
     setError("");
     try { setStatus(await readAdminStatus()); }
@@ -43,9 +44,36 @@ function useAdminStatus() {
   };
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 5_000);
-    return () => window.clearInterval(timer);
   }, []);
+  const token = status?.job_control?.status_token;
+  useEffect(() => {
+    if (!token) return;
+    const controller = new AbortController();
+    let inFlight = false;
+    const refresh = async () => {
+      if (document.hidden || inFlight) return;
+      inFlight = true;
+      try {
+        const rows = await readAdminJobProgress(token, controller.signal);
+        const active = rows.some(j => ['queued','running'].includes(String(j.status)));
+        const completed = hadActive.current && !active;
+        hadActive.current = active;
+        setStatus(previous => {
+          if (!previous) return previous;
+          const latest = rows.find(j => j.kind === 'sync');
+          return { ...previous, jobs: { items: rows, total: rows.length }, sync: latest ? {
+            ...previous.sync, status: String(latest.status), stage_label: String(latest.phase || latest.message || ''),
+            last_error: String(latest.error || ''), last_success_at: latest.status === 'done' ? String(latest.finished_at) : previous.sync?.last_success_at,
+          } : previous.sync };
+        });
+        if (completed) await load();
+      } catch (reason) {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '工作進度讀取失敗');
+      } finally { inFlight = false; }
+    };
+    const timer = window.setInterval(() => { void refresh(); }, 5_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [token]);
   return { error, load, status };
 }
 
@@ -63,7 +91,9 @@ function StatusSection({ cards, onRefresh }: { cards: FeedCard[]; onRefresh: () 
   const isScanning = sync?.status === "running" && sync?.stage === "scan" && totalSources > 0;
   const syncDetail = isScanning
     ? `正在掃描第 ${Math.min(totalSources, doneSources + 1)}/${totalSources} 個來源${latestSource ? ` · ${latestSource}` : ""}`
-    : total
+    : ['queued','running'].includes(String(sync?.status))
+      ? String(sync?.stage_label || '等待背景工作')
+      : total
       ? `${done}/${total} 篇 · ${sync?.stage_label || "等待下一階段"}`
       : `上次完成 ${formatUpdate(sync?.last_success_at, "zh-Hant")}`;
   const i18nRows = status?.i18n?.lang_progress ?? {};

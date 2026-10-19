@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell, ViewHeader } from "@/components/AppShell";
 import { AdminToolsProvider } from "@/components/admin/AdminToolsContext";
+import { PilotLoginDialog } from "@/components/admin/PilotLoginDialog";
 import { EMPTY_AUTH_STATE, logout, readAuthState, renaissLoginUrl, type HubAuthState } from "@/lib/auth";
 import { intelApiUrl } from "@/lib/api";
 import { text } from "@/lib/copy";
@@ -9,6 +10,7 @@ import { FeedRequestError, readIntelFeed } from "@/lib/feedRequest";
 import { JsonRequestError } from "@/lib/jsonRequest";
 import { useLimitedPackSbt } from "@/lib/limitedPackSbt";
 import { useHubRoute } from "@/lib/routes";
+import { usePublicationRefresh } from "@/lib/usePublicationRefresh";
 import { readBeginnerWiki } from "@/lib/wiki";
 import { readAdminFeed } from "@/lib/admin";
 import type { BeginnerWikiDocument, HubView, IntelFeed, Language, PackLeaderboard, PackLeaderboardResponse } from "@/types";
@@ -57,12 +59,15 @@ export function CommunityHubApp() {
   const [recovering, setRecovering] = useState(false);
   const [sourceError, setSourceError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [publicationKey, setPublicationKey] = useState(0);
+  usePublicationRefresh(() => setPublicationKey(value => value + 1));
   const [translationRetries, setTranslationRetries] = useState(0);
   const [leaderboard, setLeaderboard] = useState<PackLeaderboard | null>(null);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState("");
   const [auth, setAuth] = useState<HubAuthState>(EMPTY_AUTH_STATE);
   const [authLoading, setAuthLoading] = useState(true);
+  const [pilotLoginOpen, setPilotLoginOpen] = useState(false);
   const [wiki, setWiki] = useState<BeginnerWikiDocument | null>(null);
   const [wikiLoading, setWikiLoading] = useState(false);
   const [wikiError, setWikiError] = useState("");
@@ -165,7 +170,7 @@ export function CommunityHubApp() {
       mounted = false;
       controller.abort();
     };
-  }, [lang, needsFeed, refreshKey]);
+  }, [lang, needsFeed, refreshKey, publicationKey]);
 
   useEffect(() => {
     if (!auth.permissions.admin) {
@@ -230,7 +235,7 @@ export function CommunityHubApp() {
       mounted = false;
       controller.abort();
     };
-  }, [route.view]);
+  }, [route.view, publicationKey]);
 
   useEffect(() => {
     if (!hasPendingTranslation || translationRetries >= 10) return;
@@ -250,7 +255,10 @@ export function CommunityHubApp() {
     if (route.view !== "article") articleBackView.current = route.view;
     navigate({ view: "article", article });
   }, [navigate, route.view]);
-  const startLogin = useCallback(() => window.location.assign(renaissLoginUrl()), []);
+  const startLogin = useCallback(() => {
+    if (auth.password_login_available) setPilotLoginOpen(true);
+    else window.location.assign(renaissLoginUrl());
+  }, [auth.password_login_available]);
   const endSession = useCallback(() => {
     setAuthLoading(true);
     void logout()
@@ -287,5 +295,5 @@ export function CommunityHubApp() {
     </section>;
   }
 
-  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={changeLanguage} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell></AdminToolsProvider>;
+  return <AdminToolsProvider enabled={auth.permissions.admin} onChanged={refresh}><AppShell auth={auth} authLoading={authLoading} environment={previewEnvironment} lang={lang} loading={loading} onLanguageChange={changeLanguage} onLogin={startLogin} onLogout={endSession} onNavigate={go} sourceState={sourceState} status={status} view={route.view}>{view}</AppShell>{pilotLoginOpen ? <PilotLoginDialog onClose={() => setPilotLoginOpen(false)} onAuthenticated={setAuth} /> : null}</AdminToolsProvider>;
 }

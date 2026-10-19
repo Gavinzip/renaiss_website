@@ -1,8 +1,9 @@
 (function () {
   "use strict";
 
-  const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
+  const DEFAULT_INTEL_API_BASE = window.location.origin;
   const INTEL_API_BASE = (() => {
+    if (window.location.hostname.endsWith(".vercel.app")) return window.location.origin;
     const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
     const search = new URLSearchParams(window.location.search || "");
     const fromQuery = normalize(search.get("intel_api_base") || "");
@@ -33,7 +34,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload || {}),
     });
-    const data = await response.json().catch(() => ({}));
+    const data = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
     if (!response.ok || !data?.ok) {
       throw new Error(data?.error || `HTTP ${response.status}`);
     }

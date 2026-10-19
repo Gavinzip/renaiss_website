@@ -231,6 +231,10 @@ def _safe_int(value: object, default: int = 0) -> int:
 
 
 def _read_feed_snapshot() -> dict:
+    from hub_snapshot_store import postgres_mode
+    if postgres_mode():
+        from neon_feed_store import feed_store_from_environment
+        return feed_store_from_environment().read() or {}
     if not FEED_PATH.exists():
         return {}
     try:
@@ -806,7 +810,7 @@ def _to_zh_hans(text: str) -> str:
     return str(text or "").translate(ZH_HANS_TRANS)
 
 
-def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str) -> list[str]:
+def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str, strict: bool = False) -> list[str]:
     if not texts:
         return []
     lang_name = _lang_prompt_name(lang)
@@ -822,11 +826,14 @@ def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str) -> 
     raw = minimax_chat(prompt, api_key)
     parsed = _parse_json_array(raw)
     if len(parsed) != len(texts):
+        if strict: raise RuntimeError('Translation item count mismatch')
         return list(texts)
+    if strict and any(not str(value or '').strip() or (lang in {'en','ko'} and _contains_cjk(texts[idx]) and str(value).strip()==texts[idx]) for idx,value in enumerate(parsed)):
+        raise RuntimeError('Translation returned missing or untranslated entries')
     return [str(x or "").strip() or texts[idx] for idx, x in enumerate(parsed)]
 
 
-def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
+def _translate_texts(texts: list[str], lang: str, strict: bool = False) -> tuple[list[str], str]:
     tag = _normalize_lang_tag(lang)
     rows = [str(x or "").replace("\n", " ").strip()[:TRANSLATE_MAX_CHARS] for x in (texts or [])]
     if tag == "zh-Hant":
@@ -859,6 +866,7 @@ def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
             return out, "cache"
 
     if not api_key:
+        if strict: raise RuntimeError('missing_minimax_api_key')
         return rows, "no-key"
 
     unique_texts: list[str] = []
@@ -874,8 +882,9 @@ def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
     for start in range(0, len(unique_texts), chunk_size):
         chunk = unique_texts[start:start + chunk_size]
         try:
-            translated = _translate_chunk_with_minimax(chunk, tag, api_key)
+            translated = _translate_chunk_with_minimax(chunk, tag, api_key, strict=strict)
         except Exception:
+            if strict: raise
             translated = list(chunk)
         for idx, original in enumerate(chunk):
             candidate = str(translated[idx] if idx < len(translated) else original).strip()
@@ -895,12 +904,29 @@ def _translate_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
         _flush_translation_cache_unlocked()
 
     final_rows = []
-    for text in rows:
+    for idx,text in enumerate(rows):
         if not text:
-            final_rows.append("")
-            continue
-        final_rows.append(translated_map.get(text, text))
+            final_rows.append(''); continue
+        final_rows.append(translated_map.get(text, out[idx]))
     return final_rows, "live"
+
+
+def translate_wiki_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
+    """Translate complete Wiki fields strictly, in any supported direction.
+
+    Feed fields are capped at 320 characters and Traditional Chinese is their
+    base language. Wiki editors support long fields and every source language.
+    """
+    if not texts:
+        return [], "empty"
+    load_environment()
+    api_key = resolve_minimax_key()
+    if not api_key:
+        raise RuntimeError("missing_minimax_api_key")
+    out = []
+    for start in range(0, len(texts), 3):
+        out.extend(_translate_chunk_with_minimax(texts[start:start + 3], lang, api_key, strict=True))
+    return out, "live"
 
 
 def _is_feed_translatable_text(key: str, text: str) -> bool:
@@ -2340,6 +2366,9 @@ def _write_i18n_feed_bundle(bundle: dict[str, object]) -> None:
 
 
 def _load_i18n_feed_bundle() -> dict[str, object]:
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        return snapshot_store().json("x_intel_feed_i18n.json", {})
     if not I18N_FEED_PATH.exists():
         return {}
     try:
@@ -2852,6 +2881,11 @@ def _build_i18n_feed_bundle_async(
     force: bool = False,
     target_langs: list[str] | tuple[str, ...] | None = None,
 ) -> None:
+    from hub_snapshot_store import postgres_mode
+    if postgres_mode():
+        # HTTP functions only read published state. Translation is committed by
+        # the durable worker together with the corresponding feed update.
+        return
     if not isinstance(feed, dict):
         return
     src_generated = str(feed.get("generated_at") or "").strip()
@@ -3008,7 +3042,7 @@ def _build_i18n_feed_bundle_async(
     Thread(target=_worker, daemon=True).start()
 
 
-def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str, object]:
+def _localized_feed_from_bundle(feed: dict[str, object], lang: str, *, allow_rebuild: bool = True) -> dict[str, object]:
     tag = _normalize_lang_tag(lang)
     if tag == "zh-Hant":
         out = copy.deepcopy(feed)
@@ -3091,7 +3125,8 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     bundle = _load_i18n_feed_bundle()
     src_content_hash = _feed_i18n_source_content_hash(feed)
     if not _bundle_matches_feed_source(bundle, src_content_hash):
-        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        if allow_rebuild:
+            _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _best_effort_partial_response("bundle_missing_or_outdated")
 
     langs = bundle.get("langs") if isinstance(bundle.get("langs"), dict) else {}
@@ -3103,7 +3138,8 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     coverage = float(qa_for_tag.get("coverage") or 0.0) if isinstance(qa_for_tag, dict) else 0.0
     acceptable = tag in {"zh-Hant", "zh-Hans"} or coverage >= I18N_MIN_ACCEPTABLE_COVERAGE
     if not isinstance(localized, dict):
-        _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
+        if allow_rebuild:
+            _build_i18n_feed_bundle_async(feed, force=False, target_langs=[tag])
         return _best_effort_partial_response("lang_not_ready")
 
     localized_mapping = _mapping_from_localized_feed(feed, localized)
@@ -3175,7 +3211,8 @@ def _localized_feed_from_bundle(feed: dict[str, object], lang: str) -> dict[str,
     }
     qa_with_cards = dict(qa_for_tag or {})
     qa_with_cards["card_state"] = card_state
-    _maybe_resume_pending_i18n_lang(feed, tag, qa_with_cards)
+    if allow_rebuild:
+        _maybe_resume_pending_i18n_lang(feed, tag, qa_with_cards)
     out["_i18n"] = {
         "mode": (
             "pretranslated"

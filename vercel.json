@@ -1,0 +1,136 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "python3 scripts/stamp_client_release.py",
+  "outputDirectory": "website",
+  "regions": [
+    "sin1"
+  ],
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "scripts/**",
+      "excludeFiles": "{apps/**,frontend_chain/**,docs/**,.git/**}",
+      "maxDuration": 300
+    },
+    "api/public_origin.py": {
+      "includeFiles": "scripts/**",
+      "excludeFiles": "{apps/**,frontend_chain/**,docs/**,.git/**}",
+      "maxDuration": 60
+    },
+    "api/run_jobs.py": {
+      "includeFiles": "scripts/**",
+      "excludeFiles": "{apps/**,frontend_chain/**,docs/**,.git/**}",
+      "maxDuration": 1800
+    },
+    "api/runtime.mjs": {
+      "maxDuration": 1800
+    },
+    "api/public_version.mjs": {
+      "maxDuration": 60
+    },
+    "api/job_control.mjs": {
+      "maxDuration": 60
+    },
+    "api/job_status.mjs": {
+      "maxDuration": 60
+    },
+    "api/queue_consumer.mjs": {
+      "maxDuration": 1800,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "hub-mutations-v1",
+          "maxConcurrency": 1,
+          "maxDeliveries": 3,
+          "retryAfterSeconds": 60
+        }
+      ]
+    },
+    "api/agent_consumer.mjs": {
+      "maxDuration": 1800,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "hub-agent-v1",
+          "maxConcurrency": 2,
+          "maxDeliveries": 3,
+          "retryAfterSeconds": 60
+        }
+      ]
+    },
+    "api/run_agent.py": {
+      "includeFiles": "scripts/**",
+      "excludeFiles": "{apps/**,frontend_chain/**,docs/**,.git/**}",
+      "maxDuration": 1800
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/job-control",
+      "dest": "/api/job_control.mjs"
+    },
+    {
+      "src": "/api/intel/job-status",
+      "dest": "/api/job_status.mjs"
+    },
+    {
+      "src": "/community-hub/assets/(.*)\\.(js|css)",
+      "headers": {
+        "Cache-Control": "public, max-age=31536000, immutable"
+      },
+      "continue": true
+    },
+    {
+      "src": "/api/public/version",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "dest": "/api/public_version.mjs"
+    },
+    {
+      "src": "/api/internal/public-version",
+      "dest": "/api/public_origin.py"
+    },
+    {
+      "src": "/api/(intel/feed|wiki/beginner)",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "dest": "/api/public_origin.py"
+    },
+    {
+      "src": "/api/runtime",
+      "dest": "/api/runtime.mjs"
+    },
+    {
+      "src": "/api/run_agent",
+      "dest": "/api/run_agent.py"
+    },
+    {
+      "src": "/api/run_jobs",
+      "dest": "/api/run_jobs.py"
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py",
+      "headers": {
+        "Cache-Control": "no-store"
+      }
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/runtime",
+      "schedule": "*/30 * * * *"
+    }
+  ]
+}

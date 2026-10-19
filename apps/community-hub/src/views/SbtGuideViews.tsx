@@ -245,6 +245,7 @@ function GuideArticles({ cards, lang, onOpenArticle }: Pick<GuideViewProps, "car
 export function GuideView({ auth, cards, lang, onOpenArticle, onTopicChange, onWikiChange, sectionId, topicId, wiki, wikiError, wikiLoading }: GuideViewProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<LegacyBeginnerData | null>(null);
+  const [draftBaseHash, setDraftBaseHash] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const topic = guideTopics.find((item) => item.id === topicId) ?? guideTopics[0];
@@ -263,11 +264,13 @@ export function GuideView({ auth, cards, lang, onOpenArticle, onTopicChange, onW
     const routes = guideSectionRoutes(rows, lang, wiki.meta);
     rows.forEach((section, index) => { section.topic = routes[index].topic; });
     setDraft(next);
+    setDraftBaseHash(wiki.meta.content_hash || "");
     setMessage("");
     setEditing(true);
   };
   const cancelEditing = () => {
     setDraft(null);
+    setDraftBaseHash("");
     setMessage("");
     setEditing(false);
   };
@@ -283,10 +286,11 @@ export function GuideView({ auth, cards, lang, onOpenArticle, onTopicChange, onW
     setSaving(true);
     setMessage("正在儲存，翻譯 agent 會同步其他語言…");
     try {
-      const saved = await saveBeginnerWiki(draft, lang, wiki.meta.content_hash || "");
+      const saved = await saveBeginnerWiki(draft, lang, draftBaseHash);
       onWikiChange(saved);
       setDraft(cloneWikiData(saved.data));
-      setMessage(`已儲存並同步翻譯${saved.meta.translation_modes?.length ? `（${saved.meta.translation_modes.join(", ")}）` : ""}。`);
+      setDraftBaseHash(saved.meta.content_hash || "");
+      setMessage(saved.meta.cache_pending ? "內容已儲存；公開快取更新待重試，最晚下次半小時排程再處理。" : `已儲存並同步翻譯${saved.meta.translation_modes?.length ? `（${saved.meta.translation_modes.join(", ")}）` : ""}。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "儲存失敗");
     } finally {

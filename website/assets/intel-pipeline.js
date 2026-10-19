@@ -1,8 +1,9 @@
 (function () {
   "use strict";
 
-  const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
+  const DEFAULT_INTEL_API_BASE = window.location.origin;
   const INTEL_API_BASE = (() => {
+    if (window.location.hostname.endsWith(".vercel.app")) return window.location.origin;
     const normalize = (raw) => String(raw || "").trim().replace(/\/+$/g, "");
     const fromWindow = normalize(window.INTEL_API_BASE || window.__INTEL_API_BASE || "");
     const fromData = normalize(document.body?.dataset?.intelApiBase || "");

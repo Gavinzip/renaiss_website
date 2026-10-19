@@ -1,6 +1,6 @@
 (function initCommunityHub() {
   const API_BASE = "";
-  const INTEL_ORIGIN = "https://renaiss.zeabur.app";
+  const INTEL_ORIGIN = window.location.hostname.endsWith(".vercel.app") ? window.location.origin : "https://renaiss.zeabur.app";
   const OPEN_MONITOR_LEADERBOARD_URL = "https://open-monitor-rmrm.pages.dev/leaderboard";
   const LANGUAGE_STORAGE_KEY = "intel_ui_lang";
   const SUPPORTED_LANGUAGES = new Set(["zh-Hant", "zh-Hans", "en", "ko"]);
@@ -825,7 +825,7 @@
     let timeoutId = 0;
     try {
       timeoutId = window.setTimeout(() => state.controller.abort(), 45000);
-      const response = await fetch(`${API_BASE}/api/intel/feed?lang=${encodeURIComponent(state.lang)}`, { cache: "no-store", signal: state.controller.signal });
+      const response = await fetch(`${API_BASE}/api/intel/feed?lang=${encodeURIComponent(state.lang)}`, { cache: "default", credentials: "omit", signal: state.controller.signal });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload?.ok || !payload?.feed || !Array.isArray(payload.feed.cards)) throw new Error(payload?.error || `HTTP ${response.status}`);
       state.feed = payload.feed;

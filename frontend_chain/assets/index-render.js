@@ -228,12 +228,6 @@
     let intelDeferredCategoryQueue = [];
     let intelDeferredCategoryTimer = null;
     let uiLanguageApplyTimer = null;
-    let intelFeedPrefetchArmed = false;
-    let intelFeedPrefetchStarted = false;
-    let intelFeedPrefetchCancelled = false;
-    let intelFeedPrefetchActivityCleanup = null;
-    const intelFeedPrefetchTimers = new Set();
-    const intelFeedPrefetchControllers = new Set();
     const intelFeedLangInflight = new Map();
     let intelFeedRefreshSeq = 0;
     let intelLatestFeedGeneratedMs = 0;
@@ -714,7 +708,6 @@
             }
             setLangBuildStatus("");
             applyUiLanguage().catch(() => {});
-            scheduleIntelFeedPrefetchOnActivity();
           })
           .catch((error) => {
             if (normalizeUiLang(currentUiLang) !== next) return;
@@ -2310,7 +2303,7 @@
             timeout = window.setTimeout(() => controller.abort(), 12000);
             const cacheBust = (opts.cacheBust || adminMode) ? `&_refresh=${encodeURIComponent(String(Date.now()))}` : "";
             const response = await fetch(intelApiUrl(`/api/intel/feed?lang=${encodeURIComponent(requestLang)}${cacheBust}`), {
-              cache: "no-store",
+              cache: adminMode ? "no-store" : "no-cache",
               credentials: "include",
               signal: controller.signal,
             });
@@ -2403,111 +2396,6 @@
       }
     }
 
-    function cancelIntelFeedPrefetch() {
-      intelFeedPrefetchCancelled = true;
-      if (typeof intelFeedPrefetchActivityCleanup === "function") {
-        intelFeedPrefetchActivityCleanup();
-        intelFeedPrefetchActivityCleanup = null;
-      }
-      intelFeedPrefetchTimers.forEach((timerId) => window.clearTimeout(timerId));
-      intelFeedPrefetchTimers.clear();
-      intelFeedPrefetchControllers.forEach((controller) => controller.abort());
-      intelFeedPrefetchControllers.clear();
-    }
-
-    function scheduleIntelFeedPrefetchTimer(callback, delay) {
-      const timerId = window.setTimeout(() => {
-        intelFeedPrefetchTimers.delete(timerId);
-        callback();
-      }, Math.max(0, Number(delay) || 0));
-      intelFeedPrefetchTimers.add(timerId);
-    }
-
-    function prefetchIntelFeeds() {
-      if (location.protocol === "file:" || intelFeedPrefetchStarted || intelCanEdit()) return;
-      intelFeedPrefetchStarted = true;
-      intelFeedPrefetchCancelled = false;
-      const langs = INTEL_LANGS.filter((lang) => lang !== normalizeUiLang(currentUiLang));
-      langs.forEach((lang, index) => {
-        scheduleIntelFeedPrefetchTimer(() => {
-          if (intelFeedPrefetchCancelled || intelCanEdit() || document.visibilityState === "hidden") return;
-          if (isUsableIntelFeed(intelFeedLangCache.get(lang))) return;
-          const controller = new AbortController();
-          intelFeedPrefetchControllers.add(controller);
-          fetchIntelFeed(lang, { allowSnapshot: false, signal: controller.signal })
-            .then((payload) => {
-              if (intelFeedPrefetchCancelled) return;
-              const mode = String(payload?._i18n?.mode || "");
-              if (isUsableIntelFeed(payload) && mode !== "building") {
-                intelFeedLangCache.set(lang, payload);
-                saveIntelFeedSnapshot(lang, payload);
-              }
-            })
-            .catch(() => {})
-            .finally(() => {
-              intelFeedPrefetchControllers.delete(controller);
-            });
-        }, 1200 + index * 1400);
-      });
-    }
-
-    function scheduleIntelFeedPrefetchOnActivity() {
-      if (location.protocol === "file:" || intelFeedPrefetchArmed || intelFeedPrefetchStarted || intelCanEdit()) return;
-      intelFeedPrefetchArmed = true;
-      const events = ["scroll", "keydown"];
-      let timeoutId = 0;
-      const cleanup = () => {
-        events.forEach((name) => window.removeEventListener(name, start));
-        if (timeoutId) {
-          window.clearTimeout(timeoutId);
-          timeoutId = 0;
-        }
-        if (intelFeedPrefetchActivityCleanup === cleanup) {
-          intelFeedPrefetchActivityCleanup = null;
-        }
-      };
-      const start = () => {
-        cleanup();
-        scheduleIdleTask(() => {
-          prefetchIntelFeeds();
-        });
-      };
-      events.forEach((name) => window.addEventListener(name, start, { once: true, passive: true }));
-      timeoutId = window.setTimeout(() => {
-        scheduleIdleTask(start);
-      }, 24000);
-      intelFeedPrefetchActivityCleanup = cleanup;
-    }
-
-    function installIntelBackgroundPrefetchCancelHook() {
-      const previousCancelBackgroundPrefetch = window.__cancelBackgroundPrefetch;
-      window.__cancelIntelFeedPrefetch = cancelIntelFeedPrefetch;
-      window.__cancelBackgroundPrefetch = () => {
-        if (typeof previousCancelBackgroundPrefetch === "function") {
-          try {
-            previousCancelBackgroundPrefetch();
-          } catch (_error) {}
-        }
-        cancelIntelFeedPrefetch();
-      };
-      document.addEventListener("click", (event) => {
-        const anchor = event.target?.closest?.("a[href]");
-        if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
-        let url = null;
-        try {
-          url = new URL(anchor.getAttribute("href") || "", document.baseURI);
-        } catch (_error) {
-          return;
-        }
-        if (url.origin === location.origin) {
-          cancelIntelFeedPrefetch();
-        }
-      }, { capture: true });
-      window.addEventListener("pagehide", cancelIntelFeedPrefetch);
-    }
-
-    installIntelBackgroundPrefetchCancelHook();
-
     async function attemptIntelAutoRepair(error) {
       const cached = readCachedIntelFeed(currentUiLang, true, { allowAdminSnapshot: true });
       if (cached && isUsableIntelFeed(cached)) {
@@ -2531,7 +2419,6 @@
         renderIntelFeed(payload);
         scheduleLangFeedRefresh(payload);
         setIntelMessage(uiLabel("feedAutoRepaired"), "ok");
-        scheduleIntelFeedPrefetchOnActivity();
         return true;
       } catch (_repairError) {
         if (!cached) {
@@ -2561,7 +2448,7 @@
           body: JSON.stringify(body || {}),
           signal: controller.signal,
         });
-        const data = await response.json().catch(() => ({}));
+        const data = await window.renaissCompletePipelineRequest(await response.json().catch(() => ({})));
         if (!response.ok || !data?.ok) {
           if (response.status === 401) {
             handleIntelUnauthorized();
@@ -3036,7 +2923,7 @@
       const current = String(jobId || "").trim();
       if (!current) return;
       try {
-        const data = await postIntel("/api/intel/job-status", { id: current });
+        const data = await postIntel("/api/intel/job-status", { id: current, status_token: localStorage.getItem(INTEL_ANALYZE_JOB_KEY + ":status_token") || "" });
         const job = data?.job || {};
         const status = String(job?.status || "").trim().toLowerCase();
         if (status === "done") {
@@ -3387,7 +3274,6 @@
       }
       try {
         await refreshIntelFeedForCurrentLang();
-        scheduleIntelFeedPrefetchOnActivity();
       } catch (error) {
         await attemptIntelAutoRepair(error);
       }

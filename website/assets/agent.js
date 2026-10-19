@@ -234,22 +234,27 @@
 
   async function postJson(path, body) {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 75000);
-    try {
-      const response = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body || {}),
-        signal: controller.signal,
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data?.ok === false) {
-        throw new Error(String(data?.error || `HTTP ${response.status}`));
-      }
+    const timer = window.setTimeout(() => controller.abort(), 15*60*1000);
+    async function request(url,payload) {
+      const response=await fetch(url,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload || {}),signal:controller.signal});
+      const data=await response.json();
+      if (!response.ok || data?.ok===false) throw new Error(String(data?.error || `HTTP ${response.status}`));
       return data;
-    } finally {
-      window.clearTimeout(timer);
     }
+    try {
+      const data=await request(path,body);
+      if (!data.job?.id) return data;
+      let job=data.job;
+      while (!controller.signal.aborted) {
+        if (job.status==='failed') throw new Error(job.error || job.message || '背景工作失敗');
+        if (job.status==='done') return { ...data, ...job.response };
+        await new Promise(resolve=>window.setTimeout(resolve,5000));
+        const result=await request('/api/intel/job-status',{id:job.id,status_token:job.status_token});
+        if (!result.job) throw new Error('工作查詢失敗');
+        job=result.job;
+      }
+      throw new Error('背景工作查詢逾時');
+    } finally { window.clearTimeout(timer); }
   }
 
   async function getJson(path, timeoutMs = 12000) {
@@ -257,8 +262,8 @@
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(path, {
-        credentials: "include",
-        cache: "no-store",
+        credentials: path.startsWith("/api/intel/feed?") ? "omit" : "include",
+        cache: path.startsWith("/api/intel/feed?") ? "default" : "no-store",
         signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));

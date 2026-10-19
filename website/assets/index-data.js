@@ -260,7 +260,7 @@
       lastPayload: null,
     };
     let intelFeedbackModalResolver = null;
-    const DEFAULT_INTEL_API_BASE = "https://renaiss.zeabur.app";
+    const DEFAULT_INTEL_API_BASE = window.location.origin;
 
     function normalizeIntelApiBase(raw) {
       return String(raw || "").trim().replace(/\/+$/, "");
@@ -287,6 +287,7 @@
     }
 
     function detectIntelApiBase() {
+      if (window.location.hostname.endsWith(".vercel.app")) return window.location.origin;
       const isLocal = isLocalIntelPreviewHost(window.location?.hostname || "");
       try {
         const win = window || {};

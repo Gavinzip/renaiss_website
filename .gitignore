@@ -38,3 +38,6 @@ data/
 !apps/community-hub/src/data/legacy.ts
 
 website/data
+.vercel
+.env*
+.secrets/

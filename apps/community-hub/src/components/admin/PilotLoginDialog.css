@@ -1,0 +1,11 @@
+.community-hub-pilot-login { width: min(420px, calc(100vw - 32px)); border: 1px solid #d6dfe3; border-radius: 20px; padding: 24px; color: #183044; background: #fff; font: inherit; }
+.community-hub-pilot-login::backdrop { background: rgb(20 40 55 / 35%); }
+.community-hub-pilot-login form, .community-hub-pilot-login label { display: grid; gap: 10px; }
+.community-hub-pilot-login form { gap: 18px; }
+.community-hub-pilot-login header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.community-hub-pilot-login h2 { font-size: 20px; margin: 0; }
+.community-hub-pilot-login p { margin: 0; font-size: 14px; }
+.community-hub-pilot-login [role=alert] { color: #a12b36; }
+.community-hub-pilot-login input { min-width: 0; padding: 10px 12px; border: 1px solid #c9d5df; border-radius: 8px; font: inherit; }
+.community-hub-pilot-login button { padding: 10px 16px; border: 1px solid #c9d5df; border-radius: 10px; background: #eaf3fc; color: inherit; cursor: pointer; font: inherit; }
+.community-hub-pilot-login header button { display: grid; place-items: center; padding: 8px; }

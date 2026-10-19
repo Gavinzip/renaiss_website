@@ -110,6 +110,9 @@ def _embedding_cache_path() -> Path:
 
 
 def _load_json(path: Path, default: Any) -> Any:
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode() and path.is_relative_to(data_dir()):
+        return snapshot_store().json(path.relative_to(data_dir()).as_posix(),default)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:

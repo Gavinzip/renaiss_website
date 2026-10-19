@@ -1,3 +1,4 @@
+import { completePipelineRequest } from "@/lib/pipelineJob";
 import { intelApiUrl } from "@/lib/api";
 import { readJson } from "@/lib/jsonRequest";
 import type { ProjectId } from "@/lib/projects";
@@ -7,6 +8,7 @@ import { CARD_TYPES, ROUTING_TOPICS } from "@/lib/taxonomy";
 export { CARD_TYPES, ROUTING_TOPICS };
 
 export interface AdminStatus {
+  job_control?: { status_token: string };
   server_time?: string;
   sync?: {
     status?: string;
@@ -90,6 +92,7 @@ export interface EditorialHistoryItem {
 }
 
 interface JsonResponse {
+  job?: { id: string; status: string; status_token?: string; message?: string; error?: string; response?: Record<string,unknown> | null };
   error?: string;
   feed?: IntelFeed;
   history?: EditorialHistoryItem[];
@@ -117,7 +120,7 @@ async function requestJson(path: string, init?: RequestInit, signal?: AbortSigna
 }
 
 function post(path: string, body: Record<string, unknown>): Promise<JsonResponse> {
-  return requestJson(path, { method: "POST", body: JSON.stringify(body) });
+  return requestJson(path, { method: "POST", body: JSON.stringify(body) }).then(payload => completePipelineRequest(payload));
 }
 
 export function cardDraft(card: FeedCard): CardEditorialDraft {
@@ -139,6 +142,17 @@ export async function readAdminStatus(signal?: AbortSignal): Promise<AdminStatus
   const payload = await requestJson("/api/intel/admin-status?limit=12", undefined, signal);
   if (!payload.status) throw new Error("admin_status_missing");
   return payload.status;
+}
+
+export async function readAdminJobProgress(token: string, signal?: AbortSignal): Promise<Array<Record<string, unknown>>> {
+  const response = await fetch(intelApiUrl('/api/intel/job-status'), {
+    method: 'POST', cache: 'no-store', credentials: 'omit',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id: 'admin-jobs' }), signal,
+  });
+  const payload = await response.json() as { ok?: boolean; error?: string; jobs?: Array<Record<string,unknown>> };
+  if (!response.ok || !payload.ok || !Array.isArray(payload.jobs)) throw new Error(payload.error || '工作進度讀取失敗');
+  return payload.jobs;
 }
 
 export async function readAdminFeed(signal?: AbortSignal): Promise<IntelFeed> {
@@ -205,10 +219,36 @@ export async function updateTrackedAccount(action: "add" | "remove" | "set_categ
   await post("/api/intel/source-config", { action, account: value, ...(category ? { category } : {}), ...(projectId ? { project_id: projectId } : {}) });
 }
 
-export async function refreshCardContent(cardId: string): Promise<void> {
-  await post("/api/intel/refresh-content", { id: cardId });
+export async function refreshCardContent(cardId: string, onProgress?: (message: string) => void, signal?: AbortSignal): Promise<void> {
+  const submitted = await requestJson("/api/intel/refresh-content", { method: "POST", body: JSON.stringify({ id: cardId }) }, signal);
+  if (!submitted.job?.id) throw new Error("缺少背景工作編號，尚未確認分析完成。");
+  const started = Date.now();
+  while (!signal?.aborted && Date.now() - started < 30 * 60 * 1000) {
+    const poll = new AbortController();
+    const cancel = () => poll.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    const deadline = window.setTimeout(cancel, 20_000);
+    let response: JsonResponse;
+    try {
+      response = await requestJson("/api/intel/job-status", { method: "POST", body: JSON.stringify({ id: submitted.job.id }), headers: { Authorization: `Bearer ${submitted.job.status_token}` } }, poll.signal);
+    } catch (error) {
+      if (poll.signal.aborted && !signal?.aborted) throw new Error("查詢逾時，背景工作仍可能執行中，請重新整理後查看。");
+      throw error;
+    } finally {
+      window.clearTimeout(deadline);
+      signal?.removeEventListener("abort", cancel);
+    }
+    const job = response.job;
+    if (!job) throw new Error("無法讀取背景工作狀態");
+    if (job.status === "done") return;
+    if (job.status === "failed") throw new Error(job.error || job.message || "分析失敗");
+    onProgress?.(job.message || "背景分析進行中…");
+    await new Promise(resolve => window.setTimeout(resolve, 5000));
+  }
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  throw new Error("工作仍在背景執行，請從管理頁查看進度。");
 }
 
 export async function triggerIntelSync(): Promise<void> {
-  await post("/api/intel/sync", { background: true, days: 30 });
+  await requestJson("/api/intel/sync", { method:"POST",body:JSON.stringify({ background:true,days:30 }) });
 }

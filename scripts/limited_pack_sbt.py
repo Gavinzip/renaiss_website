@@ -171,6 +171,7 @@ class LimitedPackSbtSource:
         self._lock = Lock()
         self._refresh_lock = Lock()
         self._started = False
+        self._last_attempt_at = 0.0
         self._packs: list[dict] = []
         self._catalog: list[dict] = []
         self._catalog_at = 0.0
@@ -192,8 +193,11 @@ class LimitedPackSbtSource:
             self.refresh()
             wait.wait(POLL_SECONDS)
 
-    def refresh(self) -> None:
+    def refresh(self, *, if_due: bool = False) -> None:
         with self._refresh_lock:
+            if if_due and self._last_attempt_at and time.monotonic() - self._last_attempt_at < POLL_SECONDS:
+                return
+            self._last_attempt_at = time.monotonic()
             try:
                 packs = parse_packs(json.loads(self._read(PACK_API)))
                 packs_at = time.monotonic()

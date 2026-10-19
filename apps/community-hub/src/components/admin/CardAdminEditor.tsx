@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { ProductAssignmentPicker } from "@/components/admin/ProductAssignmentPicker";
 import { RecordResultEditor } from "@/components/admin/RecordResultEditor";
@@ -33,6 +33,8 @@ export function CardAdminEditor({ card, onChanged, onClose, sbtFocus = false }: 
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const activeRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => activeRequest.current?.abort(), []);
   const availableCardTypes = card.source_role === "official" ? CARD_TYPES : CARD_TYPES.filter((type) => type !== "product_progress");
   useEffect(() => setDraft(cardDraft(card)), [card]);
 
@@ -51,7 +53,8 @@ export function CardAdminEditor({ card, onChanged, onClose, sbtFocus = false }: 
     if (!window.confirm("重新分析這篇貼文？已儲存的人工欄位會保留。")) return;
     setRefreshing(true);
     setMessage("正在重新分類…");
-    try { await refreshCardContent(String(card.id || "")); setMessage("重新分類完成。"); onChanged(); }
+    const request = new AbortController(); activeRequest.current = request;
+    try { await refreshCardContent(String(card.id || ""), setMessage, request.signal); setMessage("重新分類完成。"); onChanged(); }
     catch (error) { setMessage(error instanceof Error ? error.message : "重新分類失敗"); }
     finally { setRefreshing(false); }
   };

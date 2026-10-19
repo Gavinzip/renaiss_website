@@ -1413,10 +1413,16 @@ def _append_editorial_audit(entry: dict[str, Any]) -> None:
 
 def read_editorial_audit(limit: int = 50) -> list[dict[str, Any]]:
     path = data_dir() / "x_intel_editorial_audit.jsonl"
-    if not path.exists():
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        raw = snapshot_store().read(path.name) or b''
+        text = raw.decode('utf-8')
+    elif not path.exists():
         return []
+    else:
+        text = path.read_text(encoding="utf-8")
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-max(1, min(int(limit or 50), 200)):]:
+    for line in text.splitlines()[-max(1, min(int(limit or 50), 200)):]:
         try:
             item = json.loads(line)
         except Exception:
@@ -3764,6 +3770,7 @@ def sync_accounts(
     window_days: int = DEFAULT_WINDOW_DAYS,
     max_posts_per_account: int = DEFAULT_MAX_POSTS_PER_ACCOUNT,
     progress_callback: Any | None = None,
+    strict_sources: bool = False,
 ) -> dict[str, Any]:
     load_environment()
     api_key = resolve_minimax_key()
@@ -3963,6 +3970,16 @@ def sync_accounts(
         found_cards=len(account_cards) + len(discord_cards),
         latest_source="",
     )
+
+    if strict_sources:
+        available_x = sum(bool(row.get('fresh_source_available')) or int(row.get('successful_status_fetches') or 0)>0 for row in account_scan_meta.values())
+        fresh_discord = sum(not row.get('error') for row in discord_collect_meta.values())
+        if available_x + fresh_discord == 0:
+            source_label = 'X 帳號列表、已知貼文' + ('及 Discord' if discord_cfg.get('enabled') else '')
+            raise RuntimeError('這輪' + source_label + '均未成功讀取；只保留既有資料，未執行後續 AI 批次。')
+        for account, row in account_scan_meta.items():
+            if not row.get('fresh_source_available'):
+                source_scan_errors.setdefault(account,[]).append('account_list_unavailable; refreshed known posts' if row.get('successful_status_fetches') else 'account_list_unavailable; preserved existing cache')
 
     existing_article_refresh_count = _merge_existing_article_refreshes(existing_cards, account_cards)
 
@@ -4514,7 +4531,7 @@ def sync_accounts(
     )
     payload["notes"] = {
         "fallback": "若某帳號無法公開抓取，系統會保留該帳號並等待後續可讀資料。",
-        "provider": "twitter-cli (若可用) / tweet-result / r.jina.ai / nitter-rss fallback / discord-rest(可選)",
+        "provider": "twitter-cli (若可用) / tweet-result / r.jina.ai / nitter-rss fallback" + (" / discord-rest" if discord_cfg.get("enabled") else ""),
         "twitter_cli_ready": twitter_cli_ready,
         "discord_monitor_enabled": bool(discord_cfg.get("enabled")),
     }

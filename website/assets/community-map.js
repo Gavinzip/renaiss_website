@@ -957,7 +957,7 @@
   async function loadPulse() {
     $("#pulse-data-status").textContent = "同步中 · 每小時更新 · 按讚+留言";
     try {
-      const response = await fetch("./api/intel/feed?lang=zh-Hant", { cache: "no-store" });
+      const response = await fetch("./api/intel/feed?lang=zh-Hant", { cache: "default", credentials: "omit" });
       if (!response.ok) throw new Error(`feed ${response.status}`);
       const payload = await response.json();
       const cards = normalizeCards(payload);

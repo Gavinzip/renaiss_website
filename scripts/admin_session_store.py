@@ -17,6 +17,18 @@ def _token_key(value: str) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
+def create_auth_state_store(path: Path):
+    backend = str(os.getenv("WEBSITE_STORAGE_BACKEND") or "filesystem").strip().lower()
+    if backend == "postgres":
+        from neon_feed_store import website_database_url
+        from postgres_auth_state_store import PostgresAuthStateStore
+
+        return PostgresAuthStateStore(website_database_url())
+    if backend != "filesystem":
+        raise ValueError(f"Unknown WEBSITE_STORAGE_BACKEND: {backend}")
+    return AuthStateStore(path)
+
+
 class AuthStateStore:
     def __init__(self, path: Path):
         self.path = Path(path)

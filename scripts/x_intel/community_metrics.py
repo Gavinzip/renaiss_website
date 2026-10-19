@@ -40,6 +40,9 @@ def _safe_int(value: object, default: int = 0) -> int:
 
 
 def _read_json(path: Path, default: Any) -> Any:
+    from hub_snapshot_store import postgres_mode, snapshot_store
+    if postgres_mode():
+        return snapshot_store().json(path.name,default)
     if not path.exists():
         return default
     try:
