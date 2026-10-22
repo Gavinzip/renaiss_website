@@ -1,6 +1,10 @@
+import { logNodeRuntimeVersion } from '../lib/node-runtime-version.mjs';
+
 import { mayReadJob } from '../lib/hubControlAuth.mjs';
 import { readState, publicJob } from '../lib/hubJobState.mjs';
 import { detailedJob } from '../lib/hubJobResults.mjs';
+
+logNodeRuntimeVersion('hub/api/job_status');
 
 export default { async fetch(request) {
   const headers = { 'Cache-Control': 'no-store' };

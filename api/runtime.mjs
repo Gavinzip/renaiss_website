@@ -1,3 +1,5 @@
+import { logNodeRuntimeVersion } from '../lib/node-runtime-version.mjs';
+
 import { timingSafeEqual } from 'node:crypto';
 import { requestBatch } from '../lib/hubRuntimeTransport.mjs';
 import { dangerouslyDeleteByTag, waitUntil, getCache } from '@vercel/functions';
@@ -41,6 +43,8 @@ async function warmPublications(tags, expected = {}) {
     if (!ready) throw new Error(`Cache publication did not reach committed revision: ${target.kind}`);
   }
 }
+
+logNodeRuntimeVersion('hub/api/runtime');
 
 export default {
   async fetch(request) {

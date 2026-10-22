@@ -1,5 +1,9 @@
+import { logNodeRuntimeVersion } from '../lib/node-runtime-version.mjs';
+
 import { randomUUID, createHash } from 'node:crypto';
 import { getCache } from '@vercel/functions';
+
+logNodeRuntimeVersion('hub/api/public_version');
 
 /** The runtime cache also protects Neon when a client forces CDN revalidation. */
 export default {
