@@ -11,14 +11,14 @@ def run_pipeline(job: dict, root: Path, progress) -> dict:
         from hub_agent_pipeline import answer_job
         return answer_job(job, progress)
     from x_intel import feedback_feed as legacy
-    from x_intel_core import build_card_from_url, resolve_minimax_key
+    from x_intel_core import build_card_from_url, resolve_text_ai_key
     from website_i18n_runtime import configure_i18n_runtime, rebuild_i18n_bundle_sync, feed_i18n_source_content_hash
     from website_feed_source import canonical_feed_source
 
     feed_path = root / "x_intel_feed.json"
     configure_i18n_runtime(root, feed_path)
     before = json.loads(feed_path.read_bytes())
-    if job['kind'] in {'sync','reanalyze','analyze_url'} and not resolve_minimax_key():
+    if job['kind'] in {'sync','reanalyze','analyze_url'} and not resolve_text_ai_key():
         raise RuntimeError('AI key is not configured; no substitute analysis will be published')
     response = None
     warnings = []
@@ -69,7 +69,7 @@ def run_pipeline(job: dict, root: Path, progress) -> dict:
         card = next(c for c in feed["cards"] if str(c.get("id")) == job["input"]["id"])
     elif job["kind"] == "analyze_url":
         progress("擷取原文並使用原 AI 分類器分析")
-        card_obj = build_card_from_url(job["input"]["url"], api_key=resolve_minimax_key())
+        card_obj = build_card_from_url(job["input"]["url"], api_key=resolve_text_ai_key())
         if str(card_obj.ai_status) != "ok":
             raise RuntimeError("AI analysis did not pass validation: " + str(card_obj.classification_error))
         card_obj.manual_pick = True

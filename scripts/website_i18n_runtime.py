@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
 
-from x_intel_core import load_environment, minimax_chat, resolve_minimax_key
+from x_intel_core import load_environment, text_ai_chat, resolve_text_ai_key
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / "data"
@@ -810,7 +810,7 @@ def _to_zh_hans(text: str) -> str:
     return str(text or "").translate(ZH_HANS_TRANS)
 
 
-def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str, strict: bool = False) -> list[str]:
+def _translate_chunk_with_text_ai(texts: list[str], lang: str, api_key: str, strict: bool = False) -> list[str]:
     if not texts:
         return []
     lang_name = _lang_prompt_name(lang)
@@ -823,7 +823,7 @@ def _translate_chunk_with_minimax(texts: list[str], lang: str, api_key: str, str
         "4) 只輸出 JSON 字串陣列。\n\n"
         f"source={json.dumps(texts, ensure_ascii=False)}"
     )
-    raw = minimax_chat(prompt, api_key)
+    raw = text_ai_chat(prompt, api_key)
     parsed = _parse_json_array(raw)
     if len(parsed) != len(texts):
         if strict: raise RuntimeError('Translation item count mismatch')
@@ -842,7 +842,7 @@ def _translate_texts(texts: list[str], lang: str, strict: bool = False) -> tuple
         return [_to_zh_hans(x) for x in rows], "local"
 
     load_environment()
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
 
     with TRANSLATION_LOCK:
         _load_translation_cache_unlocked()
@@ -866,7 +866,7 @@ def _translate_texts(texts: list[str], lang: str, strict: bool = False) -> tuple
             return out, "cache"
 
     if not api_key:
-        if strict: raise RuntimeError('missing_minimax_api_key')
+        if strict: raise RuntimeError('missing_openai_api_key')
         return rows, "no-key"
 
     unique_texts: list[str] = []
@@ -882,7 +882,7 @@ def _translate_texts(texts: list[str], lang: str, strict: bool = False) -> tuple
     for start in range(0, len(unique_texts), chunk_size):
         chunk = unique_texts[start:start + chunk_size]
         try:
-            translated = _translate_chunk_with_minimax(chunk, tag, api_key, strict=strict)
+            translated = _translate_chunk_with_text_ai(chunk, tag, api_key, strict=strict)
         except Exception:
             if strict: raise
             translated = list(chunk)
@@ -920,12 +920,12 @@ def translate_wiki_texts(texts: list[str], lang: str) -> tuple[list[str], str]:
     if not texts:
         return [], "empty"
     load_environment()
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
     if not api_key:
-        raise RuntimeError("missing_minimax_api_key")
+        raise RuntimeError("missing_openai_api_key")
     out = []
     for start in range(0, len(texts), 3):
-        out.extend(_translate_chunk_with_minimax(texts[start:start + 3], lang, api_key, strict=True))
+        out.extend(_translate_chunk_with_text_ai(texts[start:start + 3], lang, api_key, strict=True))
     return out, "live"
 
 
@@ -1627,7 +1627,7 @@ def _translate_chunk_agent(
     _append_i18n_translate_trace(req_row)
     try:
         with TRANSLATION_REQUEST_LOCK:
-            raw = minimax_chat(prompt, api_key)
+            raw = text_ai_chat(prompt, api_key)
         parsed = _parse_json_array(raw)
         if len(parsed) != len(texts):
             raise ValueError(f"parsed_len_mismatch expected={len(texts)} actual={len(parsed)}")
@@ -1792,7 +1792,7 @@ def _translate_feed_text_map(
         return mapping, qa, entry_states
 
     load_environment()
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
     if not api_key:
         _append_i18n_translate_trace(
             {
@@ -1802,11 +1802,11 @@ def _translate_feed_text_map(
                 "translated_cached": translated_count,
                 "pending_entries_total": len(pending_entries),
                 "status": "failed",
-                "error": "missing MiniMax key",
+                "error": "missing OpenAI key",
             }
         )
         qa["mode"] = "no-key"
-        qa["error"] = "missing MiniMax key"
+        qa["error"] = "missing OpenAI key"
         qa["coverage"] = round((translated_count / len(normalized_entries)), 4) if normalized_entries else 1.0
         qa["sample_pending"] = [entry_key for entry_key, state in entry_states.items() if not bool(state.get("translated"))][:8]
         _set_i18n_lang_progress(
@@ -1815,7 +1815,7 @@ def _translate_feed_text_map(
             done=translated_count,
             status="pending",
             mode="no-key",
-            error="missing MiniMax key",
+            error="missing OpenAI key",
         )
         return mapping, qa, entry_states
 

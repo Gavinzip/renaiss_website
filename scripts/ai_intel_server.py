@@ -56,7 +56,7 @@ from x_intel_core import (
     read_editorial_audit,
     read_x_source_config,
     refresh_card_content,
-    resolve_minimax_key,
+    resolve_text_ai_key,
     public_event_duplicate_ids,
     public_event_metadata,
     set_manual_selection,
@@ -1731,7 +1731,7 @@ def _sync_stage_for_event(event_name: str) -> str:
     raw = str(event_name or "").strip().lower()
     if raw.startswith("scan"):
         return "scan"
-    if raw.startswith("refine") or raw.startswith("minimax"):
+    if raw.startswith("refine") or raw.startswith("text_ai"):
         return "ai_refine"
     if raw.startswith("dedupe"):
         return "dedupe"
@@ -1794,18 +1794,18 @@ def _record_sync_progress(event_name: str, payload: dict | None = None) -> None:
         if "latest_source" in row:
             SYNC_STATE["latest_source"] = str(row.get("latest_source") or "")
         card_id = str(row.get("card_id") or row.get("current_card_id") or "").strip()
-        if card_id or event_name in {"refine_card_start", "minimax_start", "minimax_done", "minimax_error", "refine_card_done", "refine_card_failed"}:
+        if card_id or event_name in {"refine_card_start", "text_ai_start", "text_ai_done", "text_ai_error", "refine_card_done", "refine_card_failed"}:
             SYNC_STATE["current_card_id"] = card_id
             SYNC_STATE["current_account"] = str(row.get("account") or "")
             SYNC_STATE["current_title"] = str(row.get("title") or row.get("current_title") or "")[:180]
             SYNC_STATE["current_url"] = str(row.get("url") or "")
-        if event_name in {"minimax_start", "minimax_done", "minimax_error"}:
+        if event_name in {"text_ai_start", "text_ai_done", "text_ai_error"}:
             SYNC_STATE["current_operation"] = str(row.get("purpose") or "")
             SYNC_STATE["current_attempt"] = _safe_int(row.get("attempt"), 0)
             SYNC_STATE["current_call_index"] = _safe_int(row.get("call_index"), 0)
             SYNC_STATE["current_prompt_len"] = _safe_int(row.get("prompt_len"), 0)
             SYNC_STATE["current_elapsed_ms"] = _safe_int(row.get("elapsed_ms"), 0)
-        if event_name in {"scan_source_error", "minimax_error", "refine_card_failed"}:
+        if event_name in {"scan_source_error", "text_ai_error", "refine_card_failed"}:
             SYNC_STATE["last_error"] = str(row.get("error") or "")[:260]
         recent = SYNC_STATE.get("recent_events")
         recent_rows = recent if isinstance(recent, list) else []
@@ -1820,9 +1820,9 @@ def _record_sync_progress(event_name: str, payload: dict | None = None) -> None:
         "scan_done",
         "refine_start",
         "refine_card_start",
-        "minimax_start",
-        "minimax_done",
-        "minimax_error",
+        "text_ai_start",
+        "text_ai_done",
+        "text_ai_error",
         "refine_card_done",
         "refine_card_failed",
         "dedupe_start",
@@ -5291,7 +5291,7 @@ class Handler(SimpleHTTPRequestHandler):
                 message = str(exc)
                 status = HTTPStatus.SERVICE_UNAVAILABLE if message in {
                     "missing_openai_api_key",
-                    "missing_minimax_api_key",
+                    "missing_openai_api_key",
                     "knowledge_memory_empty",
                     "embedding_cache_empty",
                     "no_vector_matches",

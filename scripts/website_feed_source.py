@@ -7,6 +7,8 @@ from x_intel_core import (
     migrate_card_taxonomy_payload, normalize_account_handle,
     public_event_metadata, read_x_source_config,
 )
+from x_intel.official_updates import news_category_metadata
+from x_intel.bootstrap import infer_official_update_metadata
 
 
 def canonical_feed_source(feed: dict) -> dict:
@@ -47,6 +49,12 @@ def canonical_feed_source(feed: dict) -> dict:
         if discord_match and str(discord_match.group(1) or "") in OFFICIAL_DISCORD_CHANNEL_IDS:
             source_role = "official"
         migrate_card_taxonomy_payload(row, source_role)
+        if row.get('source_role') == 'official':
+            row.update(news_category_metadata(str(row.get('raw_text') or ''), str(row.get('card_type') or '')))
+            kind, partners = infer_official_update_metadata(row.get('account'), row.get('raw_text'))
+            if kind:
+                row['official_update_kind'] = kind
+                row['partner_names'] = partners
         row.update(public_event_metadata(row))
         canonical_cards.append(row)
     enriched["cards"] = canonical_cards

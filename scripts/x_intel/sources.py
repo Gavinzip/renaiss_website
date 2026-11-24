@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from text_ai import text_ai_chat, text_ai_model_name
 
 from .sbt_evidence import qualify_sbt_entries
 
@@ -23,7 +24,7 @@ from .taxonomy import (
 globals().update(vars(_bootstrap))
 globals().update(vars(_editorial))
 
-# Domain: MiniMax refine, X/Twitter providers, Discord provider, thread merge
+# Domain: OpenAI refine, X/Twitter providers, Discord provider, thread merge
 
 X_SOURCE_CONFIG_FILE = "x_intel_sources.json"
 X_ACCOUNT_CATEGORIES = {"official", "official_community", "other"}
@@ -113,14 +114,6 @@ AI_CARD_TYPE_ALIASES = {
 }
 
 
-def minimax_model_name() -> str:
-    return str(
-        os.getenv("MINIMAX_TEXT_MODEL")
-        or os.getenv("MINIMAX_MODEL")
-        or "MiniMax-M3"
-    ).strip() or "MiniMax-M3"
-
-
 def ai_min_confidence() -> float:
     try:
         return float(os.getenv("AI_CLASSIFY_MIN_CONFIDENCE") or AI_MIN_CONFIDENCE_DEFAULT)
@@ -193,7 +186,7 @@ def _apply_event_region(card: StoryCard, *, region: Any, reason: Any, model: str
         return False
     card.event_region = normalized
     card.event_region_reason = cleaned_reason
-    card.event_region_model = str(model or minimax_model_name()).strip()
+    card.event_region_model = str(model or text_ai_model_name()).strip()
     card.event_region_version = EVENT_REGION_CLASSIFICATION_VERSION
     return True
 
@@ -213,7 +206,7 @@ def _apply_plan_status(
     card.plan_status = normalized
     card.plan_status_reason = cleaned_reason
     card.plan_status_checked_at = checked_at or datetime.now(timezone.utc).isoformat()
-    card.plan_ai_model = str(model or minimax_model_name()).strip()
+    card.plan_ai_model = str(model or text_ai_model_name()).strip()
     card.plan_ai_version = PLAN_STATUS_CLASSIFICATION_VERSION
     return True
 
@@ -272,7 +265,7 @@ def _set_ai_review_queue(
     preserve_semantics: bool = False,
 ) -> None:
     card.classified_by = "ai"
-    card.ai_model = model or minimax_model_name()
+    card.ai_model = model or text_ai_model_name()
     card.ai_version = classification_version_for_source(card.raw_text)
     card.ai_status = "needs_review"
     card.review_status = AI_REVIEW_ADMIN_QUEUE
@@ -282,7 +275,7 @@ def _set_ai_review_queue(
             card,
             status="needs_review",
             reason=f"AI 分類失敗：{clean_text(str(error or 'ai_needs_review'))[:240]}",
-            model=model or minimax_model_name(),
+            model=model or text_ai_model_name(),
         )
     if not card.classification_reason:
         card.classification_reason = "AI 未產生可安全公開的完整分類，需管理員確認。"
@@ -565,7 +558,7 @@ def build_ai_pending_card(
         routing_topics=[],
         product_ids=[],
         classified_by="ai",
-        ai_model=minimax_model_name(),
+        ai_model=text_ai_model_name(),
         ai_version=classification_version_for_source(text),
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,
@@ -914,125 +907,7 @@ def _cache_discord_cover_image(source_url: str, card_id: str) -> str:
             pass
         return ""
 
-def minimax_chat(
-    prompt: str,
-    api_key: str,
-    max_tokens: int | None = None,
-    *,
-    connect_timeout_override: float | None = None,
-    read_timeout_override: float | None = None,
-    model_override: str | None = None,
-    temperature_override: float | None = None,
-    use_env_max_tokens: bool = True,
-) -> str:
-    def extract_text(value: Any) -> str:
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, list):
-            parts: list[str] = []
-            for item in value:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    parts.append(extract_text(item.get("text") or item.get("content") or item.get("output_text")))
-            return "\n".join(part for part in (p.strip() for p in parts) if part).strip()
-        if isinstance(value, dict):
-            return extract_text(value.get("text") or value.get("content") or value.get("output_text"))
-        return ""
-
-    model_name = str(
-        model_override
-        or os.getenv("MINIMAX_TEXT_MODEL")
-        or os.getenv("MINIMAX_MODEL")
-        or "MiniMax-M3"
-    ).strip() or "MiniMax-M3"
-    temperature = 0.3
-    if temperature_override is not None:
-        try:
-            temperature = max(0.0, min(float(temperature_override), 1.0))
-        except Exception:
-            temperature = 0.3
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "reasoning_split": False,
-    }
-    token_limit = None
-    if max_tokens is not None:
-        try:
-            token_limit = int(max_tokens)
-        except Exception:
-            token_limit = None
-    env_limit = str(os.getenv("MINIMAX_TEXT_MAX_TOKENS") or "").strip()
-    if token_limit is None and use_env_max_tokens and env_limit:
-        try:
-            token_limit = int(env_limit)
-        except Exception:
-            token_limit = None
-    if token_limit is not None and token_limit > 0:
-        payload["max_tokens"] = int(token_limit)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    connect_timeout = 15.0
-    read_timeout = 120.0
-    try:
-        connect_timeout = float(os.getenv("MINIMAX_HTTP_CONNECT_TIMEOUT") or connect_timeout)
-    except Exception:
-        connect_timeout = 15.0
-    try:
-        read_timeout = float(os.getenv("MINIMAX_HTTP_READ_TIMEOUT") or read_timeout)
-    except Exception:
-        read_timeout = 120.0
-    if connect_timeout_override is not None and connect_timeout_override > 0:
-        connect_timeout = float(connect_timeout_override)
-    if read_timeout_override is not None and read_timeout_override > 0:
-        read_timeout = float(read_timeout_override)
-    if connect_timeout <= 0:
-        connect_timeout = 15.0
-    if read_timeout <= 0:
-        read_timeout = 120.0
-    resp = requests.post(
-        MINIMAX_URL,
-        headers=headers,
-        json=payload,
-        timeout=(connect_timeout, read_timeout),
-    )
-    if not resp.ok:
-        try:
-            error_data = resp.json()
-            error = error_data.get('error') or error_data.get('base_resp') or {}
-            message = error.get('message') or error.get('status_msg') or error.get('type') or '' if isinstance(error,dict) else str(error)
-        except ValueError:
-            message = 'provider returned a non-JSON error'
-        raise RuntimeError(f'MiniMax HTTP {resp.status_code}: {str(message)[:220]}')
-    data = resp.json()
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        content = extract_text(message.get("content"))
-        if content:
-            return content
-        finish_reason = str(first.get("finish_reason") or "").strip().lower()
-        if finish_reason == "length":
-            raise RuntimeError(
-                f"MiniMax response reached token limit before final content; model={model_name}; "
-                "reduce prompt size or set a larger INTEL_AGENT_MAX_TOKENS only if you intentionally enabled a limit"
-            )
-    direct = extract_text(data.get("reply") or data.get("output_text") or data.get("text"))
-    if direct:
-        return direct
-    base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else {}
-    status_msg = str(base_resp.get("status_msg") or "").strip()
-    if status_msg:
-        raise RuntimeError(f"MiniMax response error: {status_msg}")
-    raise RuntimeError(f"MiniMax response missing content; model={model_name}")
-
-
-def apply_minimax_story_refine(
+def apply_text_ai_story_refine(
     cards: list[StoryCard],
     api_key: str,
     feedback_context: str = "",
@@ -1041,7 +916,7 @@ def apply_minimax_story_refine(
     read_timeout_override: float | None = None,
     progress_callback: Any | None = None,
 ) -> None:
-    model_name = minimax_model_name()
+    model_name = text_ai_model_name()
 
     def _emit(event_name: str, **payload: Any) -> None:
         if not progress_callback:
@@ -1058,12 +933,12 @@ def apply_minimax_story_refine(
     product_catalog_text = "；".join(f"{product_id}={name}" for product_id, name in PRODUCT_CATALOG.items())
     classification_date = datetime.now(timezone.utc).date().isoformat()
 
-    def _call_minimax(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
+    def _call_text_ai(card: StoryCard, prompt: str, *, attempt: int, purpose: str) -> str:
         nonlocal call_index
         call_index += 1
         started = time.monotonic()
         _emit(
-            "minimax_start",
+            "text_ai_start",
             call_index=call_index,
             attempt=attempt,
             purpose=purpose,
@@ -1075,14 +950,14 @@ def apply_minimax_story_refine(
             model=model_name,
         )
         try:
-            raw_text = minimax_chat(
+            raw_text = text_ai_chat(
                 prompt,
                 api_key,
                 connect_timeout_override=connect_timeout_override,
                 read_timeout_override=read_timeout_override,
             )
             _emit(
-                "minimax_done",
+                "text_ai_done",
                 call_index=call_index,
                 attempt=attempt,
                 purpose=purpose,
@@ -1097,7 +972,7 @@ def apply_minimax_story_refine(
             return raw_text
         except Exception as exc:
             _emit(
-                "minimax_error",
+                "text_ai_error",
                 call_index=call_index,
                 attempt=attempt,
                 purpose=purpose,
@@ -1144,6 +1019,11 @@ def apply_minimax_story_refine(
             "4) card_type 只能是 event/product_progress/announcement/market/report/guide/insight；"
             "5) 必須用語意判斷分類，不可只用關鍵字；"
             "6) 只有含明確活動訊號（時間/地點/報名/參與方式）才可標為 event；"
+            "6a) 回顧已發生的演講、會議出席、活動現場或公布結果，以 report 呈現；不要把活動回顧當成可參加的 event。"
+            "若原文報導具體的過去事件（例如 took the stage、shared at a session），即使包含產品願景也優先用 report；"
+            "insight 只用於以觀點為主、沒有具體事件報導的內容；"
+            "6b) 明確預告卡展、聚會或 AMA，並有日期、場地或參與方式時，即使只是提醒也屬 event；"
+            "依原文發表時的語境區分預告與回顧，不可因今天已過活動日就把預告改成公告或回顧，當前是否可參加由活動狀態欄位另行處理；"
             "7) product_progress 只給官方來源，而且必須同時回答四問：明確產品或能力、相較之前的狀態改變、使用者或平台影響、原文證據；任一不足就標 announcement；"
             "8) 單句互動、祝賀、表情、聊天回覆通常是 insight；"
             "9) routing_topics 是內部導頁欄位，只能是 collectibles 或空陣列，不可放 SBT；來源身分、活動、教學、產品進度都不是 routing topic；"
@@ -1206,7 +1086,7 @@ def apply_minimax_story_refine(
         )
         semantic_ok = False
         try:
-            raw = _call_minimax(card, prompt, attempt=1, purpose="initial_refine")
+            raw = _call_text_ai(card, prompt, attempt=1, purpose="initial_refine")
             parsed = parse_json_block(raw)
             if not parsed:
                 compact_retry_prompt = (
@@ -1234,7 +1114,7 @@ def apply_minimax_story_refine(
                     f"既有標題:{card.title}\n"
                     f"內容:{card.raw_text[:3200]}"
                 )
-                raw = _call_minimax(card, compact_retry_prompt, attempt=2, purpose="compact_json_retry")
+                raw = _call_text_ai(card, compact_retry_prompt, attempt=2, purpose="compact_json_retry")
                 parsed = parse_json_block(raw)
             if not parsed:
                 _set_ai_review_queue(card, "ai_json_parse_failed", model=model_name)
@@ -1277,7 +1157,7 @@ def apply_minimax_story_refine(
                     "如果 event 資訊不足，就只列原文有的活動名稱、時間、社群聚會與下一步。\n\n"
                     f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n既有標題:{card.title}\n內容:{card.raw_text[:3200]}"
                 )
-                raw = _call_minimax(card, strict_retry_prompt, attempt=3, purpose="validation_retry")
+                raw = _call_text_ai(card, strict_retry_prompt, attempt=3, purpose="validation_retry")
                 parsed = parse_json_block(raw)
                 if parsed:
                     semantic_ok = _finalize_ai_semantics(card, parsed, model=model_name)
@@ -1310,7 +1190,7 @@ def apply_minimax_story_refine(
                         f"已驗證分類：{semantic_context}\n"
                         f"來源帳號:@{card.account}\nURL:{card.url}\n發布時間:{card.published_at}\n原文:{card.raw_text[:4200]}"
                     )
-                    editorial_raw = _call_minimax(card, editorial_retry_prompt, attempt=1, purpose="editorial_retry")
+                    editorial_raw = _call_text_ai(card, editorial_retry_prompt, attempt=1, purpose="editorial_retry")
                     editorial_parsed = parse_json_block(editorial_raw)
                     if not editorial_parsed:
                         _set_ai_review_queue(card, "editorial_json_parse_failed", model=model_name, preserve_semantics=True)
@@ -1378,14 +1258,14 @@ def event_region_review_due(card: StoryCard) -> bool:
     )
 
 
-def apply_minimax_event_region_review(
+def apply_text_ai_event_region_review(
     cards: list[StoryCard],
     api_key: str,
     *,
     progress_callback: Any | None = None,
 ) -> int:
     """Classify only event geography without rewriting article content."""
-    model_name = minimax_model_name()
+    model_name = text_ai_model_name()
     updated = 0
     event_cards = [card for card in cards if str(card.card_type or "").strip().lower() == "event"]
     total = len(event_cards)
@@ -1416,7 +1296,7 @@ def apply_minimax_event_region_review(
             f"原文：{str(card.raw_text or '')[:4200]}"
         )
         try:
-            parsed = parse_json_block(minimax_chat(prompt, api_key)) or {}
+            parsed = parse_json_block(text_ai_chat(prompt, api_key)) or {}
             if _apply_event_region(
                 card,
                 region=parsed.get("event_region"),
@@ -1426,12 +1306,12 @@ def apply_minimax_event_region_review(
                 updated += 1
             else:
                 card.event_region = "unknown"
-                card.event_region_reason = "MiniMax 未回傳有效的活動地區與判斷理由，保留待重新分類狀態。"
+                card.event_region_reason = "OpenAI 未回傳有效的活動地區與判斷理由，保留待重新分類狀態。"
                 card.event_region_model = model_name
                 card.event_region_version = ""
         except Exception as exc:
             card.event_region = "unknown"
-            card.event_region_reason = f"MiniMax 活動地區分類失敗：{type(exc).__name__}"
+            card.event_region_reason = f"OpenAI 活動地區分類失敗：{type(exc).__name__}"
             card.event_region_model = model_name
             card.event_region_version = ""
         if progress_callback:
@@ -1451,14 +1331,14 @@ def apply_minimax_event_region_review(
     return updated
 
 
-def apply_minimax_plan_status_review(
+def apply_text_ai_plan_status_review(
     cards: list[StoryCard],
     api_key: str,
     *,
     progress_callback: Any | None = None,
 ) -> int:
     """Refresh AI-owned lifecycle metadata without rewriting editorial copy."""
-    model_name = minimax_model_name()
+    model_name = text_ai_model_name()
     checked_at = datetime.now(timezone.utc).isoformat()
     as_of = checked_at[:10]
     updated = 0
@@ -1487,7 +1367,7 @@ def apply_minimax_plan_status_review(
             f"原文：{card.raw_text[:3600]}"
         )
         try:
-            parsed = parse_json_block(minimax_chat(prompt, api_key)) or {}
+            parsed = parse_json_block(text_ai_chat(prompt, api_key)) or {}
             if not _apply_plan_status(
                 card,
                 status=parsed.get("plan_status"),
@@ -1498,7 +1378,7 @@ def apply_minimax_plan_status_review(
                 _apply_plan_status(
                     card,
                     status="needs_review",
-                    reason="MiniMax 未回傳有效的規劃狀態與判斷理由。",
+                    reason="OpenAI 未回傳有效的規劃狀態與判斷理由。",
                     model=model_name,
                     checked_at=checked_at,
                 )
@@ -1508,7 +1388,7 @@ def apply_minimax_plan_status_review(
             _apply_plan_status(
                 card,
                 status="needs_review",
-                reason=f"MiniMax 規劃狀態分類失敗：{type(exc).__name__}",
+                reason=f"OpenAI 規劃狀態分類失敗：{type(exc).__name__}",
                 model=model_name,
                 checked_at=checked_at,
             )
@@ -1557,24 +1437,15 @@ def aggregate_digest(
     cards_sorted = sorted(cards, key=lambda c: c.published_at, reverse=True)
     top_titles = [f"- @{c.account}: {c.title}" for c in cards_sorted[:8]]
 
-    digest = {
-        "headline": "Spring AI 關鍵情報總結",
-        "conclusion": "已從高訊號貼文中整理出官方更新、近期活動、即將開放與社群焦點，避免被零散回覆淹沒。",
-        "takeaways": [
-            "先看官方更新，確認產品與活動方向。",
-            "近期活動用時間與參與方式呈現，減少漏看。",
-            "社群焦點只保留有訊息密度的貼文，不再全貼。",
-        ],
-        "accounts_active": sorted({c.account for c in cards_sorted}),
-        "key_terms": key_terms[:12],
-    }
-
-    if not api_key or not cards_sorted:
-        return digest
+    if not cards_sorted:
+        return {"headline": "目前尚無可摘要的情報", "conclusion": "尚無可用貼文。",
+                "takeaways": [], "accounts_active": [], "key_terms": []}
+    if not api_key:
+        raise RuntimeError("missing_openai_api_key")
 
     prompt = (
-        "你是TCG情報總編。請根據貼文標題與四個情報分類，輸出 JSON：headline,conclusion,takeaways(長度3)。"
-        "語氣要像『春季資訊刊』，但保持專業，繁體中文，不可捏造。\n\n"
+        "你是TCG情報總編。請根據貼文標題與四個情報分類，輸出 JSON：headline,conclusion,takeaways（1 至 3 個彼此不同的重點）。"
+        "保持專業，使用繁體中文，不可捏造；不要加入來源沒有提及的季節或刊物名稱。\n\n"
         + "\n".join(top_titles)
         + "\n\n[official_updates]\n"
         + "\n".join(f"- {x['headline']}" for x in sections.get("official_updates", [])[:4])
@@ -1583,19 +1454,22 @@ def aggregate_digest(
         + "\n\n[product_progress]\n"
         + "\n".join(f"- {x['headline']}" for x in sections.get("product_progress", [])[:4])
     )
-    try:
-        raw = minimax_chat(prompt, api_key)
-        parsed = parse_json_block(raw)
-        if parsed:
-            digest["headline"] = str(parsed.get("headline") or digest["headline"])[:80]
-            digest["conclusion"] = str(parsed.get("conclusion") or digest["conclusion"])[:220]
-            tks = parsed.get("takeaways")
-            if isinstance(tks, list) and tks:
-                digest["takeaways"] = [clean_text(str(x))[:90] for x in tks if str(x).strip()][:3]
-    except Exception:
-        pass
-
-    return digest
+    parsed = parse_json_block(text_ai_chat(prompt, api_key))
+    if not isinstance(parsed, dict):
+        raise RuntimeError("AI_DIGEST_INVALID_OUTPUT")
+    headline, conclusion = parsed.get("headline"), parsed.get("conclusion")
+    takeaways = parsed.get("takeaways")
+    if (not isinstance(headline, str) or not headline.strip()
+            or not isinstance(conclusion, str) or not conclusion.strip()
+            or not isinstance(takeaways, list) or not 1 <= len(takeaways) <= 3
+            or any(not isinstance(value, str) or not clean_text(value) for value in takeaways)):
+        raise RuntimeError("AI_DIGEST_INVALID_OUTPUT")
+    points = [clean_text(value)[:90] for value in takeaways]
+    if len(set(points)) != len(points):
+        raise RuntimeError("AI_DIGEST_INVALID_OUTPUT")
+    return {"headline": clean_text(headline)[:80], "conclusion": clean_text(conclusion)[:220],
+            "takeaways": points, "accounts_active": sorted({c.account for c in cards_sorted}),
+            "key_terms": key_terms[:12]}
 
 
 def fetch_status_with_twitter_cli(url: str) -> str | None:
@@ -2501,7 +2375,7 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         routing_topics=[],
         product_ids=[],
         classified_by="ai",
-        ai_model=last.ai_model or first.ai_model or minimax_model_name(),
+        ai_model=last.ai_model or first.ai_model or text_ai_model_name(),
         ai_version=classification_version_for_source(merged_raw),
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,
@@ -2771,7 +2645,7 @@ def build_card_from_url(tweet_url: str, api_key: str | None = None) -> StoryCard
         raise RuntimeError("unable to parse tweet")
 
     if api_key:
-        apply_minimax_story_refine([card], api_key, feedback_context=feedback_training_text())
+        apply_text_ai_story_refine([card], api_key, feedback_context=feedback_training_text())
 
     return card
 

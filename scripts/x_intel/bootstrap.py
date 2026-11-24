@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from text_ai import resolve_text_ai_key, text_ai_model_name
+from .official_updates import explicit_partnership, news_category_metadata
 from website_storage import get_website_data_dir
 
 from .taxonomy import (
@@ -46,7 +48,6 @@ DEFAULT_WINDOW_DAYS = 30
 DEFAULT_MAX_POSTS_PER_ACCOUNT = 20
 DEFAULT_DISCORD_MONITOR_LIMIT = 80
 DEFAULT_CURATED_MAX_CARDS = 24
-MINIMAX_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 ALLOWED_CARD_TYPES = set(CARD_TYPES)
@@ -137,7 +138,7 @@ OFFICIAL_X_ACCOUNT_ROLES = {
     "renaiss_fi": "Renaiss DeFi 收藏品金融官方帳號；fi 代表 finance，不是芬蘭地區",
     "vinciwld": "Vinci World Web2 卡牌遊戲官方帳號",
     "tastedotmd": "TasteMD 黑客松與開發者活動官方帳號",
-    "renaisscltb": "Renaiss Collectibles Web2 推廣與收藏活動官方帳號",
+    "renaisscltb": "Renaiss Protocol 官方帳號，涵蓋收藏品基礎設施、產品、合作、開發者及社群活動；不可只按帳號角色判定貼文類型",
 }
 AI_REVIEW_AUTO_APPROVED = "auto_approved"
 AI_REVIEW_ADMIN_QUEUE = "admin_queue"
@@ -216,9 +217,14 @@ INDEX_PARTNERSHIP_PATTERNS = (
 def infer_official_update_metadata(account: Any, source: Any) -> tuple[str, list[str]]:
     """Return structured metadata only for explicit official source statements."""
     normalized_account = str(account or "").strip().lstrip("@").lower()
-    if normalized_account != "renaiss_index":
+    if normalized_account not in OFFICIAL_X_ACCOUNT_ROLES:
         return "", []
     raw_source = str(source or "").strip()
+    evidence, partners = explicit_partnership(raw_source)
+    if evidence:
+        return "partnership", partners
+    if normalized_account != "renaiss_index":
+        return "", []
     for pattern in INDEX_PARTNERSHIP_PATTERNS:
         match = pattern.search(raw_source)
         if not match:
@@ -389,6 +395,8 @@ class StoryCard:
             "source_message_id": self.source_message_id,
             "source_message_timestamp": self.source_message_timestamp,
         }
+        if self.source_role == 'official' or str(self.account).lower().lstrip('@') in OFFICIAL_X_ACCOUNT_ROLES:
+            payload.update(news_category_metadata(self.raw_text, self.card_type))
         migrate_card_taxonomy_payload(payload, self.source_role)
         return payload
 
@@ -424,20 +432,6 @@ def load_environment() -> None:
         if candidate.exists() and c not in path_parts:
             path_parts.append(c)
     os.environ["PATH"] = ":".join([p for p in path_parts if p])
-
-
-def resolve_minimax_key() -> str:
-    candidates = [
-        "MINIMAX_API_KEY",
-        "MINIMAX_KEY",
-        "MINIMAX_TEXT_API_KEY",
-        "MINIMAX_TOKEN",
-    ]
-    for name in candidates:
-        value = str(os.getenv(name) or "").strip()
-        if value:
-            return value
-    return ""
 
 
 def clean_text(text: str) -> str:
@@ -1515,7 +1509,7 @@ def parse_status_page(
         routing_topics=[],
         product_ids=[],
         classified_by="ai",
-        ai_model=str(os.getenv("MINIMAX_TEXT_MODEL") or os.getenv("MINIMAX_MODEL") or "MiniMax-M3").strip(),
+        ai_model=text_ai_model_name(),
         ai_version=AI_CLASSIFICATION_VERSION,
         ai_status="pending",
         review_status=AI_REVIEW_ADMIN_QUEUE,

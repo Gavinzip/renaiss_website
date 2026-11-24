@@ -124,7 +124,7 @@ def _reclassify_existing_cards(
         return
     worker_count = min(_env_positive_int("INTEL_TAXONOMY_RECLASSIFY_WORKERS", 6), 8, len(cards))
     if worker_count == 1:
-        apply_minimax_story_refine(
+        apply_text_ai_story_refine(
             cards,
             api_key,
             feedback_context=feedback_context,
@@ -151,7 +151,7 @@ def _reclassify_existing_cards(
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="taxonomy-reclass") as pool:
         futures = [
             pool.submit(
-                apply_minimax_story_refine,
+                apply_text_ai_story_refine,
                 chunk,
                 api_key,
                 feedback_context=feedback_context,
@@ -953,9 +953,9 @@ def _distill_feedback_rule(
     only this distilled rule so the model learns the concept, not the wording.
     """
 
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
     if not api_key:
-        return {"status": "pending", "error": "missing minimax key"}
+        return {"status": "pending", "error": "missing OpenAI key"}
 
     kind = _feedback_label_kind(label)
     source_payload = {
@@ -993,7 +993,7 @@ def _distill_feedback_rule(
         "}"
     )
     try:
-        raw = minimax_chat(prompt, api_key)
+        raw = text_ai_chat(prompt, api_key)
         parsed = parse_json_block(raw) or {}
     except Exception as error:
         return {"status": "pending", "error": str(error)[:220]}
@@ -1730,13 +1730,13 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
     }
 
     mode = "admin_queue"
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
     if api_key:
         try:
-            refresh_read_timeout = float(os.getenv("MINIMAX_REFRESH_HTTP_READ_TIMEOUT") or "60")
+            refresh_read_timeout = float(os.getenv("OPENAI_REFRESH_READ_TIMEOUT_SECONDS") or "60")
         except Exception:
             refresh_read_timeout = 36.0
-        apply_minimax_story_refine(
+        apply_text_ai_story_refine(
             [card],
             api_key,
             feedback_context=feedback_training_text(),
@@ -1744,7 +1744,7 @@ def refresh_card_content(tweet_id: str) -> dict[str, Any]:
             read_timeout_override=max(60.0, refresh_read_timeout),
         )
         if event_region_review_due(card):
-            apply_minimax_event_region_review([card], api_key)
+            apply_text_ai_event_region_review([card], api_key)
         mode = "ai" if str(card.ai_status or "") == "ok" else "admin_queue"
     else:
         _set_ai_review_queue(card, "missing_ai_key")
@@ -2227,7 +2227,7 @@ def _mark_admin_queue_card(card: StoryCard, reason: str) -> StoryCard:
     if not card.classified_by:
         card.classified_by = "ai"
     if not card.ai_model:
-        card.ai_model = minimax_model_name()
+        card.ai_model = text_ai_model_name()
     if not card.ai_version:
         card.ai_version = classification_version_for_source(card.raw_text)
     card.classification_error = clean_text(reason_key or "admin_queue")[:220]
@@ -3168,7 +3168,7 @@ def drop_redundant_cards_local(cards: list[StoryCard], force_include_ids: set[st
     return list(uniq.values()), removed
 
 
-def apply_minimax_global_dedupe(
+def apply_text_ai_global_dedupe(
     cards: list[StoryCard],
     api_key: str,
     force_include_ids: set[str] | None = None,
@@ -3209,23 +3209,22 @@ def apply_minimax_global_dedupe(
         f"force_keep_ids: {sorted(force_ids)}\n"
         f"cards: {json.dumps(payload_rows, ensure_ascii=False)}"
     )
-    try:
-        raw = minimax_chat(prompt, api_key)
-        parsed = parse_json_block(raw) or {}
-        drop_ids_raw = parsed.get("drop_ids")
-        if not isinstance(drop_ids_raw, list):
-            return cards, 0
-        known = {c.id for c in cards}
-        drop_ids = {str(x).strip() for x in drop_ids_raw if str(x).strip() in known}
-        drop_ids = {x for x in drop_ids if x not in force_ids}
-        if not drop_ids:
-            return cards, 0
-        out = [c for c in cards if c.id not in drop_ids]
-        if len(out) < max(5, len(cards) // 2):
-            return cards, 0
-        return out, len(drop_ids)
-    except Exception:
+    parsed = parse_json_block(text_ai_chat(prompt, api_key))
+    drop_ids_raw = parsed.get("drop_ids") if isinstance(parsed, dict) else None
+    if not isinstance(drop_ids_raw, list) or any(not isinstance(value, str) or not value.strip() for value in drop_ids_raw):
+        raise RuntimeError("AI_DEDUPE_INVALID_OUTPUT")
+    known = {c.id for c in cards}
+    drop_ids = {value.strip() for value in drop_ids_raw}
+    if drop_ids - known:
+        raise RuntimeError("AI_DEDUPE_UNKNOWN_ID")
+    if drop_ids & force_ids:
+        raise RuntimeError("AI_DEDUPE_PROTECTED_ID")
+    if not drop_ids:
         return cards, 0
+    out = [c for c in cards if c.id not in drop_ids]
+    if len(out) < min(len(cards), max(5, len(cards) // 2)):
+        raise RuntimeError("AI_DEDUPE_EXCESSIVE_REMOVAL")
+    return out, len(drop_ids)
 
 
 def extract_key_terms(cards: list[StoryCard], top_n: int = 14) -> list[str]:
@@ -3379,111 +3378,6 @@ def build_intel_agenda(cards: list[StoryCard]) -> dict[str, Any]:
     }
 
 
-def _official_impact_line(card: StoryCard) -> str:
-    facts = normalize_event_facts(card.event_facts)
-    source = clean_text(" ".join([card.raw_text or "", card.summary or "", " ".join(card.bullets or [])]))
-    if card.card_type == "event":
-        reward = facts.get("reward", "")
-        if reward:
-            return f"直接提高參與動機，獎勵重點在 {reward}。"
-        return "可直接影響活動參與率與社群互動熱度。"
-    if card.card_type in {"product_progress", "announcement"}:
-        return "會影響玩家後續操作節奏，需提早確認開放條件與時間。"
-    if card.card_type == "market":
-        if re.search(r"\$|成交|record|交易量|volume", source, re.I):
-            return "提供市場定價與熱度參考，會影響短期決策與討論方向。"
-        return "可作為市場觀測訊號，建議搭配其他來源比對。"
-    if card.card_type == "report":
-        return "有助於快速比較方案，降低決策成本。"
-    return "有助於掌握社群當前關注議題與互動方向。"
-
-
-def _official_where_line(card: StoryCard) -> str:
-    facts = normalize_event_facts(card.event_facts)
-    if facts.get("location"):
-        return facts["location"]
-    source = clean_text(" ".join([card.raw_text or "", card.summary or "", card.title or ""]))
-    if re.search(r"hong\s*kong|香港", source, re.I):
-        return "香港"
-    if re.search(r"discord|space|live|直播|線上|线上", source, re.I):
-        return "線上社群"
-    return "待官方補充"
-
-
-def _official_when_line(card: StoryCard) -> str:
-    facts = normalize_event_facts(card.event_facts)
-    if facts.get("schedule"):
-        raw = facts["schedule"]
-        raw = re.sub(r"(?i)\btoday\b", "今日", raw)
-        raw = re.sub(r"(?i)\btonight\b", "今晚", raw)
-        raw = re.sub(r"(?i)\btomorrow\b", "明日", raw)
-        return raw
-    timeline_dt = _parse_iso_safe(card.timeline_date)
-    if timeline_dt:
-        return timeline_dt.strftime("%m/%d")
-    pub_dt = _parse_iso_safe(card.published_at)
-    if pub_dt:
-        return pub_dt.strftime("%m/%d")
-    return "近期"
-
-
-def _official_overview_fallback(recent: list[StoryCard]) -> dict[str, Any]:
-    type_counts: dict[str, int] = {}
-    topic_counts: dict[str, int] = {}
-    for card in recent:
-        type_counts[card.card_type] = type_counts.get(card.card_type, 0) + 1
-        topic = infer_topic_phrase(card.raw_text or card.title, card.card_type)
-        topic_counts[topic] = topic_counts.get(topic, 0) + 1
-
-    ordered_types = sorted(type_counts.items(), key=lambda kv: kv[1], reverse=True)
-    ordered_topics = sorted(topic_counts.items(), key=lambda kv: kv[1], reverse=True)
-    top_topics = [name for name, _ in ordered_topics[:3]]
-    type_label_map = {
-        "event": "活動",
-        "product_progress": "產品進度",
-        "guide": "指南",
-        "announcement": "公告",
-        "market": "市場",
-        "report": "報告",
-        "insight": "社群",
-    }
-    type_brief = "、".join([f"{type_label_map.get(t, t)} {n}" for t, n in ordered_types[:4]])
-    topic_brief = "、".join(top_topics) if top_topics else "官方動態"
-    summary = (
-        f"近 7 天官方重點集中在 {topic_brief}，更新型態以 {type_brief} 為主。"
-        "整體看起來，官方目前同時在推活動參與與功能節奏，對玩家最直接的影響是："
-        "需要同時關注活動時程、參與門檻與後續功能開放條件。"
-    )
-
-    bullets: list[str] = []
-    seen_topics: set[str] = set()
-    for card in recent:
-        who = "Renaiss 官方"
-        topic = infer_topic_phrase(card.raw_text or card.title, card.card_type)
-        topic_sig = dedupe_key(topic)
-        if topic_sig and topic_sig in seen_topics:
-            continue
-        if topic_sig:
-            seen_topics.add(topic_sig)
-        when = _official_when_line(card)
-        where = _official_where_line(card)
-        impact = _official_impact_line(card)
-        title_clean = re.sub(r"^[^｜|:：]{1,12}[｜|:：]\s*", "", card.title or "").strip()
-        event_text = compact_point(title_clean or topic, 46)
-        bullets.append(
-            f"{who}在 {when} 釋出「{event_text}」，場域在 {where}；"
-            f"核心事件是 {topic}，{impact}"
-        )
-        if len(bullets) >= 4:
-            break
-
-    return {
-        "title": "近 7 天官方重點整理",
-        "summary": summary,
-        "bullets": bullets or ["目前尚未整理出可顯示的官方重點。"],
-    }
-
-
 def build_official_overview(cards: list[StoryCard], api_key: str | None = None) -> dict[str, Any]:
     official = [c for c in cards if c.source_role == "official"]
     if not official:
@@ -3502,9 +3396,8 @@ def build_official_overview(cards: list[StoryCard], api_key: str | None = None) 
     ][:12]
     if not recent:
         recent = official[:8]
-    fallback = _official_overview_fallback(recent)
     if not api_key:
-        return fallback
+        raise RuntimeError("missing_openai_api_key")
 
     rows = []
     for c in recent[:10]:
@@ -3525,32 +3418,26 @@ def build_official_overview(cards: list[StoryCard], api_key: str | None = None) 
         "要求："
         "1) 內容必須是繁體中文；"
         "2) 不是改寫標題，而是做整合；"
-        "3) 每條重點都要包含「人、事、時、地、影響」五個面向（可自然句，不用標籤格式）；"
+        "3) 只包含資料支持的人、事、時、地與影響；未提及的面向直接省略；"
         "4) 禁止空泛句（例如建議交叉驗證、可持續追蹤）；"
         "5) 不可捏造。"
-        "請輸出 JSON：{\"title\":str,\"summary\":str,\"bullets\":[str,str,str,str]}。\n\n"
+        "6) bullets 每條必須是不同事實，不可為湊數重複同一公告；資料少時只列 1 至 2 條。"
+        "請輸出 JSON：{\"title\":str,\"summary\":str,\"bullets\":[str]}，bullets 最多 4 條。\n\n"
         f"cards={json.dumps(rows, ensure_ascii=False)}"
     )
-    try:
-        raw = minimax_chat(prompt, api_key)
-        parsed = parse_json_block(raw) or {}
-        title = clean_text(str(parsed.get("title") or ""))[:48]
-        summary = clean_text(str(parsed.get("summary") or ""))[:360]
-        bullets_raw = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else []
-        bullets = [clean_text(str(x))[:180] for x in bullets_raw if clean_text(str(x))]
-        if not title:
-            title = str(fallback.get("title") or "近 7 天官方重點整理")
-        if len(summary) < 40:
-            summary = str(fallback.get("summary") or "")
-        if len(bullets) < 3:
-            bullets = list(fallback.get("bullets") or [])
-        return {
-            "title": title or "近 7 天官方重點整理",
-            "summary": summary or str(fallback.get("summary") or ""),
-            "bullets": bullets[:4],
-        }
-    except Exception:
-        return fallback
+    parsed = parse_json_block(text_ai_chat(prompt, api_key))
+    if not isinstance(parsed, dict):
+        raise RuntimeError("AI_OFFICIAL_OVERVIEW_INVALID_OUTPUT")
+    title, summary, bullets = parsed.get("title"), parsed.get("summary"), parsed.get("bullets")
+    if (not isinstance(title, str) or not title.strip()
+            or not isinstance(summary, str) or not summary.strip()
+            or not isinstance(bullets, list) or not 1 <= len(bullets) <= 4
+            or any(not isinstance(value, str) or not clean_text(value) for value in bullets)):
+        raise RuntimeError("AI_OFFICIAL_OVERVIEW_INVALID_OUTPUT")
+    points = [clean_text(value)[:180] for value in bullets]
+    if len(set(points)) != len(points):
+        raise RuntimeError("AI_OFFICIAL_OVERVIEW_INVALID_OUTPUT")
+    return {"title": clean_text(title)[:48], "summary": clean_text(summary)[:360], "bullets": points}
 
 
 AI_METADATA_PRESERVED_FIELDS = {
@@ -3773,7 +3660,7 @@ def sync_accounts(
     strict_sources: bool = False,
 ) -> dict[str, Any]:
     load_environment()
-    api_key = resolve_minimax_key()
+    api_key = resolve_text_ai_key()
     twitter_cli_ready = bool(shutil_which("twitter"))
 
     uses_configured_accounts = accounts is None
@@ -4056,13 +3943,13 @@ def sync_accounts(
     event_region_review_limit = _env_positive_int("INTEL_EVENT_REGION_REVIEW_LIMIT", 80)
     event_region_review_cards = [card for card in existing_cards if event_region_review_due(card)][:event_region_review_limit]
     if api_key and plan_review_cards:
-        plan_status_reclassified_count = apply_minimax_plan_status_review(
+        plan_status_reclassified_count = apply_text_ai_plan_status_review(
             plan_review_cards,
             api_key,
             progress_callback=progress_callback,
         )
     if api_key and event_region_review_cards:
-        event_region_reclassified_count += apply_minimax_event_region_review(
+        event_region_reclassified_count += apply_text_ai_event_region_review(
             event_region_review_cards,
             api_key,
             progress_callback=progress_callback,
@@ -4110,13 +3997,13 @@ def sync_accounts(
     # New cards must be readable even if they are later deduped or sent to the admin queue.
     # Keep this before source preference, curation, and dedupe so queue/other cards are AI-refined too.
     if api_key and new_ai_cards:
-        apply_minimax_story_refine(
+        apply_text_ai_story_refine(
             new_ai_cards,
             api_key,
             feedback_context=feedback_context,
             progress_callback=progress_callback,
         )
-        event_region_reclassified_count += apply_minimax_event_region_review(
+        event_region_reclassified_count += apply_text_ai_event_region_review(
             [card for card in new_ai_cards if event_region_review_due(card)],
             api_key,
             progress_callback=progress_callback,
@@ -4361,22 +4248,6 @@ def sync_accounts(
         done_cards=len(public_cards),
         total_cards=len(public_cards),
     )
-    if not api_key:
-        event_count = sum(1 for c in public_cards if c.card_type == "event")
-        product_progress_count = sum(1 for c in public_cards if c.card_type == "product_progress")
-        announcement_count = sum(1 for c in public_cards if c.card_type == "announcement")
-        growth_count = len(agenda.get("growth_signals", []))
-        future_count = len(agenda.get("future_watch", []))
-        digest["headline"] = f"Spring AI 主時間軸：活動 {event_count} / 產品進度 {product_progress_count} / 公告 {announcement_count}"
-        digest["conclusion"] = (
-            f"已整理出活動 {event_count} 件、產品進度 {product_progress_count} 件、公告 {announcement_count} 件、增長訊號 {growth_count} 件、未來觀察 {future_count} 件，"
-            "可直接用於社群公告與行動排程。"
-        )
-        digest["takeaways"] = [
-            "先看主時間軸，把活動與產品進度安排到行事曆。",
-            "活動類優先確認時間、地點與參與方式。",
-            "再看「增長訊號」確認社群熱度與市場脈動。",
-        ]
     payload = build_feed_payload(final_cards, digest, window_days, target_accounts, preserved_raw=preserved_raw_by_id)
     payload["raw_total_cards"] = merged_total
     payload["source_total_cards"] = len(source_cards)
@@ -4542,7 +4413,7 @@ def sync_accounts(
 
 def add_manual_tweet(tweet_url: str) -> dict[str, Any]:
     load_environment()
-    api_key = resolve_minimax_key() or None
+    api_key = resolve_text_ai_key() or None
 
     card = build_card_from_url(tweet_url, api_key=api_key)
     manual_path = data_dir() / "x_intel_manual_entries.json"
