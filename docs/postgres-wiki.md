@@ -10,7 +10,7 @@ JSON fallback, or snapshot worker is used for Wiki operations.
   pooled connection with TLS in Vercel. `DATABASE_URL` is also recognized by the
   existing shared database module.
 - `WIKI_AUTO_TRANSLATE_ON_SAVE=1`: translate changed source-language fields using
-  the existing MiniMax agent. The source can be Traditional Chinese, Simplified
+  the shared OpenAI GPT-6 Luna text adapter. The source can be Traditional Chinese, Simplified
   Chinese, English, or Korean. The default is enabled.
 - Existing `INTEL_*`, `WIKI_CREATOR_*`, SSO, origin, and session settings remain
   responsible for access. Database credentials never reach the browser.

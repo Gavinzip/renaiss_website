@@ -8,10 +8,10 @@ import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .bootstrap import clean_text, data_dir, resolve_minimax_key
+from .bootstrap import clean_text, data_dir, resolve_text_ai_key
 from .embedding_cache import create_embedding_vector, embedding_cosine_similarity
 from .knowledge_memory import knowledge_embedding_model, knowledge_memory_path, resolve_openai_embedding_key
-from .sources import minimax_chat, minimax_model_name
+from .sources import text_ai_chat, text_ai_model_name
 from .official_knowledge import authority_score, load_official_knowledge
 from .knowledge_events import eligible_event_sources, no_current_events_answer
 from .knowledge_news import eligible_news_sources, no_recent_news_answer, recent_news_window
@@ -66,16 +66,7 @@ def _now_local() -> datetime:
 
 
 def _agent_model() -> str:
-    return str(os.getenv("INTEL_AGENT_MINIMAX_MODEL") or minimax_model_name()).strip() or minimax_model_name()
-
-
-def _agent_temperature() -> float:
-    raw = str(os.getenv("INTEL_AGENT_TEMPERATURE") or "0.2").strip()
-    try:
-        value = float(raw)
-    except Exception:
-        value = 0.2
-    return max(0.0, min(value, 1.0))
+    return str(os.getenv("INTEL_AGENT_TEXT_MODEL") or text_ai_model_name()).strip() or text_ai_model_name()
 
 
 def _float_env(name: str, default: float) -> float:
@@ -617,7 +608,7 @@ def _retrieval_query(question: str, history: list[dict[str, str]]) -> str:
     return clean_text("\n".join([*user_context, question]))[:2400]
 
 
-def _answer_with_minimax(
+def _answer_with_text_ai(
     *,
     question: str,
     history: list[dict[str, str]],
@@ -666,20 +657,19 @@ def _answer_with_minimax(
         f"{news_context}"
         f"Knowledge memory sources:\n{context}"
     )
-    answer = minimax_chat(
+    answer = text_ai_chat(
         prompt,
         api_key,
-        max_tokens=_optional_int_env("INTEL_AGENT_MAX_TOKENS"),
-        connect_timeout_override=_float_env("INTEL_AGENT_MINIMAX_CONNECT_TIMEOUT_SECONDS", 15.0),
-        read_timeout_override=_float_env("INTEL_AGENT_MINIMAX_READ_TIMEOUT_SECONDS", 80.0),
+        max_output_tokens=_optional_int_env("INTEL_AGENT_MAX_OUTPUT_TOKENS"),
+        connect_timeout_override=_float_env("INTEL_AGENT_CONNECT_TIMEOUT_SECONDS", 15.0),
+        read_timeout_override=_float_env("INTEL_AGENT_READ_TIMEOUT_SECONDS", 80.0),
         model_override=model,
-        temperature_override=_agent_temperature(),
         use_env_max_tokens=False,
     )
     if not answer:
         raise RuntimeError("agent_empty_response")
     return answer, {
-        "provider": "minimax",
+        "provider": "openai",
         "model": model,
     }
 
@@ -787,11 +777,11 @@ def answer_knowledge_question(question: str, *, lang: str = "zh-Hant", top_k: in
             },
         }
 
-    answer_api_key = resolve_minimax_key()
+    answer_api_key = resolve_text_ai_key()
     if not answer_api_key:
-        raise RuntimeError("missing_minimax_api_key")
+        raise RuntimeError("missing_openai_api_key")
 
-    answer, chat_meta = _answer_with_minimax(
+    answer, chat_meta = _answer_with_text_ai(
         question=cleaned_question,
         history=cleaned_history,
         sources=credible_sources,

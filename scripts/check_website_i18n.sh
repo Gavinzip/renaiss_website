@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-https://renaiss.zeabur.app}}}"
+API_BASE="${1:-${INTEL_API_BASE:-${INTEL_API_BASE_OVERRIDE:-https://community-hub-vercel-pilot.vercel.app}}}"
 TIMEOUT=10
 
 echo "=== 1) API base ==="
@@ -31,15 +31,17 @@ fi
 echo
 
 echo "=== 3) Env sanity ==="
-if [ -f "${PWD}/.env" ]; then
-  if command -v rg >/dev/null 2>&1; then
-    echo "MINIMAX_API_KEY in .env: $(rg -n '^\\s*MINIMAX_API_KEY\\s*=\\s*' .env | sed 's/.*=//g' | head -n 1 | sed 's/....$/*xxx/')"
-  else
-    echo ".env exists, rg unavailable."
-  fi
-else
-  echo "No .env at ${PWD}/.env"
-fi
+python3 - <<'PYENV'
+import os
+try:
+    from dotenv import dotenv_values
+    configured = {**dotenv_values('.env'), **os.environ}
+except ImportError:
+    configured = dict(os.environ)
+for name in ('INTEL_OPENAI_TEXT_API_KEY', 'OPENAI_TEXT_API_KEY', 'OPENAI_API_KEY'):
+    print(f"{name}: {'configured' if configured.get(name) else 'absent'}")
+print(f"OPENAI_TEXT_MODEL: {configured.get('OPENAI_TEXT_MODEL') or 'gpt-6-luna'}")
+PYENV
 echo
 
 echo "=== 4) Probe /api/intel/feed langs ==="

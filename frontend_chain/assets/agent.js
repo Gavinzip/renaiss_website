@@ -226,7 +226,8 @@
 
   function formatProviderName(value) {
     const raw = String(value || "").trim();
-    if (!raw) return "MiniMax";
+    if (!raw) return "AI";
+    if (raw.toLowerCase() === "openai") return "OpenAI";
     if (raw.toLowerCase() === "minimax") return "MiniMax";
     if (raw.toLowerCase() === "curated") return "SBT Matrix";
     return raw;
@@ -668,7 +669,7 @@
       agentConversation.push({ role: "assistant", content: answer });
       while (agentConversation.length > 12) agentConversation.shift();
       renderRenaissAgentSources(data?.sources || []);
-      const provider = formatProviderName(data?.stats?.agent_provider || "MiniMax");
+      const provider = formatProviderName(data?.stats?.agent_provider || "");
       const count = Number(data?.stats?.source_count || (Array.isArray(data?.sources) ? data.sources.length : 0)) || 0;
       const sourceLabel = provider === "SBT Matrix" ? (count === 1 ? "curated source" : "curated sources") : "memory sources";
       setRenaissAgentStatus(`${provider} · ${count} ${sourceLabel}`, "ok");

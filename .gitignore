@@ -10,6 +10,7 @@ website/.env
 node_modules/
 
 # Python cache
+.venv/
 __pycache__/
 *.pyc
 *.pyo

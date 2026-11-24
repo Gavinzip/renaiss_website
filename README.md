@@ -1,11 +1,11 @@
 # Renaiss Website (Backend + Frontend Chain Backup)
 
 This repository tracks both parts in one place:
-- Backend runtime (Zeabur): API + scheduler in `scripts/` and `main.py`
+- Backend runtime (Vercel / Neon): API + finite jobs in `api/` and `scripts/`
 - Frontend chain deployment package (backup): `frontend_chain/`
 
 `frontend_chain/` is static backup data for Walrus/Walgo publishing.
-It does not add backend runtime behavior on Zeabur.
+It does not add backend runtime behavior.
 
 ## 1) Local run
 
@@ -19,24 +19,21 @@ cp .env.example .env
 
 Backend API base: `http://127.0.0.1:8787`
 
-## 2) Zeabur deployment (backend)
+## 2) Vercel deployment (backend)
 
-Recommended runtime command:
-
-```bash
-pip install -r requirements.txt && ./start.sh
-```
-
-The server reads `PORT` from environment and binds `0.0.0.0` by default via `start.sh`.
+The current deployment is defined by `vercel.json`. See
+[public cache](docs/vercel-public-cache.md) and
+[job control](docs/vercel-job-control.md) for the Vercel/Neon runtime.
+`start.sh` remains the local server entry.
 
 ### Frontend/Backend split (runtime rule)
 
-- Zeabur runs backend only.
+- Vercel runs the API and bounded jobs.
 - Frontend is deployed on-chain from `frontend_chain/`.
 - Keeping `frontend_chain/` inside this repo is for backup and traceability.
 
 ### Required env vars
-- `MINIMAX_API_KEY`
+- `OPENAI_API_KEY` (or the text-only `OPENAI_TEXT_API_KEY` / `INTEL_OPENAI_TEXT_API_KEY`)
 - `INTEL_ADMIN_USER`
 - One of:
   - `INTEL_ADMIN_PASS_HASH` (recommended)
@@ -80,8 +77,11 @@ To create multiple creator accounts, set `WIKI_CREATOR_USERS_JSON` to a JSON lis
 The legacy aliases `INTEL_CREATOR_USER`, `INTEL_CREATOR_PASS_HASH`, `INTEL_CREATOR_PASS`, and `INTEL_CREATOR_USERS_JSON` are also accepted.
 
 ### Optional env vars
-- `MINIMAX_API_HOST` (default `https://api.minimax.io`)
-- `MINIMAX_TEXT_MODEL`
+- `OPENAI_TEXT_MODEL=gpt-6-luna`
+- `OPENAI_TEXT_REASONING_EFFORT=low`
+- `OPENAI_TEXT_MAX_OUTPUT_TOKENS=8192`
+- `OPENAI_TEXT_CONNECT_TIMEOUT_SECONDS=15`, `OPENAI_TEXT_READ_TIMEOUT_SECONDS=120`
+- See [OpenAI text migration](docs/openai-text-migration.md) for the full feature inventory.
 - `DISCORD_BOT_TOKEN`
 - `DISCORD_MONITOR_ENABLED`, `DISCORD_MONITOR_CHANNEL_IDS`, `DISCORD_MONITOR_LIMIT`
 - `INTEL_ALLOWED_ORIGINS`
@@ -92,9 +92,9 @@ The legacy aliases `INTEL_CREATOR_USER`, `INTEL_CREATOR_PASS_HASH`, `INTEL_CREAT
 - `WEBSITE_STORAGE_LINK_LEGACY=0` (isolated local tests only; prevents `website/data` from being relinked)
 - `I18N_FEED_FALLBACK_MODE=hide` (do not return source-language cards for a target language while translation is incomplete)
 
-### Recommended persistent data env for Zeabur
+### Local file workspace (not production storage)
 
-To keep backend cards and translations consistent across restarts:
+For an explicitly selected local file workspace:
 
 - `APP_ENV=server`
 - `WEBSITE_DATA_ROOT=/data/RENAISS_WEBSITE`
