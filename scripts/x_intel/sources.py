@@ -1694,8 +1694,13 @@ def shutil_which(cmd: str) -> str | None:
 
 
 def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str, dict[str, Any] | None]:
-    from x_originals import fetch_original, plain_text
+    from x_originals import fetch_original, plain_text, cached_source
     try:
+        cached = cached_source(username, tweet_id)
+        if cached:
+            original, meta = cached
+            markdown = f'Title: {username} on X: "{original["title"]}" / X\n\nPublished Time: {original["publishedAt"]}\n\nMarkdown Content:\n{meta["text"]}\n'
+            return markdown, 'fxembed', meta
         original, post = fetch_original(username, tweet_id)
         article = post.get('article') or {}
         reply = post.get('replying_to') or {}

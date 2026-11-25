@@ -1,17 +1,46 @@
 """One owner for complete X originals. No AI, preview substitution or HTML execution."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
 from functools import lru_cache
 import json
 import re
 import time
+from threading import Lock
 from urllib.parse import urlparse
 
 import requests
 
 VERSION = 'fxembed-original-v1'
+_request_lock = Lock()
+_next_request_at = 0.0
+_rate_limited = False
+_persisted_sources = {}
+
+
+def cached_source(account, sid):
+    return _persisted_sources.get((account.lower().lstrip('@'), str(sid)))
+
+
+def _cache_card(card):
+    original = card.original_content
+    _persisted_sources[(card.account.lower().lstrip('@'), str(card.id))] = (original, {
+        'id': str(card.id), 'account': card.account, 'text': plain_text(original),
+        'created_at_iso': original['publishedAt'], 'cover_image': card.cover_image,
+        'article_id': card.article_id, 'article_title': original['title'] if original['acquisition'].get('article') else '',
+        'article_preview': '', 'article_fetch_status': 'complete', 'original_content': original,
+        'reply_to_id': card.reply_to_id, 'reply_to_account': '', 'metrics': card.metrics})
+
+
+def _pace_request():
+    global _next_request_at
+    with _request_lock:
+        if _rate_limited: return False
+        delay = _next_request_at - time.monotonic()
+        if delay > 0: time.sleep(delay)
+        if _rate_limited: return False
+        _next_request_at = time.monotonic() + 1.0
+        return True
 
 
 def media_url(value, host):
@@ -144,6 +173,8 @@ def normalize_original(post, account, sid):
 def _request_status(sid):
     # Each worker is a fresh process. Discovery refresh and historical repair
     # share this intake; even failures are not retried implicitly in one job.
+    global _rate_limited
+    if not _pace_request(): return None, 'HTTP_429_cooldown'
     try:
         with requests.get('https://api.fxtwitter.com/2/status/' + sid, timeout=(3, 8), allow_redirects=False, stream=True) as response:
             response.raise_for_status()
@@ -156,6 +187,7 @@ def _request_status(sid):
             if payload.get('code') != 200: raise ValueError('Original unavailable')
             return payload['status'], ''
     except requests.HTTPError as exc:
+        if exc.response.status_code == 429: _rate_limited = True
         return None, 'HTTP_' + str(exc.response.status_code)
     except Exception as exc:
         return None, type(exc).__name__
@@ -185,34 +217,53 @@ def attach_original(card, original):
     if card.media_images: card.cover_image = card.media_images[0]
 
 
-def refresh_existing_originals(cards, progress=None, budget_seconds=75):
+def refresh_existing_originals(cards, progress=None, budget_seconds=75, max_requests=48):
+    """Incremental repair, prioritizing CLTB. Saved originals are the job cache.
+
+    Missing originals precede hourly revalidation of recent full posts. Historical
+    complete posts are reused; no source read or failed-read claim is invented.
+    A 429 opens a process-wide circuit until the next scheduled worker, rather
+    than flooding the provider or blocking the 900-second sync on retries.
+    """
     targets = [c for c in cards if re.fullmatch(r'\d{15,22}', str(c.id)) and c.url.lower() == f'https://x.com/{c.account}/status/{c.id}'.lower()]
-    pending_rows, done, errors, processed = iter(targets), 0, {}, set()
-    deadline = time.monotonic() + budget_seconds
-    pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix='x-original')
-    pending = {}
-    try:
-        while time.monotonic() < deadline:
-            while len(pending) < 6:
-                card = next(pending_rows, None)
-                if card is None: break
-                pending[pool.submit(fetch_original, card.account, str(card.id))] = card
-            if not pending: break
-            completed, _ = wait(pending, timeout=max(.01, deadline-time.monotonic()), return_when=FIRST_COMPLETED)
-            for future in completed:
-                card = pending.pop(future)
-                processed.add(str(card.id))
-                try: attach_original(card, future.result()[0]); done += 1
-                except Exception as exc: card.original_fetch_error = str(exc)[:200]; errors[str(card.id)] = card.original_fetch_error
-                if progress: progress('original_source', done=done, total=len(targets), latest_source=card.account)
-        for card in targets:
-            if str(card.id) not in processed:
-                card.original_fetch_error = 'original_refresh_deadline'
-                errors[str(card.id)] = card.original_fetch_error
-            if not card.original_content or card.original_content.get('acquisition', {}).get('version') != VERSION:
-                card.original_fetch_error = card.original_fetch_error or 'original_not_complete'
-                errors.setdefault(str(card.id), card.original_fetch_error)
-    finally:
-        for future in pending: future.cancel()
-        pool.shutdown(wait=True, cancel_futures=True)
-    return {'total': len(targets), 'refreshed': done, 'incomplete_or_unavailable': errors}
+    missing, recent, errors = [], [], {}
+    now = datetime.now(timezone.utc)
+    for card in targets:
+        doc = card.original_content
+        valid = (isinstance(doc, dict) and doc.get('coverage') == 'full' and
+                 doc.get('id') == str(card.id) and doc.get('sourceUrl', '').lower() == card.url.lower() and
+                 doc.get('acquisition', {}).get('version') == VERSION and bool(doc.get('blocks')))
+        if not valid or card.original_fetch_error:
+            missing.append(card)
+            continue
+        # This is a confirmed stored source, not a successful new fetch. Any
+        # failed revalidation below remains explicit and is not cleared here.
+        _cache_card(card)
+        try:
+            age = (now - datetime.fromisoformat(doc['retrievedAt'].replace('Z', '+00:00'))).total_seconds()
+            published_age = (now - datetime.fromisoformat(doc['publishedAt'].replace('Z', '+00:00'))).total_seconds()
+            if age >= 3600 and published_age <= 30 * 86400: recent.append(card)
+        except (KeyError, ValueError, TypeError): recent.append(card)
+    priority = lambda c: (c.account.lower().lstrip('@') != 'renaisscltb', -int(c.id))
+    queue = sorted(missing, key=priority) + sorted(recent, key=priority)
+    deadline, done, attempted = time.monotonic() + budget_seconds, 0, set()
+    for card in queue:
+        if len(attempted) >= max_requests or time.monotonic() >= deadline or _rate_limited: break
+        attempted.add(str(card.id))
+        try:
+            attach_original(card, fetch_original(card.account, str(card.id))[0])
+            _cache_card(card)
+            done += 1
+        except Exception as exc:
+            _persisted_sources.pop((card.account.lower().lstrip('@'), str(card.id)), None)
+            card.original_fetch_error = str(exc)[:200]
+        if progress: progress('original_source', done=done, total=len(targets), latest_source=card.account)
+    deferred = []
+    for card in targets:
+        if card.original_fetch_error: errors[str(card.id)] = card.original_fetch_error
+        if card in missing and str(card.id) not in attempted:
+            deferred.append(str(card.id))
+            errors.setdefault(str(card.id), 'original_backfill_pending')
+    return {'total': len(targets), 'refreshed': done, 'attempted': len(attempted),
+            'reused': len(targets)-len(missing), 'deferred': deferred,
+            'rate_limited': _rate_limited, 'incomplete_or_unavailable': errors}
