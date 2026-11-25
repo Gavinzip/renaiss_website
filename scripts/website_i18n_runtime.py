@@ -1126,6 +1126,10 @@ def _apply_feed_translation(node: object, mapping: dict[str, str]) -> object:
             for key, child in value.items():
                 k = str(key or "")
                 next_path = _join_entry_path(path, k)
+                if k == 'original_content':
+                    # Original source is immutable across every display language.
+                    out[key] = child
+                    continue
                 if isinstance(child, str):
                     if _is_feed_translatable_text(k, child):
                         out[key] = mapping.get(next_path, child)
