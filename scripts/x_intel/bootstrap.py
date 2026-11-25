@@ -864,12 +864,15 @@ def _retry_after_seconds(resp: requests.Response | None) -> float:
         return 0.0
 
 
-def fetch_text(url: str, timeout: int = 15) -> str:
+def fetch_text(url: str, timeout: int = 15, *, response_format: str | None = None) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; RenaissXIntel/1.0)",
         "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
     }
     is_jina = _is_jina_url(url)
+    if response_format is not None:
+        if not is_jina or response_format != 'html': raise ValueError('Unsupported source representation')
+        headers['X-Respond-With'] = response_format
     jina_key = _jina_api_key() if is_jina else ""
     if jina_key:
         headers["Authorization"] = f"Bearer {jina_key}"
@@ -914,7 +917,10 @@ def fetch_profile_page(username: str, errors: list[str] | None = None) -> str:
     combined: list[str] = []
     for url in variants:
         try:
-            page = fetch_text(url)
+            # X's current timeline uses relative permalinks that Reader's
+            # text extraction omits. Preserve the same source DOM for discovery.
+            page = fetch_text(url, response_format='html')
+            if len(page.encode('utf-8')) > 2_000_000: raise ValueError('Oversized profile response')
             if page:
                 combined.append(page)
                 if extract_status_ids(page, username):
@@ -1147,7 +1153,19 @@ def extract_status_ids(page_text: str, username: str) -> list[str]:
     wanted = username.lower().lstrip("@")
     seen: set[str] = set()
     result: list[str] = []
-    for owner, sid in STATUS_RE.findall(page_text):
+    from html.parser import HTMLParser
+    from urllib.parse import urljoin, urlparse
+    candidates = STATUS_RE.findall(page_text)
+    class TimelineLinks(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            for key, value in attrs:
+                if key not in {'href', 'data-href'} or not value: continue
+                link = urlparse(urljoin('https://x.com/', value))
+                if link.scheme != 'https' or link.hostname != 'x.com' or link.username or link.password: continue
+                match = re.fullmatch(r'/([A-Za-z0-9_]+)/status/(\d+)(?:/(?:photo|video)/\d+)?/?', link.path)
+                if match: candidates.append(match.groups())
+    TimelineLinks().feed(page_text)
+    for owner, sid in candidates:
         if owner.lower().lstrip("@") != wanted:
             continue
         if sid in seen:
