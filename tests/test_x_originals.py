@@ -21,6 +21,9 @@ def card():
     'raw_text':'Short preview','published_at':'2026-11-24T12:36:51Z','ai_status':'ok','card_type':'announcement'})
 
 class OriginalsTests(unittest.TestCase):
+ def setUp(self):
+  import x_originals as x
+  x._persisted_sources.clear();x._rate_limited=False
  def test_long_note_is_not_truncated_and_survives_card_persistence_and_hydration(self):
   p=post();o=normalize_original(p,ACCOUNT,SID);c=card();attach_original(c,o)
   self.assertEqual(plain_text(o),p['text']);self.assertGreater(len(c.raw_text),2500)
@@ -47,7 +50,7 @@ class OriginalsTests(unittest.TestCase):
   result=normalize_original(p,ACCOUNT,SID)
   self.assertIn('😀 Source tail',plain_text(result));self.assertIn('https://x.com/i/status/'+SID,plain_text(result))
  def test_failed_refresh_preserves_last_full_original_and_marks_the_error(self):
-  c=card();o=normalize_original(post(),ACCOUNT,SID);attach_original(c,o)
+  c=card();o=normalize_original(post(),ACCOUNT,SID);o['retrievedAt']='2026-11-24T00:00:00Z';attach_original(c,o)
   with patch('x_originals.fetch_original',side_effect=ValueError('Original unavailable')):
    status=refresh_existing_originals([c])
   self.assertEqual(c.original_content,o);self.assertIn(SID,status['incomplete_or_unavailable']);self.assertTrue(c.original_fetch_error)
@@ -57,5 +60,40 @@ class OriginalsTests(unittest.TestCase):
    markdown,provider,meta=sources.fetch_status_markdown(ACCOUNT,SID)
    parsed=sources.parse_status_page(markdown,ACCOUNT,SID,URL,provider,meta)
   legacy.assert_not_called();self.assertEqual(provider,'fxembed');self.assertEqual(parsed.original_content,o);self.assertTrue(parsed.raw_text.endswith('FINAL ORIGINAL TAIL'))
+
+class IncrementalTests(unittest.TestCase):
+ def setUp(self):
+  import x_originals as x
+  x._persisted_sources.clear();x._rate_limited=False
+ def test_persisted_full_originals_are_reused_without_source_requests(self):
+  c=card();o=normalize_original(post(),ACCOUNT,SID);attach_original(c,o)
+  c=_story_card_from_payload(c.to_dict())
+  with patch('x_originals.fetch_original') as fetch:
+   status=refresh_existing_originals([c])
+   _,_,meta=sources.fetch_status_markdown(ACCOUNT,SID)
+  fetch.assert_not_called();self.assertEqual(meta['original_content'],o);self.assertEqual(status['reused'],1)
+ def test_missing_cltb_is_prioritized_and_progress_survives_next_batch(self):
+  a=card();b=card();b.id='2125207016931299648';b.account='other';b.url=f'https://x.com/other/status/{b.id}'
+  o=normalize_original(post(),ACCOUNT,SID)
+  with patch('x_originals.fetch_original',return_value=(o,post())) as fetch:
+   first=refresh_existing_originals([b,a],max_requests=1)
+  fetch.assert_called_once_with(ACCOUNT,SID);self.assertEqual(first['deferred'],[b.id])
+  with patch('x_originals.fetch_original',side_effect=ValueError('unavailable')) as fetch:
+   refresh_existing_originals([b,_story_card_from_payload(a.to_dict())],max_requests=1)
+  fetch.assert_called_once_with('other',b.id)
+ def test_429_opens_circuit_and_prevents_next_network_request(self):
+  import x_originals as x
+  import requests
+  x._request_status.cache_clear()
+  response=unittest.mock.Mock(status_code=429)
+  context=unittest.mock.MagicMock();context.__enter__.return_value=response
+  response.raise_for_status.side_effect=requests.HTTPError(response=response)
+  with patch('x_originals.requests.get',return_value=context) as get,patch('x_originals.time.sleep'):
+   self.assertEqual(x._request_status(SID)[1],'HTTP_429')
+   self.assertEqual(x._request_status('2125207016931299648')[1],'HTTP_429_cooldown')
+  self.assertEqual(get.call_count,1)
+ def tearDown(self):
+  import x_originals as x
+  x._persisted_sources.clear();x._rate_limited=False;x._request_status.cache_clear()
 
 if __name__=='__main__':unittest.main()
