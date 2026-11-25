@@ -599,6 +599,8 @@ def _story_card_from_payload(item: dict[str, Any], *, default_account: str = "",
         article_preview=str(row.get("article_preview") or ""),
         article_blocks=normalize_article_blocks(row.get("article_blocks")),
         article_fetch_status=str(row.get("article_fetch_status") or ""),
+        original_content=row.get("original_content"),
+        original_fetch_error=str(row.get("original_fetch_error") or ""),
         metrics=row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
         importance=float(row.get("importance") or 0.0),
         template_id=str(row.get("template_id") or "community_brief"),
@@ -3471,6 +3473,8 @@ ARTICLE_SOURCE_REFRESH_FIELDS = {
     "article_preview",
     "article_blocks",
     "article_fetch_status",
+    "original_content",
+    "original_fetch_error",
 }
 
 PRESERVED_CARD_MUTABLE_FIELDS = {
@@ -3700,6 +3704,9 @@ def sync_accounts(
     removed_source_card_ids.update(_source_state_card_ids(removed_source_accounts))
     removed_source_purge_stats = _purge_removed_source_state(removed_source_accounts, removed_source_card_ids)
     _assign_source_roles(existing_cards, source_config)
+    from x_originals import refresh_existing_originals
+    original_stats = refresh_existing_originals(existing_cards,
+        lambda event, **fields: _emit_sync_progress(progress_callback, event, **fields))
 
     account_cards: list[StoryCard] = []
     account_stats: dict[str, int] = {}
@@ -4402,11 +4409,12 @@ def sync_accounts(
     )
     payload["notes"] = {
         "fallback": "若某帳號無法公開抓取，系統會保留該帳號並等待後續可讀資料。",
-        "provider": "twitter-cli (若可用) / tweet-result / r.jina.ai / nitter-rss fallback" + (" / discord-rest" if discord_cfg.get("enabled") else ""),
+        "provider": "FxEmbed full originals / existing account discovery" + (" / discord-rest" if discord_cfg.get("enabled") else ""),
         "twitter_cli_ready": twitter_cli_ready,
         "discord_monitor_enabled": bool(discord_cfg.get("enabled")),
     }
 
+    payload['original_source_scan'] = original_stats
     write_json(data_dir() / "x_intel_feed.json", payload)
     return payload
 

@@ -1694,54 +1694,27 @@ def shutil_which(cmd: str) -> str | None:
 
 
 def fetch_status_markdown(username: str, tweet_id: str) -> tuple[str | None, str, dict[str, Any] | None]:
-    url = f"https://x.com/{username}/status/{tweet_id}"
-    meta = fetch_status_metadata(tweet_id)
-
-    is_article = bool(
-        isinstance(meta, dict)
-        and (str(meta.get("article_id") or "").strip() or str(meta.get("article_title") or "").strip())
-    )
-    if is_article:
-        article_urls = [
-            f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}",
-            f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}?mx=1",
-        ]
-        best_markdown = ""
-        best_score = (0, 0, 0)
-        for article_url in article_urls:
-            try:
-                candidate = fetch_text(article_url)
-            except Exception:
-                continue
-            blocks = extract_article_blocks(candidate)
-            text_chars = sum(len(str(row.get("text") or "")) for row in blocks if isinstance(row, dict))
-            image_count = sum(1 for row in blocks if isinstance(row, dict) and row.get("type") == "image")
-            score = (1 if text_chars >= 240 else 0, image_count, text_chars)
-            if score > best_score:
-                best_markdown = candidate
-                best_score = score
-            if score[0] and image_count:
-                break
-        if best_markdown and best_score[0]:
-            meta["article_fetch_status"] = "complete"
-            meta["article_inline_image_count"] = best_score[1]
-            return best_markdown, "r.jina.ai", meta
-        meta["article_fetch_status"] = "partial"
-
-    twitter_cli_data = fetch_status_with_twitter_cli(url)
-    if twitter_cli_data:
-        return twitter_cli_data, "twitter-cli", meta
-
-    if isinstance(meta, dict):
-        owner = str(meta.get("account") or "").strip().lower().lstrip("@")
-        wanted = str(username or "").strip().lower().lstrip("@")
-        if owner == wanted and str(meta.get("text") or "").strip():
-            return build_markdown_from_status_meta(meta, url), "tweet-result", meta
-
+    from x_originals import fetch_original, plain_text
     try:
-        return fetch_text(f"https://r.jina.ai/http://x.com/{username}/status/{tweet_id}"), "r.jina.ai", meta
+        original, post = fetch_original(username, tweet_id)
+        article = post.get('article') or {}
+        reply = post.get('replying_to') or {}
+        reply_account = reply.get('screen_name','') if isinstance(reply,dict) else str(reply)
+        reply_status = post.get('replying_to_status') or (reply.get('status_id') if isinstance(reply,dict) else '') or ''
+        reply_status = reply_status.get('id','') if isinstance(reply_status,dict) else str(reply_status)
+        meta = {'id': tweet_id, 'account': username, 'text': plain_text(original),
+                'created_at_iso': original['publishedAt'], 'cover_image': next((b['src'] for b in original['blocks'] if b['kind']=='image'), ''),
+                'article_id': str(article.get('id') or ''), 'article_title': article.get('title',''),
+                'article_preview': article.get('preview_text',''), 'article_fetch_status': 'complete',
+                'original_content': original,
+                'reply_to_id': reply_status,
+                'reply_to_account': reply_account,
+                'metrics': {'likes': int(post.get('likes') or 0), 'replies': int(post.get('replies') or 0)}}
+        markdown = f'Title: {username} on X: "{original["title"]}" / X\n\nPublished Time: {original["publishedAt"]}\n\nMarkdown Content:\n{meta["text"]}\n'
+        return markdown, 'fxembed', meta
     except Exception:
-        return None, "none", meta
+        # No preview provider is silently substituted for a full original.
+        return None, 'fxembed-unavailable', None
 
 
 def resolve_discord_monitor_config() -> dict[str, Any]:
@@ -1994,6 +1967,9 @@ def collect_discord_cards(
 
 
 def merge_article_refresh(existing: StoryCard, refreshed: StoryCard) -> None:
+    if refreshed.original_content:
+        from x_originals import attach_original
+        attach_original(existing, refreshed.original_content)
     existing.cover_image = refreshed.cover_image or existing.cover_image
     existing.article_id = refreshed.article_id or existing.article_id
     existing.article_title = refreshed.article_title or existing.article_title
@@ -2059,6 +2035,8 @@ def collect_account_cards(
                         article_preview=str(item.get("article_preview") or ""),
                         article_blocks=normalize_article_blocks(item.get("article_blocks")),
                         article_fetch_status=str(item.get("article_fetch_status") or ""),
+                        original_content=item.get("original_content"),
+                        original_fetch_error=str(item.get("original_fetch_error") or ""),
                         metrics=item.get("metrics") if isinstance(item.get("metrics"), dict) else {},
                         importance=float(item.get("importance") or 0.0),
                         template_id=str(item.get("template_id") or "community_brief"),
@@ -2196,7 +2174,7 @@ def collect_account_cards(
                 meta_text = clean_text(str(tweet_meta.get("text") or ""))
                 if meta_text and len(meta_text) > len(clean_text(existing.raw_text or "")):
                     existing.raw_text = meta_text[:2500]
-                if str(tweet_meta.get("article_id") or "").strip() and status_markdown:
+                if tweet_meta.get("original_content") and status_markdown:
                     refreshed = parse_status_page(
                         status_markdown,
                         username=username,
@@ -2370,6 +2348,8 @@ def _merge_thread_group(group: list[StoryCard]) -> StoryCard:
         article_preview=next((c.article_preview for c in rows if c.article_preview), ""),
         article_blocks=next((c.article_blocks for c in rows if c.article_blocks), []),
         article_fetch_status=next((c.article_fetch_status for c in rows if c.article_fetch_status), ""),
+        original_content=first.original_content,
+        original_fetch_error=first.original_fetch_error,
         metrics=_sum_metrics(rows),
         reply_to_id=str(first.reply_to_id or ""),
         routing_topics=[],

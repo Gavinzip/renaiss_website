@@ -258,6 +258,8 @@ class StoryCard:
     article_preview: str = ""
     article_blocks: list[dict[str, str]] | None = None
     article_fetch_status: str = ""
+    original_content: dict[str, Any] | None = None
+    original_fetch_error: str = ""
     metrics: dict[str, int] | None = None
     importance: float = 0.0
     template_id: str = "community_brief"
@@ -338,6 +340,8 @@ class StoryCard:
             "article_preview": self.article_preview,
             "article_blocks": self.article_blocks or [],
             "article_fetch_status": self.article_fetch_status,
+            "original_content": self.original_content,
+            "original_fetch_error": self.original_fetch_error,
             "metrics": self.metrics or {},
             "importance": self.importance,
             "template_id": self.template_id,
@@ -1515,6 +1519,9 @@ def parse_status_page(
         review_status=AI_REVIEW_ADMIN_QUEUE,
         classification_error="ai_not_run",
     )
+    if isinstance(tweet_meta, dict) and tweet_meta.get('original_content'):
+        from x_originals import attach_original
+        attach_original(card, tweet_meta['original_content'])
     card.importance = score_card(card)
     return card
 

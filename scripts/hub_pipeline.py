@@ -37,6 +37,8 @@ def run_pipeline(job: dict, root: Path, progress) -> dict:
         feed = legacy.sync_accounts(accounts=job['input'].get('accounts'),window_days=max(1,min(int(job['input'].get('days') or 30),365)),max_posts_per_account=20,progress_callback=report,strict_sources=True)
         errors = (feed.get('source_scan') or {}).get('errors') or {}
         warnings = [str(k)+': '+str(v) for k,v in errors.items()]
+        original_errors = (feed.get('original_source_scan') or {}).get('incomplete_or_unavailable') or {}
+        if original_errors: warnings.append(f'部分 X 原文尚未完整取得：{len(original_errors)} 篇；詳見 original_source_scan。')
         discord = feed.get('discord_monitor') or {}
         warnings.extend(discord.get('errors') or [])
         knowledge = feed.get('knowledge_memory_stats') or {}
