@@ -88,7 +88,7 @@ class OfficialNewsTests(unittest.TestCase):
             self.assertEqual(result['partner_names'], ['@NeoSoulAI'])
 
     def test_cltb_partnership_is_not_limited_to_index(self):
-        for text, partner in [('Renaiss partners with @NeoSoulAI 🤝', '@NeoSoulAI'), ('Renaiss Partners with @xstablerwa', '@xstablerwa'), ('Renaiss integrates with @rarible', '@rarible')]:
+        for text, partner in [('Renaiss partners with @NeoSoulAI 🤝', '@NeoSoulAI'), ('Renaiss Partners with @xstablerwa', '@xstablerwa'), ('Renaiss integrates with @rarible', '@rarible'), ('Renaiss Gacha is now integrated with @BinanceWallet ! 🎴', '@BinanceWallet')]:
             self.assertEqual(infer_official_update_metadata('renaissCLTB', text), ('partnership', [partner]))
             result = news_category_metadata(text, 'announcement')
             self.assertEqual(result['news_categories'], ['Community', 'Partnership'])
@@ -99,7 +99,7 @@ class OfficialNewsTests(unittest.TestCase):
     def test_developer_facets_do_not_rewrite_card_type_or_tag_casual_meetups(self):
         result = news_category_metadata('Renaiss SDK and underlying protocol components.', 'announcement')
         self.assertEqual(result['news_categories'], ['Community', 'Builders'])
-        for text in ['Come meet builders and partners over drinks.', 'Thank you to our partners and community.', 'Today we turn one. SDK. CLI. Index. Fair.']:
+        for text in ['Come meet builders and partners over drinks.', 'Thank you to our partners and community.', 'Today we turn one. SDK. CLI. Index. Fair.', 'Renaiss Gacha will be integrated with @Future', 'Renaiss Gacha is not integrated with @Other']:
             result = news_category_metadata(text, 'event')
             self.assertEqual(result['news_categories'], ['Events'])
 
