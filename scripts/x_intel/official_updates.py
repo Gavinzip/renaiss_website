@@ -6,9 +6,10 @@ partners are not partnership announcements. Evidence is an exact source span.
 from __future__ import annotations
 import re
 
-NEWS_FACET_VERSION = "2026-11-24-source-evidence-v1"
+NEWS_FACET_VERSION = "2026-11-25-source-evidence-v2"
 PRIMARY = {"event": "Events", "product_progress": "Product"}
 PARTNER_PATTERNS = (
+    r"\bRenaiss(?:\s+(?:Gacha|Index|Fi|Fair|Protocol|XYZ))?\s+(?:is\s+(?:now\s+)?|has\s+(?:now\s+)?been\s+|was\s+)(?:fully\s+)?integrated\s+with\s+(?P<partner>@?[\w-]+)",
     r"\bRenaiss\s+partners?\s+with\s+(?P<partner>@?[\w-]+)",
     r"\b(?:we(?:’|')re\s+)?partnering\s+with\s+(?P<partner>@?[\w-]+)",
     r"\bRenaiss\s+integrates?\s+with\s+(?P<partner>@?[\w-]+)",
